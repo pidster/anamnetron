@@ -115,6 +115,91 @@ pub fn load_into_store(
     Ok(version)
 }
 
+/// Build an InterchangeDocument from store data for a given version.
+fn build_export_document(store: &impl GraphStore, version: Version) -> Result<InterchangeDocument> {
+    // Find the snapshot for metadata
+    let snapshots = store.list_snapshots()?;
+    let snapshot = snapshots
+        .iter()
+        .find(|s| s.version == version)
+        .ok_or(StoreError::VersionNotFound(version))?;
+
+    let nodes = store.get_all_nodes(version)?;
+    let edges = store.get_all_edges(version, None)?;
+    let constraints = store.get_constraints(version)?;
+
+    // Build ID->path mapping for edge resolution
+    let id_to_path: HashMap<String, String> = nodes
+        .iter()
+        .map(|n| (n.id.clone(), n.canonical_path.clone()))
+        .collect();
+
+    let interchange_nodes: Vec<InterchangeNode> = nodes
+        .iter()
+        .map(|n| InterchangeNode {
+            canonical_path: n.canonical_path.clone(),
+            kind: n.kind,
+            name: Some(n.name.clone()),
+            sub_kind: Some(n.sub_kind.clone()),
+            qualified_name: n.qualified_name.clone(),
+            language: n.language.clone(),
+            provenance: Some(n.provenance),
+            source_ref: n.source_ref.clone(),
+            metadata: n.metadata.clone(),
+            children: None,
+        })
+        .collect();
+
+    let interchange_edges: Vec<InterchangeEdge> = edges
+        .iter()
+        .filter_map(|e| {
+            let source = id_to_path.get(&e.source)?;
+            let target = id_to_path.get(&e.target)?;
+            Some(InterchangeEdge {
+                source: source.clone(),
+                target: target.clone(),
+                kind: e.kind,
+                metadata: e.metadata.clone(),
+            })
+        })
+        .collect();
+
+    let interchange_constraints: Vec<InterchangeConstraint> = constraints
+        .iter()
+        .map(|c| InterchangeConstraint {
+            name: c.name.clone(),
+            kind: c.kind.clone(),
+            scope: c.scope.clone(),
+            target: c.target.clone(),
+            params: c.params.clone(),
+            message: c.message.clone(),
+            severity: Some(c.severity),
+        })
+        .collect();
+
+    Ok(InterchangeDocument {
+        format: "svt/v1".to_string(),
+        kind: snapshot.kind,
+        version: Some(version),
+        metadata: snapshot.metadata.clone(),
+        nodes: interchange_nodes,
+        edges: interchange_edges,
+        constraints: interchange_constraints,
+    })
+}
+
+/// Export a version from the store as YAML (flat format).
+pub fn export_yaml(store: &impl GraphStore, version: Version) -> Result<String> {
+    let doc = build_export_document(store, version)?;
+    serde_yaml::to_string(&doc).map_err(|e| StoreError::Internal(e.to_string()))
+}
+
+/// Export a version from the store as JSON (flat format).
+pub fn export_json(store: &impl GraphStore, version: Version) -> Result<String> {
+    let doc = build_export_document(store, version)?;
+    serde_json::to_string_pretty(&doc).map_err(|e| StoreError::Internal(e.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -226,5 +311,57 @@ nodes:
         let child = store.get_node_by_path(version, "/app/core").unwrap().unwrap();
         assert_eq!(edges[0].source, parent.id);
         assert_eq!(edges[0].target, child.id);
+    }
+
+    #[test]
+    fn export_yaml_round_trips() {
+        let yaml = r#"
+format: svt/v1
+kind: design
+nodes:
+  - canonical_path: /app
+    kind: system
+    sub_kind: workspace
+    name: app
+  - canonical_path: /app/api
+    kind: component
+    sub_kind: module
+    name: api
+edges:
+  - source: /app
+    target: /app/api
+    kind: contains
+constraints: []
+"#;
+        let doc = parse_yaml(yaml).unwrap();
+        let mut store = CozoStore::new_in_memory().unwrap();
+        let version = load_into_store(&mut store, &doc).unwrap();
+
+        let exported = export_yaml(&store, version).unwrap();
+        let re_parsed = parse_yaml(&exported).unwrap();
+        assert_eq!(re_parsed.nodes.len(), 2);
+        assert_eq!(re_parsed.edges.len(), 1);
+    }
+
+    #[test]
+    fn export_json_produces_valid_json() {
+        let yaml = r#"
+format: svt/v1
+kind: design
+nodes:
+  - canonical_path: /app
+    kind: system
+    sub_kind: workspace
+    name: app
+edges: []
+constraints: []
+"#;
+        let doc = parse_yaml(yaml).unwrap();
+        let mut store = CozoStore::new_in_memory().unwrap();
+        let version = load_into_store(&mut store, &doc).unwrap();
+
+        let json_str = export_json(&store, version).unwrap();
+        let re_parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(re_parsed["format"], "svt/v1");
     }
 }
