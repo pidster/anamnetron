@@ -27,10 +27,11 @@ pub fn to_kebab_case(segment: &str) -> String {
             let next_lower = i + 1 < chars.len() && chars[i + 1].is_lowercase();
 
             // Split before: lowercase->uppercase (camelCase) or acronym->word (HTTPServer)
-            if prev_lower || (prev_upper && next_lower) {
-                if !result.is_empty() && !result.ends_with('-') {
-                    result.push('-');
-                }
+            if (prev_lower || (prev_upper && next_lower))
+                && !result.is_empty()
+                && !result.ends_with('-')
+            {
+                result.push('-');
             }
         }
 
