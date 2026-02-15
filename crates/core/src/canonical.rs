@@ -40,6 +40,52 @@ pub fn to_kebab_case(segment: &str) -> String {
     result
 }
 
+/// Validate that a canonical path is well-formed.
+///
+/// Requirements: leading `/`, no trailing slash, lowercase kebab-case segments,
+/// no empty segments.
+pub fn validate_canonical_path(path: &str) -> Result<(), String> {
+    if !path.starts_with('/') {
+        return Err("must start with '/'".to_string());
+    }
+    if path.len() > 1 && path.ends_with('/') {
+        return Err("must not end with '/'".to_string());
+    }
+    let segments: Vec<&str> = path[1..].split('/').collect();
+    for segment in &segments {
+        if segment.is_empty() {
+            return Err("empty segment (double slash)".to_string());
+        }
+        if !segment
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        {
+            return Err(format!(
+                "segment '{}' is not lowercase kebab-case",
+                segment
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Get the parent path. Returns `None` for root-level paths (e.g., `/a`).
+#[must_use]
+pub fn parent_path(path: &str) -> Option<&str> {
+    let last_slash = path.rfind('/')?;
+    if last_slash == 0 {
+        None
+    } else {
+        Some(&path[..last_slash])
+    }
+}
+
+/// Get the last segment of a canonical path.
+#[must_use]
+pub fn path_name(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -77,5 +123,71 @@ mod tests {
     #[test]
     fn kebab_single_lowercase_word() {
         assert_eq!(to_kebab_case("core"), "core");
+    }
+
+    // --- validate_canonical_path ---
+
+    #[test]
+    fn valid_canonical_path() {
+        assert!(validate_canonical_path("/svt/core/model").is_ok());
+    }
+
+    #[test]
+    fn valid_root_level_path() {
+        assert!(validate_canonical_path("/svt").is_ok());
+    }
+
+    #[test]
+    fn invalid_missing_leading_slash() {
+        assert!(validate_canonical_path("svt/core").is_err());
+    }
+
+    #[test]
+    fn invalid_trailing_slash() {
+        assert!(validate_canonical_path("/svt/core/").is_err());
+    }
+
+    #[test]
+    fn invalid_uppercase_segment() {
+        assert!(validate_canonical_path("/svt/Core").is_err());
+    }
+
+    #[test]
+    fn invalid_empty_segment() {
+        assert!(validate_canonical_path("/svt//core").is_err());
+    }
+
+    #[test]
+    fn valid_path_with_digits() {
+        assert!(validate_canonical_path("/svt/v2/core").is_ok());
+    }
+
+    // --- parent_path ---
+
+    #[test]
+    fn parent_of_deep_path() {
+        assert_eq!(parent_path("/a/b/c"), Some("/a/b"));
+    }
+
+    #[test]
+    fn parent_of_two_segment_path() {
+        assert_eq!(parent_path("/a/b"), Some("/a"));
+    }
+
+    #[test]
+    fn parent_of_root_level_path() {
+        assert_eq!(parent_path("/a"), None);
+    }
+
+    // --- path_name ---
+
+    #[test]
+    fn name_of_deep_path() {
+        assert_eq!(path_name("/a/b/c"), "c");
+    }
+
+    #[test]
+    fn name_of_root_level_path() {
+        assert_eq!(path_name("/a"), "a");
     }
 }
