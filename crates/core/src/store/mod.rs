@@ -95,4 +95,7 @@ pub trait GraphStore {
 
     /// Get all constraints for a version.
     fn get_constraints(&self, version: Version) -> Result<Vec<Constraint>>;
+
+    /// Remove all data for versions not in the keep list.
+    fn compact(&mut self, keep_versions: &[Version]) -> Result<()>;
 }

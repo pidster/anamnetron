@@ -684,4 +684,53 @@ impl GraphStore for CozoStore {
             })
             .collect()
     }
+
+    fn compact(&mut self, keep_versions: &[Version]) -> Result<()> {
+        // Build a list of versions to keep as CozoDB input data
+        let keep_list: Vec<DataValue> = keep_versions
+            .iter()
+            .map(|v| DataValue::from(*v as i64))
+            .collect();
+
+        let mut params = BTreeMap::new();
+        params.insert("keep".to_string(), DataValue::List(keep_list));
+
+        // Delete snapshots not in keep list
+        self.run_query(
+            "to_remove[version] := *snapshots{version}, not keep_set[version]
+             keep_set[v] := v in $keep
+             ?[version] := to_remove[version]
+             :rm snapshots {version}",
+            params.clone(),
+        )?;
+
+        // Delete nodes not in keep list
+        self.run_query(
+            "to_remove[id, version] := *nodes{id, version}, not keep_set[version]
+             keep_set[v] := v in $keep
+             ?[id, version] := to_remove[id, version]
+             :rm nodes {id, version}",
+            params.clone(),
+        )?;
+
+        // Delete edges not in keep list
+        self.run_query(
+            "to_remove[id, version] := *edges{id, version}, not keep_set[version]
+             keep_set[v] := v in $keep
+             ?[id, version] := to_remove[id, version]
+             :rm edges {id, version}",
+            params.clone(),
+        )?;
+
+        // Delete constraints not in keep list
+        self.run_query(
+            "to_remove[id, version] := *constraints{id, version}, not keep_set[version]
+             keep_set[v] := v in $keep
+             ?[id, version] := to_remove[id, version]
+             :rm constraints {id, version}",
+            params,
+        )?;
+
+        Ok(())
+    }
 }
