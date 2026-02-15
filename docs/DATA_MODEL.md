@@ -2,7 +2,7 @@
 
 ## Overview
 
-The data model is a directed, typed property graph stored in an embedded graph database (behind a `GraphStore` trait). Nodes represent software elements at varying levels of abstraction. Edges represent relationships between them. Both carry provenance metadata indicating their origin and a version number linking them to a snapshot.
+The data model is a directed, typed property graph stored in an embedded graph database (behind a `GraphStore` trait). Nodes represent software elements at varying levels of abstraction. Edges represent relationships between them. Constraints express architectural rules. All carry provenance metadata indicating their origin and a version number linking them to a snapshot.
 
 ## Naming and Identity
 
@@ -146,6 +146,145 @@ Not all edge kinds are equal in volume:
 - **Stored, aggregated for display:** `depends` — stored at the unit level, aggregated via queries for component/service-level views.
 - **Stored selectively:** `calls` — cross-boundary calls are stored (architecturally interesting). Intra-component call graphs may be computed on demand.
 
+## Constraints
+
+Constraints are design-mode assertions about architectural properties. They are first-class entities in the graph, versioned alongside design nodes.
+
+### Constraint Schema
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | String | Yes | Unique identifier |
+| `version` | Int | Yes | Snapshot version |
+| `kind` | ConstraintKind | Yes | Type of constraint |
+| `name` | String | Yes | Human-readable name |
+| `scope` | String | Yes | Canonical path pattern (supports glob) |
+| `target` | String | No | Target path pattern (for dependency constraints) |
+| `params` | Json | No | Additional parameters |
+| `message` | String | Yes | Description shown on violation |
+| `severity` | Severity | Yes | `error`, `warning`, `info` |
+
+### Constraint Kinds
+
+#### `must_not_depend` — Forbidden dependency
+
+A node matching `scope` must not have a `depends` edge to any node matching `target`.
+
+```yaml
+kind: must_not_depend
+scope: /payments-service/**
+target: /user-service/internal/**
+message: "Payment service must not access user service internals"
+severity: error
+```
+
+#### `must_only_depend` — Dependency allowlist
+
+A node matching `scope` may only have `depends` edges to nodes matching the target patterns.
+
+```yaml
+kind: must_only_depend
+scope: /payments-service/api/**
+target: [/payments-service/service/**, /shared/models/**]
+message: "API layer may only depend on service layer and shared models"
+severity: error
+```
+
+#### `boundary` — Encapsulation enforcement
+
+Nodes matching `scope` may only be depended on by nodes that share a common ancestor prefix.
+
+```yaml
+kind: boundary
+scope: /payments-service/internal/**
+params:
+  access: scope_only
+message: "Internal components are only accessible within payments-service"
+severity: error
+```
+
+`scope_only` means only nodes sharing the `/payments-service/` prefix may depend on nodes matching the scope. All other dependencies are violations.
+
+#### `layer_order` — Layered architecture
+
+Dependencies between components under `scope` must follow a defined layer ordering.
+
+```yaml
+kind: layer_order
+scope: /payments-service/**
+params:
+  layers: [api, service, repository, database]
+  direction: downward_only
+  allow_skip: false
+message: "Dependencies must follow layer order"
+severity: error
+```
+
+For any `depends` edge between two nodes under the scope, the source's layer index must be less than or equal to the target's layer index. Layer is determined by matching the component name against the layers list.
+
+#### `must_contain` — Structural presence
+
+Every node matching `scope` must contain a child matching the specified pattern.
+
+```yaml
+kind: must_contain
+scope: /*/
+params:
+  child_pattern: health-check
+  child_kind: unit
+message: "Every service must have a health-check endpoint"
+severity: warning
+```
+
+#### `max_fan_out` / `max_fan_in` — Coupling limits
+
+Limits on the number of outgoing or incoming dependency edges at a given abstraction level.
+
+```yaml
+kind: max_fan_out
+scope: /*/**
+params:
+  edge_kind: depends
+  limit: 10
+  level: service
+message: "No component should depend on more than 10 services"
+severity: warning
+```
+
+### Constraint Evaluation
+
+Each constraint kind maps to a Datalog query pattern. The evaluator runs these queries against an analysis snapshot and collects violations.
+
+Example for `must_not_depend`:
+
+```datalog
+?[source_path, target_path, edge_id] :=
+    *nodes{id: source_id, canonical_path: source_path, version: analysis_v},
+    *nodes{id: target_id, canonical_path: target_path, version: analysis_v},
+    *edges{id: edge_id, source: source_id, target: target_id,
+           kind: "depends", version: analysis_v},
+    canonical_path_matches(source_path, "/payments-service/**"),
+    canonical_path_matches(target_path, "/user-service/internal/**")
+```
+
+### Constraint Results
+
+Each constraint evaluation produces a result:
+
+- **`pass`** — no violations found
+- **`fail`** — violations found, severity is `error`
+- **`warn`** — violations found, severity is `warning`
+
+Each violation includes evidence: the source node, target node (if applicable), the offending edge (if applicable), and a source reference (file:line) for the violating code.
+
+### CI Integration
+
+Constraint severity maps to CLI exit codes:
+
+- `svt check --fail-on=error` — exit non-zero if any `error` constraint fails
+- `svt check --fail-on=warning` — exit non-zero if any `warning` or `error` constraint fails
+- Reports are available in JSON for machine consumption and Markdown for human review
+
 ## Versioning
 
 ### Snapshots
@@ -162,7 +301,7 @@ The model is versioned through **snapshots**. Each analysis run, design revision
 
 ### How Versioning Works
 
-- Nodes and edges carry a `version` field linking them to a snapshot.
+- Nodes, edges, and constraints carry a `version` field linking them to a snapshot.
 - The **current state** is the latest snapshot of each kind.
 - **Drift detection** compares two analysis snapshots:
 
@@ -192,7 +331,18 @@ The model is versioned through **snapshots**. Each analysis run, design revision
 
 ## Conformance
 
-Conformance status is **computed, not stored** — derived by comparing design-provenance and analysis-provenance subgraphs via their canonical paths.
+Conformance is **computed, not stored** — derived by comparing design and analysis snapshots.
+
+### Conformance Report
+
+A conformance report compares a design version against an analysis version and produces:
+
+1. **Constraint results** — each constraint evaluated with pass/fail/warn and violation evidence
+2. **Unimplemented nodes** — design nodes with no matching analysis node (by canonical path)
+3. **Undocumented nodes** — analysis nodes with no matching design node (by canonical path)
+4. **Summary** — counts of pass/fail/warn constraints, unimplemented/undocumented nodes
+
+### Conformance Statuses
 
 | Status | Meaning |
 |--------|---------|
@@ -201,7 +351,93 @@ Conformance status is **computed, not stored** — derived by comparing design-p
 | `unimplemented` | Exists in design but not found in analysis |
 | `undocumented` | Exists in analysis but absent from design |
 
-Conformance is expressed as Datalog queries against the graph store, making it naturally extensible to user-defined rules in the future.
+## GraphStore Trait
+
+The graph store is abstracted behind a trait in `svt-core`. This decouples the data model from the storage engine and allows different backends (CozoDB, SurrealDB) for different deployment contexts.
+
+### Write Operations
+
+Used by analyzers and design importers.
+
+```rust
+fn create_snapshot(&mut self, kind: SnapshotKind, commit_ref: Option<&str>) -> Result<Version>;
+fn add_node(&mut self, version: Version, node: &Node) -> Result<()>;
+fn add_edge(&mut self, version: Version, edge: &Edge) -> Result<()>;
+fn add_constraint(&mut self, version: Version, constraint: &Constraint) -> Result<()>;
+fn add_nodes_batch(&mut self, version: Version, nodes: &[Node]) -> Result<()>;
+fn add_edges_batch(&mut self, version: Version, edges: &[Edge]) -> Result<()>;
+```
+
+Batch operations are essential — an analyzer discovering thousands of nodes should not make individual store calls.
+
+### Read Operations
+
+Basic lookups.
+
+```rust
+fn get_node(&self, version: Version, id: &NodeId) -> Result<Option<Node>>;
+fn get_node_by_path(&self, version: Version, canonical_path: &str) -> Result<Option<Node>>;
+fn get_edges(&self, version: Version, node_id: &NodeId, direction: Direction, kind: Option<EdgeKind>) -> Result<Vec<Edge>>;
+fn get_children(&self, version: Version, node_id: &NodeId) -> Result<Vec<Node>>;
+fn get_parent(&self, version: Version, node_id: &NodeId) -> Result<Option<Node>>;
+```
+
+### Traversal Operations
+
+Graph exploration.
+
+```rust
+fn query_subgraph(&self, version: Version, root: &NodeId, depth: u32) -> Result<SubGraph>;
+fn query_paths(&self, version: Version, from: &NodeId, to: &NodeId, edge_kinds: &[EdgeKind]) -> Result<Vec<Path>>;
+fn query_ancestors(&self, version: Version, node_id: &NodeId) -> Result<Vec<Node>>;
+fn query_descendants(&self, version: Version, node_id: &NodeId, filter: Option<&NodeFilter>) -> Result<Vec<Node>>;
+fn query_dependencies(&self, version: Version, node_id: &NodeId, transitive: bool) -> Result<Vec<Node>>;
+fn query_dependents(&self, version: Version, node_id: &NodeId, transitive: bool) -> Result<Vec<Node>>;
+fn detect_cycles(&self, version: Version, edge_kind: EdgeKind) -> Result<Vec<Cycle>>;
+```
+
+### Aggregation Operations
+
+Rolling up edges for higher-level views.
+
+```rust
+fn query_aggregated_edges(
+    &self,
+    version: Version,
+    source_ancestor: &NodeId,
+    target_ancestor: &NodeId,
+    edge_kind: EdgeKind,
+) -> Result<AggregatedEdge>;
+
+fn query_component_dependencies(
+    &self,
+    version: Version,
+    component: &NodeId,
+) -> Result<Vec<AggregatedEdge>>;
+```
+
+### Conformance Operations
+
+```rust
+fn evaluate_constraints(&self, design_version: Version, analysis_version: Version) -> Result<ConformanceReport>;
+fn evaluate_constraint(&self, constraint: &Constraint, analysis_version: Version) -> Result<ConstraintResult>;
+fn compare_versions(&self, version_a: Version, version_b: Version) -> Result<VersionDiff>;
+```
+
+### Version Management
+
+```rust
+fn list_snapshots(&self) -> Result<Vec<Snapshot>>;
+fn latest_version(&self, kind: SnapshotKind) -> Result<Option<Version>>;
+fn compact(&mut self, keep_versions: &[Version]) -> Result<()>;
+```
+
+### Design Principles
+
+- **Version is explicit everywhere** — no implicit "current version". Callers decide which snapshot to query. This keeps the store stateless and makes conformance (comparing two versions) natural.
+- **Batch writes** — essential for analyzer performance.
+- **Aggregation is a store operation** — the query engine does the rollup, not the application layer.
+- **No raw query exposure** — the trait uses typed methods. Raw Datalog/SurrQL access may be added later if beneficial.
 
 ## Metadata Conventions
 
@@ -263,6 +499,17 @@ Well-known keys that analyzers should populate when available. These are **conve
     kind: String,
     provenance: String,
     metadata: Json?,
+}
+
+:create constraints {
+    id: String, version: Int  =>
+    kind: String,
+    name: String,
+    scope: String,
+    target: String?,
+    params: Json?,
+    message: String,
+    severity: String,
 }
 ```
 
