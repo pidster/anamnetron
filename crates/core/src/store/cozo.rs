@@ -195,7 +195,7 @@ impl GraphStore for CozoStore {
             .unwrap_or(0);
 
         let new_version = (max_version + 1) as Version;
-        let kind_str = serde_json::to_value(&kind)
+        let kind_str = serde_json::to_value(kind)
             .map_err(|e| StoreError::Internal(e.to_string()))?
             .as_str()
             .unwrap_or_default()
@@ -267,7 +267,7 @@ impl GraphStore for CozoStore {
     }
 
     fn latest_version(&self, kind: SnapshotKind) -> Result<Option<Version>> {
-        let kind_str = serde_json::to_value(&kind)
+        let kind_str = serde_json::to_value(kind)
             .map_err(|e| StoreError::Internal(e.to_string()))?
             .as_str()
             .unwrap_or_default()
