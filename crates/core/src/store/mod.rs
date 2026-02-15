@@ -89,4 +89,10 @@ pub trait GraphStore {
         node_id: &NodeId,
         transitive: bool,
     ) -> Result<Vec<Node>>;
+
+    /// Add a constraint to the store.
+    fn add_constraint(&mut self, version: Version, constraint: &Constraint) -> Result<()>;
+
+    /// Get all constraints for a version.
+    fn get_constraints(&self, version: Version) -> Result<Vec<Constraint>>;
 }

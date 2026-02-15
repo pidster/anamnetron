@@ -619,4 +619,69 @@ impl GraphStore for CozoStore {
         let result = self.run_query_immutable(query, params)?;
         result.rows.iter().map(|row| row_to_node(row)).collect()
     }
+
+    fn add_constraint(&mut self, version: Version, constraint: &Constraint) -> Result<()> {
+        let severity_str = enum_to_str(&constraint.severity)?;
+
+        let mut params = BTreeMap::new();
+        params.insert(
+            "id".to_string(),
+            DataValue::Str(constraint.id.clone().into()),
+        );
+        params.insert("version".to_string(), DataValue::from(version as i64));
+        params.insert(
+            "kind".to_string(),
+            DataValue::Str(constraint.kind.clone().into()),
+        );
+        params.insert(
+            "name".to_string(),
+            DataValue::Str(constraint.name.clone().into()),
+        );
+        params.insert(
+            "scope".to_string(),
+            DataValue::Str(constraint.scope.clone().into()),
+        );
+        params.insert("target".to_string(), opt_to_dv(&constraint.target));
+        params.insert("params".to_string(), json_to_dv(&constraint.params));
+        params.insert(
+            "message".to_string(),
+            DataValue::Str(constraint.message.clone().into()),
+        );
+        params.insert("severity".to_string(), DataValue::Str(severity_str.into()));
+
+        self.run_query(
+            "?[id, version, kind, name, scope, target, params, message, severity] <- [[$id, $version, $kind, $name, $scope, $target, $params, $message, $severity]]
+             :put constraints { id, version => kind, name, scope, target, params, message, severity }",
+            params,
+        )?;
+
+        Ok(())
+    }
+
+    fn get_constraints(&self, version: Version) -> Result<Vec<Constraint>> {
+        let mut params = BTreeMap::new();
+        params.insert("version".to_string(), DataValue::from(version as i64));
+
+        let result = self.run_query_immutable(
+            "?[id, kind, name, scope, target, params, message, severity] := *constraints{id, version, kind, name, scope, target, params, message, severity}, version == $version",
+            params,
+        )?;
+
+        result
+            .rows
+            .iter()
+            .map(|row| {
+                Ok(Constraint {
+                    id: req_str(&row[0]),
+                    kind: req_str(&row[1]),
+                    name: req_str(&row[2]),
+                    scope: req_str(&row[3]),
+                    target: opt_str(&row[4]),
+                    params: opt_json(&row[5]),
+                    message: req_str(&row[6]),
+                    severity: str_to_enum(&req_str(&row[7]))?,
+                })
+            })
+            .collect()
+    }
 }
