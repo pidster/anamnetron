@@ -1,0 +1,391 @@
+format: svt/v1
+kind: design
+version: 1
+metadata:
+  created_at: "2026-02-15"
+  author: "pidster"
+  description: "Software Visualizer Tool — prescriptive architecture"
+
+nodes:
+  # System level
+  - canonical_path: /svt
+    kind: system
+    sub_kind: workspace
+    name: svt
+
+    children:
+      # Service level — crates
+      - canonical_path: /svt/core
+        kind: service
+        sub_kind: crate
+        name: core
+        metadata:
+          description: "Data model, graph store trait, validation, conformance. Compiles to WASM."
+          wasm_compatible: true
+
+        children:
+          - canonical_path: /svt/core/model
+            kind: component
+            sub_kind: module
+            name: model
+            metadata:
+              description: "Core type definitions: Node, Edge, Constraint, Snapshot, enums"
+
+          - canonical_path: /svt/core/store
+            kind: component
+            sub_kind: module
+            name: store
+            metadata:
+              description: "GraphStore trait and backend implementations (CozoDB, future SurrealDB)"
+
+            children:
+              - canonical_path: /svt/core/store/trait
+                kind: unit
+                sub_kind: trait
+                name: trait
+                metadata:
+                  description: "GraphStore trait — the abstract interface for all backends"
+
+              - canonical_path: /svt/core/store/cozo
+                kind: component
+                sub_kind: module
+                name: cozo
+                metadata:
+                  description: "CozoDB implementation of GraphStore"
+
+          - canonical_path: /svt/core/validation
+            kind: component
+            sub_kind: module
+            name: validation
+            metadata:
+              description: "Graph invariant validation (acyclic contains, referential integrity)"
+
+          - canonical_path: /svt/core/conformance
+            kind: component
+            sub_kind: module
+            name: conformance
+            metadata:
+              description: "Constraint evaluation, conformance report generation"
+
+          - canonical_path: /svt/core/canonical
+            kind: component
+            sub_kind: module
+            name: canonical
+            metadata:
+              description: "Canonical path utilities: to_kebab_case, path matching, glob support"
+
+          - canonical_path: /svt/core/interchange
+            kind: component
+            sub_kind: module
+            name: interchange
+            metadata:
+              description: "Import/export: YAML and JSON serialisation, format versioning"
+
+      - canonical_path: /svt/analyzer
+        kind: service
+        sub_kind: crate
+        name: analyzer
+        metadata:
+          description: "Tree-sitter based code analysis and structure discovery"
+
+        children:
+          - canonical_path: /svt/analyzer/discovery
+            kind: component
+            sub_kind: module
+            name: discovery
+            metadata:
+              description: "Project scanning, file discovery, language detection"
+
+          - canonical_path: /svt/analyzer/languages
+            kind: component
+            sub_kind: module
+            name: languages
+            metadata:
+              description: "Language-specific analysis drivers"
+
+            children:
+              - canonical_path: /svt/analyzer/languages/rust
+                kind: component
+                sub_kind: module
+                name: rust
+                metadata:
+                  description: "Rust analyzer: tree-sitter-rust, crate/module/struct extraction"
+
+              - canonical_path: /svt/analyzer/languages/typescript
+                kind: component
+                sub_kind: module
+                name: typescript
+                metadata:
+                  description: "TypeScript analyzer: tree-sitter-typescript, package/class/function extraction"
+
+          - canonical_path: /svt/analyzer/mapping
+            kind: component
+            sub_kind: module
+            name: mapping
+            metadata:
+              description: "Language-specific canonical path mapping (to_canonical, from_canonical)"
+
+      - canonical_path: /svt/cli
+        kind: service
+        sub_kind: crate
+        name: cli
+        metadata:
+          description: "CLI entry point: analyze, check, export commands"
+
+        children:
+          - canonical_path: /svt/cli/commands
+            kind: component
+            sub_kind: module
+            name: commands
+            metadata:
+              description: "CLI command implementations"
+
+            children:
+              - canonical_path: /svt/cli/commands/analyze
+                kind: unit
+                sub_kind: function
+                name: analyze
+                metadata:
+                  description: "Run discovery mode analysis on a project"
+
+              - canonical_path: /svt/cli/commands/check
+                kind: unit
+                sub_kind: function
+                name: check
+                metadata:
+                  description: "Run conformance check (design vs analysis)"
+
+              - canonical_path: /svt/cli/commands/export
+                kind: unit
+                sub_kind: function
+                name: export
+                metadata:
+                  description: "Export graph as SVG, PNG, Mermaid, or JSON"
+
+              - canonical_path: /svt/cli/commands/import
+                kind: unit
+                sub_kind: function
+                name: import
+                metadata:
+                  description: "Import a design model or external format"
+
+      - canonical_path: /svt/server
+        kind: service
+        sub_kind: crate
+        name: server
+        metadata:
+          description: "Axum API service, serves web UI"
+
+        children:
+          - canonical_path: /svt/server/api
+            kind: component
+            sub_kind: module
+            name: api
+            metadata:
+              description: "REST API endpoints"
+
+          - canonical_path: /svt/server/static
+            kind: component
+            sub_kind: module
+            name: static
+            metadata:
+              description: "Static file serving for web UI"
+
+      # Service level — web frontend
+      - canonical_path: /svt/web
+        kind: service
+        sub_kind: package
+        name: web
+        metadata:
+          description: "Svelte frontend with Cytoscape.js and WASM core"
+
+        children:
+          - canonical_path: /svt/web/views
+            kind: component
+            sub_kind: directory
+            name: views
+            metadata:
+              description: "UI views: architecture, code structure, data flow, conformance"
+
+          - canonical_path: /svt/web/graph
+            kind: component
+            sub_kind: directory
+            name: graph
+            metadata:
+              description: "Cytoscape.js graph rendering, layout, interaction"
+
+          - canonical_path: /svt/web/wasm
+            kind: component
+            sub_kind: directory
+            name: wasm
+            metadata:
+              description: "WASM bridge to svt-core"
+
+# Non-containment edges
+edges:
+  # Dependency flow: cli/server → analyzer → core
+  - source: /svt/analyzer
+    target: /svt/core
+    kind: depends
+
+  - source: /svt/cli
+    target: /svt/core
+    kind: depends
+
+  - source: /svt/cli
+    target: /svt/analyzer
+    kind: depends
+
+  - source: /svt/server
+    target: /svt/core
+    kind: depends
+
+  - source: /svt/server
+    target: /svt/analyzer
+    kind: depends
+
+  - source: /svt/web/wasm
+    target: /svt/core
+    kind: depends
+
+  # Internal core dependencies
+  - source: /svt/core/store
+    target: /svt/core/model
+    kind: depends
+
+  - source: /svt/core/validation
+    target: /svt/core/model
+    kind: depends
+
+  - source: /svt/core/validation
+    target: /svt/core/store
+    kind: depends
+
+  - source: /svt/core/conformance
+    target: /svt/core/model
+    kind: depends
+
+  - source: /svt/core/conformance
+    target: /svt/core/store
+    kind: depends
+
+  - source: /svt/core/interchange
+    target: /svt/core/model
+    kind: depends
+
+  - source: /svt/core/canonical
+    target: /svt/core/model
+    kind: depends
+
+  # Analyzer internal dependencies
+  - source: /svt/analyzer/languages
+    target: /svt/analyzer/mapping
+    kind: depends
+
+  - source: /svt/analyzer/discovery
+    target: /svt/analyzer/languages
+    kind: depends
+
+  # Server internal dependencies
+  - source: /svt/server/api
+    target: /svt/server/static
+    kind: depends
+
+  # Data flows
+  - source: /svt/cli/commands/analyze
+    target: /svt/core/store
+    kind: data_flow
+    metadata:
+      description: "Analysis results written to graph store"
+
+  - source: /svt/server/api
+    target: /svt/web/graph
+    kind: data_flow
+    metadata:
+      description: "Graph data served to frontend via REST API"
+      protocol: http
+
+constraints:
+  # Dependency direction enforcement
+  - name: core-no-outward-deps
+    kind: must_not_depend
+    scope: /svt/core/**
+    target: /svt/analyzer/**
+    message: "Core must not depend on analyzer"
+    severity: error
+
+  - name: core-no-cli-deps
+    kind: must_not_depend
+    scope: /svt/core/**
+    target: /svt/cli/**
+    message: "Core must not depend on CLI"
+    severity: error
+
+  - name: core-no-server-deps
+    kind: must_not_depend
+    scope: /svt/core/**
+    target: /svt/server/**
+    message: "Core must not depend on server"
+    severity: error
+
+  - name: analyzer-no-cli-deps
+    kind: must_not_depend
+    scope: /svt/analyzer/**
+    target: /svt/cli/**
+    message: "Analyzer must not depend on CLI"
+    severity: error
+
+  - name: analyzer-no-server-deps
+    kind: must_not_depend
+    scope: /svt/analyzer/**
+    target: /svt/server/**
+    message: "Analyzer must not depend on server"
+    severity: error
+
+  # Boundary enforcement
+  - name: core-store-encapsulation
+    kind: boundary
+    scope: /svt/core/store/cozo/**
+    params:
+      access: scope_only
+    message: "CozoDB implementation details must not leak outside the store module"
+    severity: error
+
+  # Structural requirements
+  - name: cli-has-check-command
+    kind: must_contain
+    scope: /svt/cli/commands
+    params:
+      child_pattern: check
+      child_kind: unit
+    message: "CLI must provide a conformance check command"
+    severity: error
+
+  - name: cli-has-analyze-command
+    kind: must_contain
+    scope: /svt/cli/commands
+    params:
+      child_pattern: analyze
+      child_kind: unit
+    message: "CLI must provide an analyze command"
+    severity: error
+
+  - name: cli-has-export-command
+    kind: must_contain
+    scope: /svt/cli/commands
+    params:
+      child_pattern: export
+      child_kind: unit
+    message: "CLI must provide an export command"
+    severity: error
+
+  # Coupling limits
+  - name: core-model-fan-in
+    kind: max_fan_in
+    scope: /svt/core/model
+    params:
+      edge_kind: depends
+      limit: 20
+      level: component
+    message: "Core model is a foundational dependency but fan-in should remain reasonable"
+    severity: warning
