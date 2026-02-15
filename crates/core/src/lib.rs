@@ -18,6 +18,14 @@ pub mod model;
 #[cfg(feature = "store")]
 pub mod store;
 
+/// Interchange store operations: load and export.
+#[cfg(feature = "store")]
+pub mod interchange_store;
+
+/// Conformance evaluation: constraint checking and report generation.
+#[cfg(feature = "store")]
+pub mod conformance;
+
 /// Conformance and validation rules.
 #[cfg(feature = "store")]
 pub mod validation;
