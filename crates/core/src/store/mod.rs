@@ -37,4 +37,19 @@ pub trait GraphStore {
 
     /// Get a node by its canonical path within a version.
     fn get_node_by_path(&self, version: Version, canonical_path: &str) -> Result<Option<Node>>;
+
+    /// Add a single edge to the store.
+    fn add_edge(&mut self, version: Version, edge: &Edge) -> Result<()>;
+
+    /// Add multiple edges in a single batch operation.
+    fn add_edges_batch(&mut self, version: Version, edges: &[Edge]) -> Result<()>;
+
+    /// Get edges connected to a node, filtered by direction and optionally by kind.
+    fn get_edges(
+        &self,
+        version: Version,
+        node_id: &NodeId,
+        direction: Direction,
+        kind: Option<EdgeKind>,
+    ) -> Result<Vec<Edge>>;
 }

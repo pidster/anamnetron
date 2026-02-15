@@ -161,6 +161,20 @@ fn row_to_node(row: &[DataValue]) -> Result<Node> {
     })
 }
 
+/// Parse a row from the edges relation into an Edge struct.
+///
+/// Expected column order: id, source, target, kind, provenance, metadata
+fn row_to_edge(row: &[DataValue]) -> Result<Edge> {
+    Ok(Edge {
+        id: req_str(&row[0]),
+        source: req_str(&row[1]),
+        target: req_str(&row[2]),
+        kind: str_to_enum(&req_str(&row[3]))?,
+        provenance: str_to_enum(&req_str(&row[4]))?,
+        metadata: opt_json(&row[5]),
+    })
+}
+
 impl GraphStore for CozoStore {
     fn create_snapshot(&mut self, kind: SnapshotKind, commit_ref: Option<&str>) -> Result<Version> {
         // Get the next version number by finding the current max
@@ -350,5 +364,81 @@ impl GraphStore for CozoStore {
             Some(row) => Ok(Some(row_to_node(row)?)),
             None => Ok(None),
         }
+    }
+
+    fn add_edge(&mut self, version: Version, edge: &Edge) -> Result<()> {
+        let kind_str = enum_to_str(&edge.kind)?;
+        let prov_str = enum_to_str(&edge.provenance)?;
+
+        let mut params = BTreeMap::new();
+        params.insert("id".to_string(), DataValue::Str(edge.id.clone().into()));
+        params.insert("version".to_string(), DataValue::from(version as i64));
+        params.insert(
+            "source".to_string(),
+            DataValue::Str(edge.source.clone().into()),
+        );
+        params.insert(
+            "target".to_string(),
+            DataValue::Str(edge.target.clone().into()),
+        );
+        params.insert("kind".to_string(), DataValue::Str(kind_str.into()));
+        params.insert("provenance".to_string(), DataValue::Str(prov_str.into()));
+        params.insert("metadata".to_string(), json_to_dv(&edge.metadata));
+
+        self.run_query(
+            "?[id, version, source, target, kind, provenance, metadata] <- [[$id, $version, $source, $target, $kind, $provenance, $metadata]]
+             :put edges { id, version => source, target, kind, provenance, metadata }",
+            params,
+        )?;
+
+        Ok(())
+    }
+
+    fn add_edges_batch(&mut self, version: Version, edges: &[Edge]) -> Result<()> {
+        for edge in edges {
+            self.add_edge(version, edge)?;
+        }
+        Ok(())
+    }
+
+    fn get_edges(
+        &self,
+        version: Version,
+        node_id: &NodeId,
+        direction: Direction,
+        kind: Option<EdgeKind>,
+    ) -> Result<Vec<Edge>> {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "node_id".to_string(),
+            DataValue::Str(node_id.clone().into()),
+        );
+        params.insert("version".to_string(), DataValue::from(version as i64));
+
+        let kind_filter = match &kind {
+            Some(k) => {
+                let kind_str = enum_to_str(k)?;
+                params.insert("kind_filter".to_string(), DataValue::Str(kind_str.into()));
+                ", kind == $kind_filter"
+            }
+            None => "",
+        };
+
+        let query = match direction {
+            Direction::Outgoing => format!(
+                "?[id, source, target, kind, provenance, metadata] := *edges{{id, version, source, target, kind, provenance, metadata}}, version == $version, source == $node_id{kind_filter}"
+            ),
+            Direction::Incoming => format!(
+                "?[id, source, target, kind, provenance, metadata] := *edges{{id, version, source, target, kind, provenance, metadata}}, version == $version, target == $node_id{kind_filter}"
+            ),
+            Direction::Both => format!(
+                "?[id, source, target, kind, provenance, metadata] := *edges{{id, version, source, target, kind, provenance, metadata}}, version == $version, source == $node_id{kind_filter}
+                 ?[id, source, target, kind, provenance, metadata] := *edges{{id, version, source, target, kind, provenance, metadata}}, version == $version, target == $node_id{kind_filter}"
+            ),
+        };
+
+        let result = self.run_query_immutable(&query, params)?;
+
+        result.rows.iter().map(|row| row_to_edge(row)).collect()
     }
 }
