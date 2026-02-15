@@ -1,7 +1,9 @@
 //! Graph store trait and backend implementations.
 
+pub mod cozo;
 mod error;
 
+pub use cozo::CozoStore;
 pub use error::StoreError;
 
 use crate::model::*;
