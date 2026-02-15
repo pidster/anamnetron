@@ -31,6 +31,8 @@ pub struct Violation {
     pub edge_id: Option<String>,
     /// Kind of the violating edge.
     pub edge_kind: Option<EdgeKind>,
+    /// Source reference (file path, line number, or URL) from the source node.
+    pub source_ref: Option<String>,
 }
 
 /// Result of evaluating a single constraint.
@@ -124,6 +126,13 @@ pub fn evaluate_constraint_must_not_depend(
         }
     }
 
+    // Build ID→source_ref mapping for violation reporting
+    let mut id_to_source_ref: std::collections::HashMap<&str, Option<&str>> =
+        std::collections::HashMap::new();
+    for node in &all_nodes {
+        id_to_source_ref.insert(&node.id, node.source_ref.as_deref());
+    }
+
     // Find forbidden edges: scope node depends on target node
     let mut violations = Vec::new();
     for edge in &depends_edges {
@@ -141,6 +150,11 @@ pub fn evaluate_constraint_must_not_depend(
                 ),
                 edge_id: Some(edge.id.clone()),
                 edge_kind: Some(edge.kind),
+                source_ref: id_to_source_ref
+                    .get(edge.source.as_str())
+                    .copied()
+                    .flatten()
+                    .map(|s| s.to_string()),
             });
         }
     }
@@ -191,6 +205,7 @@ pub fn evaluate_design(store: &impl GraphStore, version: Version) -> Result<Conf
                 target_path: c.node_ids.last().cloned(),
                 edge_id: None,
                 edge_kind: Some(EdgeKind::Contains),
+                source_ref: None,
             })
             .collect(),
     });
@@ -221,6 +236,7 @@ pub fn evaluate_design(store: &impl GraphStore, version: Version) -> Result<Conf
                 target_path: None,
                 edge_id: Some(e.edge_id.clone()),
                 edge_kind: None,
+                source_ref: None,
             })
             .collect(),
     });
