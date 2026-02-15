@@ -1,6 +1,6 @@
 //! Graph store trait and backend implementations.
 
-pub mod cozo;
+mod cozo;
 mod error;
 
 pub use cozo::CozoStore;
