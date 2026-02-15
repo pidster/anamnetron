@@ -1,3 +1,4 @@
+use proptest::prelude::*;
 use svt_core::model::*;
 use svt_core::store::{CozoStore, GraphStore};
 
@@ -263,4 +264,41 @@ fn five_level_hierarchy_descendants_at_each_level() {
             .len(),
         1
     );
+}
+
+proptest! {
+    #[test]
+    fn ancestor_chain_has_no_duplicates(depth in 2usize..8) {
+        let mut store = CozoStore::new_in_memory().unwrap();
+        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+
+        // Build a chain of `depth` nodes connected by Contains edges.
+        let ids: Vec<String> = (0..depth).map(|i| format!("n{i}")).collect();
+        let paths: Vec<String> = (0..depth).map(|i| {
+            // Build nested paths like /a, /a/b, /a/b/c, ...
+            let segments: String = (0..=i).map(|j| format!("/{}", (b'a' + j as u8) as char)).collect();
+            segments
+        }).collect();
+
+        for i in 0..depth {
+            store.add_node(v, &make_node(&ids[i], &paths[i], NodeKind::Component, "module")).unwrap();
+        }
+        for i in 0..depth - 1 {
+            store.add_edge(v, &make_contains(&format!("c{i}"), &ids[i], &ids[i + 1])).unwrap();
+        }
+
+        // Query ancestors of the deepest node
+        let deepest = &ids[depth - 1];
+        let ancestors = store.query_ancestors(v, &deepest.to_string()).unwrap();
+        let ancestor_ids: Vec<&str> = ancestors.iter().map(|n| n.id.as_str()).collect();
+
+        // No duplicates
+        let mut seen = std::collections::HashSet::new();
+        for id in &ancestor_ids {
+            prop_assert!(seen.insert(*id), "duplicate ancestor: {}", id);
+        }
+
+        // Should have depth - 1 ancestors (all nodes except itself)
+        prop_assert_eq!(ancestors.len(), depth - 1);
+    }
 }

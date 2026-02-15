@@ -1,3 +1,4 @@
+use proptest::prelude::*;
 use svt_core::model::*;
 use svt_core::store::{CozoStore, GraphStore};
 
@@ -100,4 +101,31 @@ fn node_optional_fields_survive_round_trip() {
     assert_eq!(back.language.as_deref(), Some("rust"));
     assert_eq!(back.source_ref.as_deref(), Some("src/lib.rs:1"));
     assert!(back.metadata.is_some());
+}
+
+proptest! {
+    #[test]
+    fn n_nodes_added_then_queried_returns_exactly_n(n in 1usize..50) {
+        let mut store = CozoStore::new_in_memory().unwrap();
+        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+
+        for i in 0..n {
+            let node = make_node(
+                &format!("node{i}"),
+                &format!("/svc/comp{i}"),
+                NodeKind::Component,
+                "module",
+            );
+            store.add_node(v, &node).unwrap();
+        }
+
+        // Verify each node can be found by path
+        for i in 0..n {
+            let path = format!("/svc/comp{i}");
+            let result = store.get_node_by_path(v, &path).unwrap();
+            prop_assert!(result.is_some(), "node at path {} not found", path);
+            let node = result.unwrap();
+            prop_assert_eq!(&node.id, &format!("node{i}"));
+        }
+    }
 }

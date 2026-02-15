@@ -1,3 +1,4 @@
+use proptest::prelude::*;
 use svt_core::model::*;
 use svt_core::store::{CozoStore, GraphStore};
 
@@ -139,5 +140,49 @@ fn direct_dependencies_are_subset_of_transitive() {
             "direct dep {} not in transitive",
             node.id
         );
+    }
+}
+
+proptest! {
+    #[test]
+    fn direct_deps_are_subset_of_transitive_deps(node_count in 3usize..7, edges in proptest::collection::vec((1usize..6, 1usize..6), 1..10)) {
+        let mut store = CozoStore::new_in_memory().unwrap();
+        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+
+        // Create nodes
+        for i in 0..node_count {
+            store.add_node(v, &make_node(
+                &format!("n{i}"),
+                &format!("/svc/n{i}"),
+                NodeKind::Component,
+            )).unwrap();
+        }
+
+        // Add random Depends edges (DAG-ish: only add i -> j where i < j to avoid cycles in test setup)
+        let mut edge_idx = 0;
+        for (src, tgt) in &edges {
+            let src = src % node_count;
+            let tgt = tgt % node_count;
+            if src < tgt {
+                let _ = store.add_edge(v, &make_depends(&format!("e{edge_idx}"), &format!("n{src}"), &format!("n{tgt}")));
+                edge_idx += 1;
+            }
+        }
+
+        // For every node, verify direct deps are a subset of transitive deps
+        for i in 0..node_count {
+            let node_id = format!("n{i}");
+            let direct = store.query_dependencies(v, &node_id, false).unwrap();
+            let transitive = store.query_dependencies(v, &node_id, true).unwrap();
+            let transitive_ids: std::collections::HashSet<&str> = transitive.iter().map(|n| n.id.as_str()).collect();
+            for dep in &direct {
+                prop_assert!(
+                    transitive_ids.contains(dep.id.as_str()),
+                    "direct dep {} of {} not found in transitive deps",
+                    dep.id,
+                    node_id
+                );
+            }
+        }
     }
 }

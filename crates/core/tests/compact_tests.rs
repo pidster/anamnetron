@@ -1,3 +1,4 @@
+use proptest::prelude::*;
 use svt_core::model::*;
 use svt_core::store::{CozoStore, GraphStore};
 
@@ -116,4 +117,49 @@ fn compact_preserves_multiple_kept_versions() {
 
     let snapshots = store.list_snapshots().unwrap();
     assert_eq!(snapshots.len(), 2);
+}
+
+proptest! {
+    #[test]
+    fn compact_preserves_kept_versions_and_removes_the_rest(total in 2usize..5) {
+        let mut store = CozoStore::new_in_memory().unwrap();
+
+        // Create `total` versions, each with a node
+        let mut versions = Vec::new();
+        for i in 0..total {
+            let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+            store.add_node(v, &make_node(&format!("n{i}"), &format!("/svc/v{i}"))).unwrap();
+            versions.push(v);
+        }
+
+        // Use a deterministic keep mask based on the version index (keep odd-indexed versions)
+        // This avoids nested strategies while still exercising different subsets.
+        let keep: Vec<Version> = versions.iter().enumerate()
+            .filter(|(i, _)| i % 2 == 0)
+            .map(|(_, &v)| v)
+            .collect();
+        let remove: Vec<(usize, Version)> = versions.iter().enumerate()
+            .filter(|(i, _)| i % 2 != 0)
+            .map(|(i, &v)| (i, v))
+            .collect();
+
+        store.compact(&keep).unwrap();
+
+        // Kept versions should still have their data
+        for (idx, &v) in keep.iter().enumerate() {
+            let original_idx = idx * 2; // even indices
+            let result = store.get_node(v, &format!("n{original_idx}").to_string()).unwrap();
+            prop_assert!(result.is_some(), "kept version {} should still have node n{}", v, original_idx);
+        }
+
+        // Removed versions should have no data
+        for (original_idx, v) in &remove {
+            let result = store.get_node(*v, &format!("n{original_idx}").to_string()).unwrap();
+            prop_assert!(result.is_none(), "removed version {} should not have node n{}", v, original_idx);
+        }
+
+        // Snapshot count should match kept versions
+        let snapshots = store.list_snapshots().unwrap();
+        prop_assert_eq!(snapshots.len(), keep.len());
+    }
 }
