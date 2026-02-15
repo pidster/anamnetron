@@ -9,7 +9,7 @@
 pub mod model;
 
 /// CozoDB graph store operations.
-pub mod store {}
+pub mod store;
 
 /// Conformance and validation rules.
 pub mod validation {}
