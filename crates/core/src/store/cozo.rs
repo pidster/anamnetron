@@ -107,10 +107,33 @@ fn opt_str(val: &DataValue) -> Option<String> {
 }
 
 /// Convert a required String field from a DataValue.
-fn req_str(val: &DataValue) -> String {
+///
+/// Returns an error if the value is not a string, rather than silently returning
+/// an empty string.
+fn req_str(val: &DataValue) -> Result<String> {
     match val {
-        DataValue::Str(s) => s.to_string(),
-        _ => String::new(),
+        DataValue::Str(s) => Ok(s.to_string()),
+        _ => Err(StoreError::Internal(format!(
+            "expected string, got: {val:?}"
+        ))),
+    }
+}
+
+/// Convert a `DataValue` to a `serde_json::Value`.
+///
+/// Used by [`opt_json`] to recursively convert CozoDB values to JSON.
+fn datavalue_to_json(val: &DataValue) -> serde_json::Value {
+    match val {
+        DataValue::Null => serde_json::Value::Null,
+        DataValue::Bool(b) => serde_json::Value::Bool(*b),
+        DataValue::Num(Num::Int(i)) => serde_json::json!(*i),
+        DataValue::Num(Num::Float(f)) => serde_json::json!(*f),
+        DataValue::Str(s) => serde_json::Value::String(s.to_string()),
+        DataValue::List(items) => {
+            serde_json::Value::Array(items.iter().map(datavalue_to_json).collect())
+        }
+        DataValue::Json(j) => j.0.clone(),
+        other => serde_json::Value::String(format!("{other:?}")),
     }
 }
 
@@ -118,11 +141,7 @@ fn req_str(val: &DataValue) -> String {
 fn opt_json(val: &DataValue) -> Option<serde_json::Value> {
     match val {
         DataValue::Null => None,
-        DataValue::List(items) => {
-            serde_json::to_value(items.iter().map(|i| format!("{i:?}")).collect::<Vec<_>>()).ok()
-        }
-        DataValue::Json(j) => Some(j.0.clone()),
-        _ => Some(serde_json::Value::String(format!("{val:?}"))),
+        _ => Some(datavalue_to_json(val)),
     }
 }
 
@@ -148,14 +167,14 @@ fn json_to_dv(val: &Option<serde_json::Value>) -> DataValue {
 /// name, language, provenance, source_ref, metadata
 fn row_to_node(row: &[DataValue]) -> Result<Node> {
     Ok(Node {
-        id: req_str(&row[0]),
-        canonical_path: req_str(&row[1]),
+        id: req_str(&row[0])?,
+        canonical_path: req_str(&row[1])?,
         qualified_name: opt_str(&row[2]),
-        kind: str_to_enum(&req_str(&row[3]))?,
-        sub_kind: req_str(&row[4]),
-        name: req_str(&row[5]),
+        kind: str_to_enum(&req_str(&row[3])?)?,
+        sub_kind: req_str(&row[4])?,
+        name: req_str(&row[5])?,
         language: opt_str(&row[6]),
-        provenance: str_to_enum(&req_str(&row[7]))?,
+        provenance: str_to_enum(&req_str(&row[7])?)?,
         source_ref: opt_str(&row[8]),
         metadata: opt_json(&row[9]),
     })
@@ -166,11 +185,11 @@ fn row_to_node(row: &[DataValue]) -> Result<Node> {
 /// Expected column order: id, source, target, kind, provenance, metadata
 fn row_to_edge(row: &[DataValue]) -> Result<Edge> {
     Ok(Edge {
-        id: req_str(&row[0]),
-        source: req_str(&row[1]),
-        target: req_str(&row[2]),
-        kind: str_to_enum(&req_str(&row[3]))?,
-        provenance: str_to_enum(&req_str(&row[4]))?,
+        id: req_str(&row[0])?,
+        source: req_str(&row[1])?,
+        target: req_str(&row[2])?,
+        kind: str_to_enum(&req_str(&row[3])?)?,
+        provenance: str_to_enum(&req_str(&row[4])?)?,
         metadata: opt_json(&row[5]),
     })
 }
@@ -241,26 +260,10 @@ impl GraphStore for CozoStore {
                         DataValue::Num(Num::Int(i)) => *i as Version,
                         _ => 0,
                     },
-                    kind: serde_json::from_str(&format!(
-                        "\"{}\"",
-                        match &row[1] {
-                            DataValue::Str(s) => s.as_ref(),
-                            _ => "",
-                        }
-                    ))
-                    .map_err(|e| StoreError::Internal(e.to_string()))?,
-                    commit_ref: match &row[2] {
-                        DataValue::Str(s) => Some(s.to_string()),
-                        _ => None,
-                    },
-                    created_at: match &row[3] {
-                        DataValue::Str(s) => s.to_string(),
-                        _ => String::new(),
-                    },
-                    metadata: match &row[4] {
-                        DataValue::Null => None,
-                        v => serde_json::to_value(format!("{v:?}")).ok(),
-                    },
+                    kind: str_to_enum(&req_str(&row[1])?)?,
+                    commit_ref: opt_str(&row[2]),
+                    created_at: req_str(&row[3])?,
+                    metadata: opt_json(&row[4]),
                 })
             })
             .collect()
@@ -325,9 +328,38 @@ impl GraphStore for CozoStore {
     }
 
     fn add_nodes_batch(&mut self, version: Version, nodes: &[Node]) -> Result<()> {
-        for node in nodes {
-            self.add_node(version, node)?;
+        if nodes.is_empty() {
+            return Ok(());
         }
+
+        let mut rows: Vec<DataValue> = Vec::with_capacity(nodes.len());
+        for node in nodes {
+            let kind_str = enum_to_str(&node.kind)?;
+            let prov_str = enum_to_str(&node.provenance)?;
+            rows.push(DataValue::List(vec![
+                DataValue::Str(node.id.clone().into()),
+                DataValue::from(version as i64),
+                DataValue::Str(node.canonical_path.clone().into()),
+                opt_to_dv(&node.qualified_name),
+                DataValue::Str(kind_str.into()),
+                DataValue::Str(node.sub_kind.clone().into()),
+                DataValue::Str(node.name.clone().into()),
+                opt_to_dv(&node.language),
+                DataValue::Str(prov_str.into()),
+                opt_to_dv(&node.source_ref),
+                json_to_dv(&node.metadata),
+            ]));
+        }
+
+        let mut params = BTreeMap::new();
+        params.insert("rows".to_string(), DataValue::List(rows));
+
+        self.run_query(
+            "?[id, version, canonical_path, qualified_name, kind, sub_kind, name, language, provenance, source_ref, metadata] <- $rows
+             :put nodes { id, version => canonical_path, qualified_name, kind, sub_kind, name, language, provenance, source_ref, metadata }",
+            params,
+        )?;
+
         Ok(())
     }
 
@@ -395,9 +427,34 @@ impl GraphStore for CozoStore {
     }
 
     fn add_edges_batch(&mut self, version: Version, edges: &[Edge]) -> Result<()> {
-        for edge in edges {
-            self.add_edge(version, edge)?;
+        if edges.is_empty() {
+            return Ok(());
         }
+
+        let mut rows: Vec<DataValue> = Vec::with_capacity(edges.len());
+        for edge in edges {
+            let kind_str = enum_to_str(&edge.kind)?;
+            let prov_str = enum_to_str(&edge.provenance)?;
+            rows.push(DataValue::List(vec![
+                DataValue::Str(edge.id.clone().into()),
+                DataValue::from(version as i64),
+                DataValue::Str(edge.source.clone().into()),
+                DataValue::Str(edge.target.clone().into()),
+                DataValue::Str(kind_str.into()),
+                DataValue::Str(prov_str.into()),
+                json_to_dv(&edge.metadata),
+            ]));
+        }
+
+        let mut params = BTreeMap::new();
+        params.insert("rows".to_string(), DataValue::List(rows));
+
+        self.run_query(
+            "?[id, version, source, target, kind, provenance, metadata] <- $rows
+             :put edges { id, version => source, target, kind, provenance, metadata }",
+            params,
+        )?;
+
         Ok(())
     }
 
@@ -672,14 +729,14 @@ impl GraphStore for CozoStore {
             .iter()
             .map(|row| {
                 Ok(Constraint {
-                    id: req_str(&row[0]),
-                    kind: req_str(&row[1]),
-                    name: req_str(&row[2]),
-                    scope: req_str(&row[3]),
+                    id: req_str(&row[0])?,
+                    kind: req_str(&row[1])?,
+                    name: req_str(&row[2])?,
+                    scope: req_str(&row[3])?,
                     target: opt_str(&row[4]),
                     params: opt_json(&row[5]),
-                    message: req_str(&row[6]),
-                    severity: str_to_enum(&req_str(&row[7]))?,
+                    message: req_str(&row[6])?,
+                    severity: str_to_enum(&req_str(&row[7])?)?,
                 })
             })
             .collect()
