@@ -63,7 +63,9 @@ pub fn validate_contains_acyclic(store: &impl GraphStore, version: Version) -> R
                     // Found a cycle: extract the cycle from path
                     // Safety: child is guaranteed to be in path because it is in the gray set,
                     // and all gray nodes are on the current DFS path.
-                    let cycle_start = path.iter().position(|&n| n == child.as_str())
+                    let cycle_start = path
+                        .iter()
+                        .position(|&n| n == child.as_str())
                         .expect("gray node must be on current DFS path");
                     let cycle_nodes: Vec<NodeId> =
                         path[cycle_start..].iter().map(|s| s.to_string()).collect();
@@ -100,40 +102,43 @@ pub fn validate_contains_acyclic(store: &impl GraphStore, version: Version) -> R
 
 /// Check that all edge source/target references point to existing nodes.
 ///
-/// Queries all edges and verifies that both source and target node IDs
-/// exist in the store for the given version.
+/// Fetches all edges in a single query, collects all unique referenced node IDs,
+/// then checks each unique ID once. This is O(1 + U) store queries where U is
+/// the number of unique node IDs, rather than O(7 + 2E) in the naive approach.
 pub fn validate_referential_integrity(
     store: &impl GraphStore,
     version: Version,
 ) -> Result<Vec<IntegrityError>> {
+    let all_edges = store.get_all_edges(version, None)?;
+
+    // Collect all unique node IDs referenced by edges
+    let referenced_ids: HashSet<&str> = all_edges
+        .iter()
+        .flat_map(|e| [e.source.as_str(), e.target.as_str()])
+        .collect();
+
+    // Check each unique ID once, building a set of missing IDs
+    let mut missing: HashSet<&str> = HashSet::new();
+    for id in &referenced_ids {
+        if store.get_node(version, &id.to_string())?.is_none() {
+            missing.insert(id);
+        }
+    }
+
+    // Build error list from edges that reference missing nodes
     let mut errors = Vec::new();
-
-    // Get all edges of all kinds
-    let all_edge_kinds = [
-        EdgeKind::Contains,
-        EdgeKind::Depends,
-        EdgeKind::Calls,
-        EdgeKind::Implements,
-        EdgeKind::Extends,
-        EdgeKind::DataFlow,
-        EdgeKind::Exports,
-    ];
-
-    for kind in all_edge_kinds {
-        let edges = store.get_all_edges(version, Some(kind))?;
-        for edge in &edges {
-            if store.get_node(version, &edge.source)?.is_none() {
-                errors.push(IntegrityError {
-                    edge_id: edge.id.clone(),
-                    missing_node_id: edge.source.clone(),
-                });
-            }
-            if store.get_node(version, &edge.target)?.is_none() {
-                errors.push(IntegrityError {
-                    edge_id: edge.id.clone(),
-                    missing_node_id: edge.target.clone(),
-                });
-            }
+    for edge in &all_edges {
+        if missing.contains(edge.source.as_str()) {
+            errors.push(IntegrityError {
+                edge_id: edge.id.clone(),
+                missing_node_id: edge.source.clone(),
+            });
+        }
+        if missing.contains(edge.target.as_str()) {
+            errors.push(IntegrityError {
+                edge_id: edge.id.clone(),
+                missing_node_id: edge.target.clone(),
+            });
         }
     }
 
