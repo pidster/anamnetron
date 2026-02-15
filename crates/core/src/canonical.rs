@@ -90,9 +90,17 @@ pub fn path_name(path: &str) -> &str {
 /// Check whether a canonical path matches a glob pattern.
 ///
 /// `*` matches one segment, `**` matches any depth.
+/// A trailing `/**` also matches the base path itself (e.g., `/app/core/**` matches `/app/core`).
 #[must_use]
 pub fn canonical_path_matches(path: &str, pattern: &str) -> bool {
-    glob_match::glob_match(pattern, path)
+    if glob_match::glob_match(pattern, path) {
+        return true;
+    }
+    // When pattern ends with /**, also match the base path itself
+    if let Some(base) = pattern.strip_suffix("/**") {
+        return path == base;
+    }
+    false
 }
 
 #[cfg(test)]
@@ -230,6 +238,11 @@ mod tests {
     #[test]
     fn globstar_matches_immediate_child() {
         assert!(canonical_path_matches("/svt/core", "/svt/**"));
+    }
+
+    #[test]
+    fn globstar_matches_base_path_itself() {
+        assert!(canonical_path_matches("/svt/core", "/svt/core/**"));
     }
 
     #[test]
