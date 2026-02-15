@@ -86,6 +86,14 @@ pub fn path_name(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
+/// Check whether a canonical path matches a glob pattern.
+///
+/// `*` matches one segment, `**` matches any depth.
+#[must_use]
+pub fn canonical_path_matches(path: &str, pattern: &str) -> bool {
+    glob_match::glob_match(pattern, path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,5 +197,47 @@ mod tests {
     #[test]
     fn name_of_root_level_path() {
         assert_eq!(path_name("/a"), "a");
+    }
+
+    // --- canonical_path_matches ---
+
+    #[test]
+    fn matches_exact_path() {
+        assert!(canonical_path_matches("/svt/core", "/svt/core"));
+    }
+
+    #[test]
+    fn matches_star_one_segment() {
+        assert!(canonical_path_matches("/svt/core/model", "/svt/*/model"));
+    }
+
+    #[test]
+    fn star_does_not_match_multiple_segments() {
+        assert!(!canonical_path_matches("/svt/core/store/cozo", "/svt/*/cozo"));
+    }
+
+    #[test]
+    fn matches_globstar_any_depth() {
+        assert!(canonical_path_matches("/svt/core/model", "/svt/**"));
+    }
+
+    #[test]
+    fn globstar_matches_deeply_nested() {
+        assert!(canonical_path_matches("/svt/core/store/cozo", "/svt/core/**"));
+    }
+
+    #[test]
+    fn globstar_matches_immediate_child() {
+        assert!(canonical_path_matches("/svt/core", "/svt/**"));
+    }
+
+    #[test]
+    fn no_match_different_path() {
+        assert!(!canonical_path_matches("/svt/analyzer", "/svt/core/**"));
+    }
+
+    #[test]
+    fn root_pattern_matches_root() {
+        assert!(canonical_path_matches("/svt", "/svt"));
     }
 }
