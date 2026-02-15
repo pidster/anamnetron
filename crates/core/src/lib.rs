@@ -5,6 +5,9 @@
 
 #![warn(missing_docs)]
 
+/// Canonical path utilities: kebab-case conversion, glob matching, path validation.
+pub mod canonical;
+
 /// Graph data model and schema definitions.
 pub mod model;
 
