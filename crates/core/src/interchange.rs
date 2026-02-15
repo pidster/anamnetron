@@ -112,6 +112,61 @@ pub struct InterchangeConstraint {
     pub severity: Option<Severity>,
 }
 
+/// Parse a YAML string into an interchange document.
+///
+/// Checks the format version and flattens nested children into
+/// explicit nodes and `Contains` edges.
+pub fn parse_yaml(input: &str) -> Result<InterchangeDocument, InterchangeError> {
+    let mut doc: InterchangeDocument =
+        serde_yaml::from_str(input).map_err(|e| InterchangeError::Parse(e.to_string()))?;
+
+    if doc.format != "svt/v1" {
+        return Err(InterchangeError::UnsupportedFormat(doc.format));
+    }
+
+    // Flatten nested children (generates Contains edges)
+    let (flat_nodes, contains_edges) = flatten_nodes(&doc.nodes);
+    doc.nodes = flat_nodes;
+    doc.edges.extend(contains_edges);
+
+    Ok(doc)
+}
+
+/// Recursively flatten nested children into a flat node list and Contains edges.
+fn flatten_nodes(nodes: &[InterchangeNode]) -> (Vec<InterchangeNode>, Vec<InterchangeEdge>) {
+    let mut flat = Vec::new();
+    let mut edges = Vec::new();
+
+    fn recurse(
+        node: &InterchangeNode,
+        flat: &mut Vec<InterchangeNode>,
+        edges: &mut Vec<InterchangeEdge>,
+    ) {
+        // Add this node without children
+        let mut flat_node = node.clone();
+        flat_node.children = None;
+        flat.push(flat_node);
+
+        if let Some(children) = &node.children {
+            for child in children {
+                edges.push(InterchangeEdge {
+                    source: node.canonical_path.clone(),
+                    target: child.canonical_path.clone(),
+                    kind: EdgeKind::Contains,
+                    metadata: None,
+                });
+                recurse(child, flat, edges);
+            }
+        }
+    }
+
+    for node in nodes {
+        recurse(node, &mut flat, &mut edges);
+    }
+
+    (flat, edges)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,6 +207,44 @@ kind: depends
         let edge: InterchangeEdge = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(edge.source, "/svt/cli");
         assert_eq!(edge.kind, EdgeKind::Depends);
+    }
+
+    #[test]
+    fn parse_yaml_flat_document() {
+        let yaml = r#"
+format: svt/v1
+kind: design
+nodes:
+  - canonical_path: /app
+    kind: system
+    sub_kind: workspace
+    name: app
+  - canonical_path: /app/api
+    kind: component
+    sub_kind: module
+    name: api
+edges:
+  - source: /app/api
+    target: /app
+    kind: contains
+constraints: []
+"#;
+        let doc = parse_yaml(yaml).unwrap();
+        assert_eq!(doc.format, "svt/v1");
+        assert_eq!(doc.kind, SnapshotKind::Design);
+        assert_eq!(doc.nodes.len(), 2);
+        assert_eq!(doc.edges.len(), 1);
+    }
+
+    #[test]
+    fn parse_yaml_rejects_unknown_format() {
+        let yaml = r#"
+format: svt/v99
+kind: design
+nodes: []
+"#;
+        let err = parse_yaml(yaml).unwrap_err();
+        assert!(err.to_string().contains("svt/v99"));
     }
 
     #[test]
