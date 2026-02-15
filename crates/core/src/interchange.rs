@@ -167,6 +167,67 @@ fn flatten_nodes(nodes: &[InterchangeNode]) -> (Vec<InterchangeNode>, Vec<Interc
     (flat, edges)
 }
 
+/// Parse a JSON string into an interchange document (flat form only).
+pub fn parse_json(input: &str) -> Result<InterchangeDocument, InterchangeError> {
+    let doc: InterchangeDocument =
+        serde_json::from_str(input).map_err(|e| InterchangeError::Parse(e.to_string()))?;
+
+    if doc.format != "svt/v1" {
+        return Err(InterchangeError::UnsupportedFormat(doc.format));
+    }
+
+    Ok(doc)
+}
+
+/// Validate a parsed interchange document.
+///
+/// Returns warnings for non-fatal issues. Returns `Err` for fatal problems
+/// like duplicate paths or invalid canonical paths.
+pub fn validate_document(
+    doc: &InterchangeDocument,
+) -> Result<Vec<ValidationWarning>, InterchangeError> {
+    use std::collections::HashSet;
+
+    let mut warnings = Vec::new();
+    let mut seen_paths = HashSet::new();
+
+    for node in &doc.nodes {
+        // Check for valid canonical paths
+        if let Err(msg) = crate::canonical::validate_canonical_path(&node.canonical_path) {
+            return Err(InterchangeError::Validation(format!(
+                "invalid canonical path '{}': {}",
+                node.canonical_path, msg
+            )));
+        }
+
+        // Check for duplicates
+        if !seen_paths.insert(&node.canonical_path) {
+            return Err(InterchangeError::Validation(format!(
+                "duplicate canonical path: {}",
+                node.canonical_path
+            )));
+        }
+    }
+
+    // Check edge references
+    for edge in &doc.edges {
+        if !seen_paths.contains(&edge.source) {
+            warnings.push(ValidationWarning {
+                path: edge.source.clone(),
+                message: format!("edge source '{}' not found in nodes", edge.source),
+            });
+        }
+        if !seen_paths.contains(&edge.target) {
+            warnings.push(ValidationWarning {
+                path: edge.target.clone(),
+                message: format!("edge target '{}' not found in nodes", edge.target),
+            });
+        }
+    }
+
+    Ok(warnings)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,5 +375,126 @@ severity: error
 "#;
         let c: InterchangeConstraint = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(c.severity, Some(Severity::Error));
+    }
+
+    #[test]
+    fn parse_json_flat_document() {
+        let json = r#"{
+            "format": "svt/v1",
+            "kind": "design",
+            "nodes": [
+                {"canonical_path": "/app", "kind": "system", "sub_kind": "workspace", "name": "app"}
+            ],
+            "edges": [],
+            "constraints": []
+        }"#;
+        let doc = parse_json(json).unwrap();
+        assert_eq!(doc.nodes.len(), 1);
+        assert_eq!(doc.kind, SnapshotKind::Design);
+    }
+
+    #[test]
+    fn parse_json_rejects_unknown_format() {
+        let json = r#"{"format": "svt/v99", "kind": "design", "nodes": [], "edges": [], "constraints": []}"#;
+        let err = parse_json(json).unwrap_err();
+        assert!(err.to_string().contains("svt/v99"));
+    }
+
+    #[test]
+    fn validate_catches_duplicate_paths() {
+        let doc = InterchangeDocument {
+            format: "svt/v1".to_string(),
+            kind: SnapshotKind::Design,
+            version: None,
+            metadata: None,
+            nodes: vec![
+                InterchangeNode {
+                    canonical_path: "/app".to_string(),
+                    kind: NodeKind::System,
+                    name: Some("app".to_string()),
+                    sub_kind: None,
+                    qualified_name: None,
+                    language: None,
+                    provenance: None,
+                    source_ref: None,
+                    metadata: None,
+                    children: None,
+                },
+                InterchangeNode {
+                    canonical_path: "/app".to_string(),
+                    kind: NodeKind::System,
+                    name: Some("app2".to_string()),
+                    sub_kind: None,
+                    qualified_name: None,
+                    language: None,
+                    provenance: None,
+                    source_ref: None,
+                    metadata: None,
+                    children: None,
+                },
+            ],
+            edges: vec![],
+            constraints: vec![],
+        };
+        let err = validate_document(&doc).unwrap_err();
+        assert!(err.to_string().contains("duplicate"));
+    }
+
+    #[test]
+    fn validate_catches_invalid_canonical_path() {
+        let doc = InterchangeDocument {
+            format: "svt/v1".to_string(),
+            kind: SnapshotKind::Design,
+            version: None,
+            metadata: None,
+            nodes: vec![InterchangeNode {
+                canonical_path: "no-leading-slash".to_string(),
+                kind: NodeKind::System,
+                name: None,
+                sub_kind: None,
+                qualified_name: None,
+                language: None,
+                provenance: None,
+                source_ref: None,
+                metadata: None,
+                children: None,
+            }],
+            edges: vec![],
+            constraints: vec![],
+        };
+        let err = validate_document(&doc).unwrap_err();
+        assert!(err.to_string().contains("invalid canonical path"));
+    }
+
+    #[test]
+    fn validate_warns_on_missing_edge_target() {
+        let doc = InterchangeDocument {
+            format: "svt/v1".to_string(),
+            kind: SnapshotKind::Design,
+            version: None,
+            metadata: None,
+            nodes: vec![InterchangeNode {
+                canonical_path: "/app".to_string(),
+                kind: NodeKind::System,
+                name: None,
+                sub_kind: None,
+                qualified_name: None,
+                language: None,
+                provenance: None,
+                source_ref: None,
+                metadata: None,
+                children: None,
+            }],
+            edges: vec![InterchangeEdge {
+                source: "/app".to_string(),
+                target: "/nonexistent".to_string(),
+                kind: EdgeKind::Depends,
+                metadata: None,
+            }],
+            constraints: vec![],
+        };
+        let warnings = validate_document(&doc).unwrap();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].message.contains("/nonexistent"));
     }
 }
