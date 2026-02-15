@@ -98,4 +98,7 @@ pub trait GraphStore {
 
     /// Remove all data for versions not in the keep list.
     fn compact(&mut self, keep_versions: &[Version]) -> Result<()>;
+
+    /// Get all edges for a version, optionally filtered by kind.
+    fn get_all_edges(&self, version: Version, kind: Option<EdgeKind>) -> Result<Vec<Edge>>;
 }

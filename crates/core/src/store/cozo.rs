@@ -733,4 +733,23 @@ impl GraphStore for CozoStore {
 
         Ok(())
     }
+
+    fn get_all_edges(&self, version: Version, kind: Option<EdgeKind>) -> Result<Vec<Edge>> {
+        let mut params = BTreeMap::new();
+        params.insert("version".to_string(), DataValue::from(version as i64));
+
+        let query = match &kind {
+            Some(k) => {
+                let kind_str = enum_to_str(k)?;
+                params.insert("edge_kind".to_string(), DataValue::Str(kind_str.into()));
+                "?[id, source, target, kind, provenance, metadata] := *edges{id, version, source, target, kind, provenance, metadata}, version == $version, kind == $edge_kind"
+            }
+            None => {
+                "?[id, source, target, kind, provenance, metadata] := *edges{id, version, source, target, kind, provenance, metadata}, version == $version"
+            }
+        };
+
+        let result = self.run_query_immutable(query, params)?;
+        result.rows.iter().map(|row| row_to_edge(row)).collect()
+    }
 }

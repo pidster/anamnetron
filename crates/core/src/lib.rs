@@ -12,4 +12,4 @@ pub mod model;
 pub mod store;
 
 /// Conformance and validation rules.
-pub mod validation {}
+pub mod validation;
