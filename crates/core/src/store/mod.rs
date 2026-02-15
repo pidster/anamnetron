@@ -99,6 +99,9 @@ pub trait GraphStore {
     /// Remove all data for versions not in the keep list.
     fn compact(&mut self, keep_versions: &[Version]) -> Result<()>;
 
+    /// Get all nodes for a version.
+    fn get_all_nodes(&self, version: Version) -> Result<Vec<Node>>;
+
     /// Get all edges for a version, optionally filtered by kind.
     ///
     /// Added during Milestone 1 implementation to support the validation module

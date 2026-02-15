@@ -90,6 +90,24 @@ fn node_optional_fields_survive_round_trip() {
     assert!(back.metadata.is_some());
 }
 
+#[test]
+fn get_all_nodes_returns_all_nodes_for_version() {
+    let mut store = CozoStore::new_in_memory().unwrap();
+    let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+
+    let n1 = helpers::make_node("n1", "/app", NodeKind::System, "workspace");
+    let n2 = helpers::make_node("n2", "/app/api", NodeKind::Component, "module");
+    store.add_node(v, &n1).unwrap();
+    store.add_node(v, &n2).unwrap();
+
+    let all = store.get_all_nodes(v).unwrap();
+    assert_eq!(all.len(), 2);
+
+    let paths: Vec<&str> = all.iter().map(|n| n.canonical_path.as_str()).collect();
+    assert!(paths.contains(&"/app"));
+    assert!(paths.contains(&"/app/api"));
+}
+
 proptest! {
     #[test]
     fn n_nodes_added_then_queried_returns_exactly_n(n in 1usize..50) {
