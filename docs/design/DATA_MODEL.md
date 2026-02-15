@@ -42,7 +42,7 @@ Each analyzer implements a bidirectional mapping between language-specific quali
 
 Mapping rules are **convention-based in core** with **analyzer overrides** for language-specific edge cases. The core defines the canonical form; analyzers implement `to_canonical()` and `from_canonical()` conversions. Analyzers may override the default mapping when the convention doesn't fit (e.g., Java package prefixes like `com.example` that have no architectural meaning).
 
-See [CANONICAL_PATH_MAPPING.md](CANONICAL_PATH_MAPPING.md) for detailed per-language rules, case normalization, acronym handling, configurable overrides, and collision handling.
+See [CANONICAL_PATH_MAPPING.md](./CANONICAL_PATH_MAPPING.md) for detailed per-language rules, case normalization, acronym handling, configurable overrides, and collision handling.
 
 ### Identity Fields
 

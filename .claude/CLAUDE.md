@@ -20,6 +20,21 @@ crates/
 web/           — frontend (TypeScript + WASM core)
 ```
 
+## Documentation
+
+```
+docs/
+  design/      — design documents (data model, interchange format, etc.)
+  adr/         — architecture decision records
+  plan/        — implementation plans
+design/        — the project's own prescriptive architecture model (dog-food)
+```
+
+Key documents:
+- @TECH_STACK.md — technology choices and rationale
+- @docs/design/DATA_MODEL.md — graph schema, GraphStore trait, constraints
+- @design/architecture.yaml — this project's own design model
+
 ## Three Modes
 
 1. **Design mode** (prescriptive) — define intended architecture, boundaries, allowed dependencies

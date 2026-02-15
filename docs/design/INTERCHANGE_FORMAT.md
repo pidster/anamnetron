@@ -1,6 +1,6 @@
 # Interchange Format
 
-This document defines the import/export format for snapshots. See [DATA_MODEL.md](DATA_MODEL.md) for the underlying schema.
+This document defines the import/export format for snapshots. See [DATA_MODEL.md](./DATA_MODEL.md) for the underlying schema.
 
 ## Overview
 

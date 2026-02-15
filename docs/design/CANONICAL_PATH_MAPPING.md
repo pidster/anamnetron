@@ -1,6 +1,6 @@
 # Canonical Path Mapping Rules
 
-This document defines the rules for mapping language-specific qualified names to and from canonical paths. See [DATA_MODEL.md](DATA_MODEL.md) for the canonical path schema definition.
+This document defines the rules for mapping language-specific qualified names to and from canonical paths. See [DATA_MODEL.md](./DATA_MODEL.md) for the canonical path schema definition.
 
 ## Core Transformation
 

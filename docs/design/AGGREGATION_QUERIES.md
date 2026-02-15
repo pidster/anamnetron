@@ -1,6 +1,6 @@
 # Aggregation Queries
 
-This document describes how unit-level edges are rolled up to component and service-level views for display in the UI. See [DATA_MODEL.md](DATA_MODEL.md) for the underlying schema.
+This document describes how unit-level edges are rolled up to component and service-level views for display in the UI. See [DATA_MODEL.md](./DATA_MODEL.md) for the underlying schema.
 
 ## Problem
 
