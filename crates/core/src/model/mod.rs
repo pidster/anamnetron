@@ -95,7 +95,7 @@ pub enum Direction {
 }
 
 /// A node in the architecture graph.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Node {
     /// Internal unique identifier (UUID v4).
     pub id: NodeId,
@@ -120,7 +120,7 @@ pub struct Node {
 }
 
 /// An edge (relationship) in the architecture graph.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Edge {
     /// Unique identifier.
     pub id: EdgeId,
@@ -137,7 +137,7 @@ pub struct Edge {
 }
 
 /// An architectural constraint (design-mode assertion).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Constraint {
     /// Unique identifier.
     pub id: String,
@@ -158,7 +158,7 @@ pub struct Constraint {
 }
 
 /// A versioned snapshot of the graph state.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
     /// Monotonically increasing version number.
     pub version: Version,

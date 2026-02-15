@@ -7,6 +7,7 @@ use crate::store::{GraphStore, Result};
 
 /// A cycle detected in the containment hierarchy.
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct Cycle {
     /// Node IDs forming the cycle.
     pub node_ids: Vec<NodeId>,
@@ -14,6 +15,7 @@ pub struct Cycle {
 
 /// A referential integrity error.
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct IntegrityError {
     /// The edge with the invalid reference.
     pub edge_id: EdgeId,
