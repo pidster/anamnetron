@@ -33,10 +33,7 @@ fn infer_provenance(kind: SnapshotKind) -> Provenance {
 ///
 /// Assigns UUIDs, resolves canonical path references to node IDs,
 /// and infers missing fields (name, sub_kind, provenance).
-pub fn load_into_store(
-    store: &mut impl GraphStore,
-    doc: &InterchangeDocument,
-) -> Result<Version> {
+pub fn load_into_store(store: &mut impl GraphStore, doc: &InterchangeDocument) -> Result<Version> {
     let version = store.create_snapshot(doc.kind, None)?;
 
     // Build nodes with UUIDs, collecting path->ID mapping
@@ -61,7 +58,9 @@ pub fn load_into_store(
                 .clone()
                 .unwrap_or_else(|| path_name(&inode.canonical_path).to_string()),
             language: inode.language.clone(),
-            provenance: inode.provenance.unwrap_or_else(|| infer_provenance(doc.kind)),
+            provenance: inode
+                .provenance
+                .unwrap_or_else(|| infer_provenance(doc.kind)),
             source_ref: inode.source_ref.clone(),
             metadata: inode.metadata.clone(),
         });
@@ -303,12 +302,17 @@ nodes:
         let nodes = store.get_all_nodes(version).unwrap();
         assert_eq!(nodes.len(), 2);
 
-        let edges = store.get_all_edges(version, Some(EdgeKind::Contains)).unwrap();
+        let edges = store
+            .get_all_edges(version, Some(EdgeKind::Contains))
+            .unwrap();
         assert_eq!(edges.len(), 1);
 
         // Edge should reference node UUIDs, not canonical paths
         let parent = store.get_node_by_path(version, "/app").unwrap().unwrap();
-        let child = store.get_node_by_path(version, "/app/core").unwrap().unwrap();
+        let child = store
+            .get_node_by_path(version, "/app/core")
+            .unwrap()
+            .unwrap();
         assert_eq!(edges[0].source, parent.id);
         assert_eq!(edges[0].target, child.id);
     }

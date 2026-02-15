@@ -61,10 +61,7 @@ pub fn validate_canonical_path(path: &str) -> Result<(), String> {
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
         {
-            return Err(format!(
-                "segment '{}' is not lowercase kebab-case",
-                segment
-            ));
+            return Err(format!("segment '{}' is not lowercase kebab-case", segment));
         }
     }
     Ok(())
@@ -222,7 +219,10 @@ mod tests {
 
     #[test]
     fn star_does_not_match_multiple_segments() {
-        assert!(!canonical_path_matches("/svt/core/store/cozo", "/svt/*/cozo"));
+        assert!(!canonical_path_matches(
+            "/svt/core/store/cozo",
+            "/svt/*/cozo"
+        ));
     }
 
     #[test]
@@ -232,7 +232,10 @@ mod tests {
 
     #[test]
     fn globstar_matches_deeply_nested() {
-        assert!(canonical_path_matches("/svt/core/store/cozo", "/svt/core/**"));
+        assert!(canonical_path_matches(
+            "/svt/core/store/cozo",
+            "/svt/core/**"
+        ));
     }
 
     #[test]

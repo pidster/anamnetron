@@ -2,9 +2,7 @@
 
 use proptest::prelude::*;
 
-use svt_core::interchange::{
-    InterchangeDocument, InterchangeEdge, InterchangeNode,
-};
+use svt_core::interchange::{InterchangeDocument, InterchangeEdge, InterchangeNode};
 use svt_core::interchange_store;
 use svt_core::model::*;
 use svt_core::store::CozoStore;
@@ -20,17 +18,33 @@ fn arb_node_kind() -> impl Strategy<Value = NodeKind> {
 
 /// Generate a valid interchange document with N nodes in a flat hierarchy.
 fn arb_document(max_nodes: usize) -> impl Strategy<Value = InterchangeDocument> {
-    (1..=max_nodes)
-        .prop_flat_map(|n| {
-            proptest::collection::vec(arb_node_kind(), n).prop_map(move |kinds| {
-                let mut nodes = Vec::new();
-                let root_path = "/test".to_string();
+    (1..=max_nodes).prop_flat_map(|n| {
+        proptest::collection::vec(arb_node_kind(), n).prop_map(move |kinds| {
+            let mut nodes = Vec::new();
+            let root_path = "/test".to_string();
 
+            nodes.push(InterchangeNode {
+                canonical_path: root_path.clone(),
+                kind: NodeKind::System,
+                name: Some("test".to_string()),
+                sub_kind: Some("system".to_string()),
+                qualified_name: None,
+                language: None,
+                provenance: None,
+                source_ref: None,
+                metadata: None,
+                children: None,
+            });
+
+            let mut edges = vec![];
+
+            for (i, kind) in kinds.iter().enumerate() {
+                let path = format!("/test/node-{}", i);
                 nodes.push(InterchangeNode {
-                    canonical_path: root_path.clone(),
-                    kind: NodeKind::System,
-                    name: Some("test".to_string()),
-                    sub_kind: Some("system".to_string()),
+                    canonical_path: path.clone(),
+                    kind: *kind,
+                    name: Some(format!("node-{}", i)),
+                    sub_kind: Some("module".to_string()),
                     qualified_name: None,
                     language: None,
                     provenance: None,
@@ -38,42 +52,25 @@ fn arb_document(max_nodes: usize) -> impl Strategy<Value = InterchangeDocument> 
                     metadata: None,
                     children: None,
                 });
-
-                let mut edges = vec![];
-
-                for (i, kind) in kinds.iter().enumerate() {
-                    let path = format!("/test/node-{}", i);
-                    nodes.push(InterchangeNode {
-                        canonical_path: path.clone(),
-                        kind: *kind,
-                        name: Some(format!("node-{}", i)),
-                        sub_kind: Some("module".to_string()),
-                        qualified_name: None,
-                        language: None,
-                        provenance: None,
-                        source_ref: None,
-                        metadata: None,
-                        children: None,
-                    });
-                    edges.push(InterchangeEdge {
-                        source: root_path.clone(),
-                        target: path,
-                        kind: EdgeKind::Contains,
-                        metadata: None,
-                    });
-                }
-
-                InterchangeDocument {
-                    format: "svt/v1".to_string(),
-                    kind: SnapshotKind::Design,
-                    version: None,
+                edges.push(InterchangeEdge {
+                    source: root_path.clone(),
+                    target: path,
+                    kind: EdgeKind::Contains,
                     metadata: None,
-                    nodes,
-                    edges,
-                    constraints: vec![],
-                }
-            })
+                });
+            }
+
+            InterchangeDocument {
+                format: "svt/v1".to_string(),
+                kind: SnapshotKind::Design,
+                version: None,
+                metadata: None,
+                nodes,
+                edges,
+                constraints: vec![],
+            }
         })
+    })
 }
 
 proptest! {

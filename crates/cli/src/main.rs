@@ -74,23 +74,18 @@ fn run_import(store_path: &Path, args: &ImportArgs) -> Result<()> {
     let content = std::fs::read_to_string(&args.file)
         .with_context(|| format!("reading {}", args.file.display()))?;
 
-    let ext = args
-        .file
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
+    let ext = args.file.extension().and_then(|e| e.to_str()).unwrap_or("");
 
     let doc = match ext {
-        "yaml" | "yml" => interchange::parse_yaml(&content)
-            .map_err(|e| anyhow::anyhow!("{}", e))?,
-        "json" => interchange::parse_json(&content)
-            .map_err(|e| anyhow::anyhow!("{}", e))?,
+        "yaml" | "yml" => {
+            interchange::parse_yaml(&content).map_err(|e| anyhow::anyhow!("{}", e))?
+        }
+        "json" => interchange::parse_json(&content).map_err(|e| anyhow::anyhow!("{}", e))?,
         _ => bail!("Unsupported file format: .{ext}. Use .yaml, .yml, or .json"),
     };
 
     // Validate
-    let warnings = interchange::validate_document(&doc)
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let warnings = interchange::validate_document(&doc).map_err(|e| anyhow::anyhow!("{}", e))?;
     for w in &warnings {
         eprintln!("  WARN  {}: {}", w.path, w.message);
     }
@@ -135,14 +130,13 @@ fn run_check(store_path: &Path, args: &CheckArgs) -> Result<()> {
             .ok_or_else(|| anyhow::anyhow!("No design versions found in store"))?,
     };
 
-    let report = conformance::evaluate_design(&store, version)
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let report =
+        conformance::evaluate_design(&store, version).map_err(|e| anyhow::anyhow!("{}", e))?;
 
     if args.format == "json" {
         println!(
             "{}",
-            serde_json::to_string_pretty(&report)
-                .map_err(|e| anyhow::anyhow!("{}", e))?
+            serde_json::to_string_pretty(&report).map_err(|e| anyhow::anyhow!("{}", e))?
         );
     } else {
         print_human_report(&report);
@@ -169,7 +163,10 @@ fn run_check(store_path: &Path, args: &CheckArgs) -> Result<()> {
     Ok(())
 }
 
-fn severity_at_or_above(actual: svt_core::model::Severity, threshold: svt_core::model::Severity) -> bool {
+fn severity_at_or_above(
+    actual: svt_core::model::Severity,
+    threshold: svt_core::model::Severity,
+) -> bool {
     severity_rank(actual) >= severity_rank(threshold)
 }
 
@@ -200,7 +197,7 @@ fn print_human_report(report: &svt_core::conformance::ConformanceReport) {
                 .as_deref()
                 .map(|t| format!(" -> {}", t))
                 .unwrap_or_default();
-            println!("         {} {}{}", "-", v.source_path, target);
+            println!("         - {}{}", v.source_path, target);
         }
     }
 

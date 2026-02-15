@@ -112,8 +112,7 @@ pub fn evaluate_constraint_must_not_depend(
     // Build sets of node IDs matching scope and target patterns
     let mut scope_ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
     let mut target_ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
-    let mut id_to_path: std::collections::HashMap<&str, &str> =
-        std::collections::HashMap::new();
+    let mut id_to_path: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
 
     for node in &all_nodes {
         id_to_path.insert(&node.id, &node.canonical_path);
@@ -128,9 +127,7 @@ pub fn evaluate_constraint_must_not_depend(
     // Find forbidden edges: scope node depends on target node
     let mut violations = Vec::new();
     for edge in &depends_edges {
-        if scope_ids.contains(edge.source.as_str())
-            && target_ids.contains(edge.target.as_str())
-        {
+        if scope_ids.contains(edge.source.as_str()) && target_ids.contains(edge.target.as_str()) {
             violations.push(Violation {
                 source_path: id_to_path
                     .get(edge.source.as_str())
@@ -168,10 +165,7 @@ pub fn evaluate_constraint_must_not_depend(
 ///
 /// Design-only mode: no analysis version. Non-evaluable constraints
 /// (e.g., must_contain without analysis data) are marked `NotEvaluable`.
-pub fn evaluate_design(
-    store: &impl GraphStore,
-    version: Version,
-) -> Result<ConformanceReport> {
+pub fn evaluate_design(store: &impl GraphStore, version: Version) -> Result<ConformanceReport> {
     let mut results = Vec::new();
 
     // Structural check: containment acyclicity
@@ -241,10 +235,7 @@ pub fn evaluate_design(
                 constraint_kind: constraint.kind.clone(),
                 status: ConstraintStatus::NotEvaluable,
                 severity: constraint.severity,
-                message: format!(
-                    "{} not evaluable (design-only mode)",
-                    constraint.kind
-                ),
+                message: format!("{} not evaluable (design-only mode)", constraint.kind),
                 violations: vec![],
             },
         };
