@@ -6,7 +6,7 @@
 #![warn(missing_docs)]
 
 /// Graph data model and schema definitions.
-pub mod model {}
+pub mod model;
 
 /// CozoDB graph store operations.
 pub mod store {}
