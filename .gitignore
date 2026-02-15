@@ -1,0 +1,26 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# Node / Web
+node_modules/
+web/dist/
+web/build/
+.svelte-kit/
+
+# Editor files
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.iml
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local

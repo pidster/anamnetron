@@ -1,0 +1,9 @@
+[package]
+name = "svt-analyzer"
+description = "Tree-sitter based code analysis and discovery for software-visualizer-tool"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+svt-core = { path = "../core" }
+tree-sitter = "0.24"

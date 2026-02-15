@@ -1,0 +1,21 @@
+[package]
+name = "svt-core"
+description = "Core data model, graph store, validation, and conformance logic for software-visualizer-tool"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = []
+wasm = ["dep:wasm-bindgen"]
+
+[dependencies]
+cozo = { version = "0.7", features = ["storage-sqlite"] }
+rayon = "=1.10.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+wasm-bindgen = { version = "0.2", optional = true }
+
+[dev-dependencies]
+proptest = "1"
+insta = { version = "1", features = ["yaml"] }

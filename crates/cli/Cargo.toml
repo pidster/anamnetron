@@ -1,0 +1,15 @@
+[package]
+name = "svt-cli"
+description = "CLI entry point for software-visualizer-tool"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "svt"
+path = "src/main.rs"
+
+[dependencies]
+svt-core = { path = "../core" }
+svt-analyzer = { path = "../analyzer" }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
