@@ -61,7 +61,10 @@ pub fn validate_contains_acyclic(store: &impl GraphStore, version: Version) -> R
             for child in children {
                 if gray.contains(child.as_str()) {
                     // Found a cycle: extract the cycle from path
-                    let cycle_start = path.iter().position(|&n| n == child.as_str()).unwrap();
+                    // Safety: child is guaranteed to be in path because it is in the gray set,
+                    // and all gray nodes are on the current DFS path.
+                    let cycle_start = path.iter().position(|&n| n == child.as_str())
+                        .expect("gray node must be on current DFS path");
                     let cycle_nodes: Vec<NodeId> =
                         path[cycle_start..].iter().map(|s| s.to_string()).collect();
                     cycles.push(Cycle {
