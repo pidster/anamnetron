@@ -9,7 +9,9 @@
 pub mod model;
 
 /// CozoDB graph store operations.
+#[cfg(feature = "store")]
 pub mod store;
 
 /// Conformance and validation rules.
+#[cfg(feature = "store")]
 pub mod validation;
