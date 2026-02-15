@@ -8,6 +8,9 @@
 /// Canonical path utilities: kebab-case conversion, glob matching, path validation.
 pub mod canonical;
 
+/// Interchange format: YAML/JSON parsing, validation, wire types.
+pub mod interchange;
+
 /// Graph data model and schema definitions.
 pub mod model;
 
