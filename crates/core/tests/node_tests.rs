@@ -1,0 +1,103 @@
+use svt_core::model::*;
+use svt_core::store::{CozoStore, GraphStore};
+
+fn make_node(id: &str, path: &str, kind: NodeKind, sub_kind: &str) -> Node {
+    Node {
+        id: id.to_string(),
+        canonical_path: path.to_string(),
+        qualified_name: None,
+        kind,
+        sub_kind: sub_kind.to_string(),
+        name: path.rsplit('/').next().unwrap_or(path).to_string(),
+        language: None,
+        provenance: Provenance::Design,
+        source_ref: None,
+        metadata: None,
+    }
+}
+
+#[test]
+fn add_node_then_get_by_id_round_trips() {
+    let mut store = CozoStore::new_in_memory().unwrap();
+    let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+    let node = make_node("n1", "/test-service", NodeKind::Service, "crate");
+    store.add_node(v, &node).unwrap();
+
+    let retrieved = store
+        .get_node(v, &"n1".to_string())
+        .unwrap()
+        .expect("node should exist");
+    assert_eq!(retrieved.id, "n1");
+    assert_eq!(retrieved.canonical_path, "/test-service");
+    assert_eq!(retrieved.kind, NodeKind::Service);
+}
+
+#[test]
+fn add_node_then_get_by_path_round_trips() {
+    let mut store = CozoStore::new_in_memory().unwrap();
+    let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+    let node = make_node("n1", "/test-service", NodeKind::Service, "crate");
+    store.add_node(v, &node).unwrap();
+
+    let retrieved = store
+        .get_node_by_path(v, "/test-service")
+        .unwrap()
+        .expect("node should exist");
+    assert_eq!(retrieved.id, "n1");
+}
+
+#[test]
+fn get_nonexistent_node_returns_none() {
+    let store = CozoStore::new_in_memory().unwrap();
+    let result = store.get_node(1, &"missing".to_string()).unwrap();
+    assert!(result.is_none());
+}
+
+#[test]
+fn add_nodes_batch_then_retrieve_all() {
+    let mut store = CozoStore::new_in_memory().unwrap();
+    let v = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+
+    let nodes: Vec<Node> = (0..100)
+        .map(|i| {
+            make_node(
+                &format!("n{i}"),
+                &format!("/svc/comp{i}"),
+                NodeKind::Component,
+                "module",
+            )
+        })
+        .collect();
+    store.add_nodes_batch(v, &nodes).unwrap();
+
+    for i in 0..100 {
+        let n = store.get_node_by_path(v, &format!("/svc/comp{i}")).unwrap();
+        assert!(n.is_some(), "node /svc/comp{i} not found");
+    }
+}
+
+#[test]
+fn node_optional_fields_survive_round_trip() {
+    let mut store = CozoStore::new_in_memory().unwrap();
+    let v = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+
+    let node = Node {
+        id: "n1".to_string(),
+        canonical_path: "/svc".to_string(),
+        qualified_name: Some("my_svc".to_string()),
+        kind: NodeKind::Service,
+        sub_kind: "crate".to_string(),
+        name: "svc".to_string(),
+        language: Some("rust".to_string()),
+        provenance: Provenance::Analysis,
+        source_ref: Some("src/lib.rs:1".to_string()),
+        metadata: Some(serde_json::json!({"wasm": true})),
+    };
+    store.add_node(v, &node).unwrap();
+
+    let back = store.get_node(v, &"n1".to_string()).unwrap().unwrap();
+    assert_eq!(back.qualified_name.as_deref(), Some("my_svc"));
+    assert_eq!(back.language.as_deref(), Some("rust"));
+    assert_eq!(back.source_ref.as_deref(), Some("src/lib.rs:1"));
+    assert!(back.metadata.is_some());
+}

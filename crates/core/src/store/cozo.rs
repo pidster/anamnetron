@@ -87,6 +87,80 @@ impl CozoStore {
     }
 }
 
+/// Serialize a serde-serializable enum value to its JSON string representation.
+fn enum_to_str<T: serde::Serialize>(value: &T) -> Result<String> {
+    let v = serde_json::to_value(value).map_err(|e| StoreError::Internal(e.to_string()))?;
+    Ok(v.as_str().unwrap_or_default().to_string())
+}
+
+/// Deserialize a JSON string value into a serde-deserializable enum.
+fn str_to_enum<T: serde::de::DeserializeOwned>(s: &str) -> Result<T> {
+    serde_json::from_str(&format!("\"{s}\"")).map_err(|e| StoreError::Internal(e.to_string()))
+}
+
+/// Convert an optional String field from a DataValue.
+fn opt_str(val: &DataValue) -> Option<String> {
+    match val {
+        DataValue::Str(s) => Some(s.to_string()),
+        _ => None,
+    }
+}
+
+/// Convert a required String field from a DataValue.
+fn req_str(val: &DataValue) -> String {
+    match val {
+        DataValue::Str(s) => s.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// Convert a DataValue to an optional serde_json::Value for metadata.
+fn opt_json(val: &DataValue) -> Option<serde_json::Value> {
+    match val {
+        DataValue::Null => None,
+        DataValue::List(items) => {
+            serde_json::to_value(items.iter().map(|i| format!("{i:?}")).collect::<Vec<_>>()).ok()
+        }
+        DataValue::Json(j) => Some(j.0.clone()),
+        _ => Some(serde_json::Value::String(format!("{val:?}"))),
+    }
+}
+
+/// Convert a DataValue to a DataValue suitable for storing optional String fields.
+fn opt_to_dv(val: &Option<String>) -> DataValue {
+    match val {
+        Some(s) => DataValue::Str(s.clone().into()),
+        None => DataValue::Null,
+    }
+}
+
+/// Convert a metadata value to a DataValue for storage.
+fn json_to_dv(val: &Option<serde_json::Value>) -> DataValue {
+    match val {
+        Some(v) => DataValue::Json(cozo::JsonData(v.clone())),
+        None => DataValue::Null,
+    }
+}
+
+/// Parse a row from the nodes relation into a Node struct.
+///
+/// Expected column order: id, canonical_path, qualified_name, kind, sub_kind,
+/// name, language, provenance, source_ref, metadata
+fn row_to_node(row: &[DataValue]) -> Result<Node> {
+    Ok(Node {
+        id: req_str(&row[0]),
+        canonical_path: req_str(&row[1]),
+        qualified_name: opt_str(&row[2]),
+        kind: str_to_enum(&req_str(&row[3]))?,
+        sub_kind: req_str(&row[4]),
+        name: req_str(&row[5]),
+        language: opt_str(&row[6]),
+        provenance: str_to_enum(&req_str(&row[7]))?,
+        source_ref: opt_str(&row[8]),
+        metadata: opt_json(&row[9]),
+    })
+}
+
 impl GraphStore for CozoStore {
     fn create_snapshot(&mut self, kind: SnapshotKind, commit_ref: Option<&str>) -> Result<Version> {
         // Get the next version number by finding the current max
@@ -199,5 +273,82 @@ impl GraphStore for CozoStore {
             DataValue::Num(Num::Int(i)) => Some(*i as Version),
             _ => None,
         }))
+    }
+
+    fn add_node(&mut self, version: Version, node: &Node) -> Result<()> {
+        let kind_str = enum_to_str(&node.kind)?;
+        let prov_str = enum_to_str(&node.provenance)?;
+
+        let mut params = BTreeMap::new();
+        params.insert("id".to_string(), DataValue::Str(node.id.clone().into()));
+        params.insert("version".to_string(), DataValue::from(version as i64));
+        params.insert(
+            "canonical_path".to_string(),
+            DataValue::Str(node.canonical_path.clone().into()),
+        );
+        params.insert(
+            "qualified_name".to_string(),
+            opt_to_dv(&node.qualified_name),
+        );
+        params.insert("kind".to_string(), DataValue::Str(kind_str.into()));
+        params.insert(
+            "sub_kind".to_string(),
+            DataValue::Str(node.sub_kind.clone().into()),
+        );
+        params.insert("name".to_string(), DataValue::Str(node.name.clone().into()));
+        params.insert("language".to_string(), opt_to_dv(&node.language));
+        params.insert("provenance".to_string(), DataValue::Str(prov_str.into()));
+        params.insert("source_ref".to_string(), opt_to_dv(&node.source_ref));
+        params.insert("metadata".to_string(), json_to_dv(&node.metadata));
+
+        self.run_query(
+            "?[id, version, canonical_path, qualified_name, kind, sub_kind, name, language, provenance, source_ref, metadata] <- [[$id, $version, $canonical_path, $qualified_name, $kind, $sub_kind, $name, $language, $provenance, $source_ref, $metadata]]
+             :put nodes { id, version => canonical_path, qualified_name, kind, sub_kind, name, language, provenance, source_ref, metadata }",
+            params,
+        )?;
+
+        Ok(())
+    }
+
+    fn add_nodes_batch(&mut self, version: Version, nodes: &[Node]) -> Result<()> {
+        for node in nodes {
+            self.add_node(version, node)?;
+        }
+        Ok(())
+    }
+
+    fn get_node(&self, version: Version, id: &NodeId) -> Result<Option<Node>> {
+        let mut params = BTreeMap::new();
+        params.insert("id".to_string(), DataValue::Str(id.clone().into()));
+        params.insert("version".to_string(), DataValue::from(version as i64));
+
+        let result = self.run_query_immutable(
+            "?[id, canonical_path, qualified_name, kind, sub_kind, name, language, provenance, source_ref, metadata] := *nodes{id, version, canonical_path, qualified_name, kind, sub_kind, name, language, provenance, source_ref, metadata}, id == $id, version == $version",
+            params,
+        )?;
+
+        match result.rows.first() {
+            Some(row) => Ok(Some(row_to_node(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    fn get_node_by_path(&self, version: Version, canonical_path: &str) -> Result<Option<Node>> {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "path".to_string(),
+            DataValue::Str(canonical_path.to_string().into()),
+        );
+        params.insert("version".to_string(), DataValue::from(version as i64));
+
+        let result = self.run_query_immutable(
+            "?[id, canonical_path, qualified_name, kind, sub_kind, name, language, provenance, source_ref, metadata] := *nodes{id, version: $version, canonical_path, qualified_name, kind, sub_kind, name, language, provenance, source_ref, metadata}, canonical_path == $path",
+            params,
+        )?;
+
+        match result.rows.first() {
+            Some(row) => Ok(Some(row_to_node(row)?)),
+            None => Ok(None),
+        }
     }
 }

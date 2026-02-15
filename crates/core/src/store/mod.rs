@@ -25,4 +25,16 @@ pub trait GraphStore {
 
     /// Get the latest version for a given snapshot kind, or None if no snapshots exist.
     fn latest_version(&self, kind: SnapshotKind) -> Result<Option<Version>>;
+
+    /// Add a single node to the store.
+    fn add_node(&mut self, version: Version, node: &Node) -> Result<()>;
+
+    /// Add multiple nodes in a single batch operation.
+    fn add_nodes_batch(&mut self, version: Version, nodes: &[Node]) -> Result<()>;
+
+    /// Get a node by its ID within a version.
+    fn get_node(&self, version: Version, id: &NodeId) -> Result<Option<Node>>;
+
+    /// Get a node by its canonical path within a version.
+    fn get_node_by_path(&self, version: Version, canonical_path: &str) -> Result<Option<Node>>;
 }
