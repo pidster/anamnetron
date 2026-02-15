@@ -69,4 +69,24 @@ pub trait GraphStore {
         node_id: &NodeId,
         filter: Option<&NodeFilter>,
     ) -> Result<Vec<Node>>;
+
+    /// Get dependencies of a node (nodes it depends on via `Depends` edges).
+    ///
+    /// If `transitive` is true, follows the dependency chain recursively.
+    fn query_dependencies(
+        &self,
+        version: Version,
+        node_id: &NodeId,
+        transitive: bool,
+    ) -> Result<Vec<Node>>;
+
+    /// Get dependents of a node (nodes that depend on it via `Depends` edges).
+    ///
+    /// If `transitive` is true, follows the dependent chain recursively.
+    fn query_dependents(
+        &self,
+        version: Version,
+        node_id: &NodeId,
+        transitive: bool,
+    ) -> Result<Vec<Node>>;
 }

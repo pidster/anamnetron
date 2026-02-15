@@ -555,4 +555,68 @@ impl GraphStore for CozoStore {
 
         result.rows.iter().map(|row| row_to_node(row)).collect()
     }
+
+    fn query_dependencies(
+        &self,
+        version: Version,
+        node_id: &NodeId,
+        transitive: bool,
+    ) -> Result<Vec<Node>> {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "start_id".to_string(),
+            DataValue::Str(node_id.clone().into()),
+        );
+        params.insert("version".to_string(), DataValue::from(version as i64));
+
+        let query = if transitive {
+            "dep[node_id] := *edges{version, source, target, kind}, version == $version, kind == 'depends', source == $start_id, node_id = target
+             dep[node_id] := dep[mid], *edges{version, source, target, kind}, version == $version, kind == 'depends', source == mid, node_id = target
+             ?[id, canonical_path, qualified_name, kind, sub_kind, name, language, provenance, source_ref, metadata] :=
+                dep[dep_id],
+                *nodes{id: dep_id, version: $version, canonical_path, qualified_name, kind, sub_kind, name, language, provenance, source_ref, metadata},
+                id = dep_id"
+        } else {
+            "?[id, canonical_path, qualified_name, kind, sub_kind, name, language, provenance, source_ref, metadata] :=
+                *edges{version, source, target, kind: edge_kind},
+                version == $version, source == $start_id, edge_kind == 'depends',
+                *nodes{id: target, version: $version, canonical_path, qualified_name, kind, sub_kind, name, language, provenance, source_ref, metadata},
+                id = target"
+        };
+
+        let result = self.run_query_immutable(query, params)?;
+        result.rows.iter().map(|row| row_to_node(row)).collect()
+    }
+
+    fn query_dependents(
+        &self,
+        version: Version,
+        node_id: &NodeId,
+        transitive: bool,
+    ) -> Result<Vec<Node>> {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "start_id".to_string(),
+            DataValue::Str(node_id.clone().into()),
+        );
+        params.insert("version".to_string(), DataValue::from(version as i64));
+
+        let query = if transitive {
+            "dep[node_id] := *edges{version, source, target, kind}, version == $version, kind == 'depends', target == $start_id, node_id = source
+             dep[node_id] := dep[mid], *edges{version, source, target, kind}, version == $version, kind == 'depends', target == mid, node_id = source
+             ?[id, canonical_path, qualified_name, kind, sub_kind, name, language, provenance, source_ref, metadata] :=
+                dep[dep_id],
+                *nodes{id: dep_id, version: $version, canonical_path, qualified_name, kind, sub_kind, name, language, provenance, source_ref, metadata},
+                id = dep_id"
+        } else {
+            "?[id, canonical_path, qualified_name, kind, sub_kind, name, language, provenance, source_ref, metadata] :=
+                *edges{version, source, target, kind: edge_kind},
+                version == $version, target == $start_id, edge_kind == 'depends',
+                *nodes{id: source, version: $version, canonical_path, qualified_name, kind, sub_kind, name, language, provenance, source_ref, metadata},
+                id = source"
+        };
+
+        let result = self.run_query_immutable(query, params)?;
+        result.rows.iter().map(|row| row_to_node(row)).collect()
+    }
 }
