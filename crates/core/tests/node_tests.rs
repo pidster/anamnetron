@@ -1,27 +1,14 @@
+mod helpers;
+
 use proptest::prelude::*;
 use svt_core::model::*;
 use svt_core::store::{CozoStore, GraphStore};
-
-fn make_node(id: &str, path: &str, kind: NodeKind, sub_kind: &str) -> Node {
-    Node {
-        id: id.to_string(),
-        canonical_path: path.to_string(),
-        qualified_name: None,
-        kind,
-        sub_kind: sub_kind.to_string(),
-        name: path.rsplit('/').next().unwrap_or(path).to_string(),
-        language: None,
-        provenance: Provenance::Design,
-        source_ref: None,
-        metadata: None,
-    }
-}
 
 #[test]
 fn add_node_then_get_by_id_round_trips() {
     let mut store = CozoStore::new_in_memory().unwrap();
     let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
-    let node = make_node("n1", "/test-service", NodeKind::Service, "crate");
+    let node = helpers::make_node("n1", "/test-service", NodeKind::Service, "crate");
     store.add_node(v, &node).unwrap();
 
     let retrieved = store
@@ -37,7 +24,7 @@ fn add_node_then_get_by_id_round_trips() {
 fn add_node_then_get_by_path_round_trips() {
     let mut store = CozoStore::new_in_memory().unwrap();
     let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
-    let node = make_node("n1", "/test-service", NodeKind::Service, "crate");
+    let node = helpers::make_node("n1", "/test-service", NodeKind::Service, "crate");
     store.add_node(v, &node).unwrap();
 
     let retrieved = store
@@ -61,7 +48,7 @@ fn add_nodes_batch_then_retrieve_all() {
 
     let nodes: Vec<Node> = (0..100)
         .map(|i| {
-            make_node(
+            helpers::make_node(
                 &format!("n{i}"),
                 &format!("/svc/comp{i}"),
                 NodeKind::Component,
@@ -110,7 +97,7 @@ proptest! {
         let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
 
         for i in 0..n {
-            let node = make_node(
+            let node = helpers::make_node(
                 &format!("node{i}"),
                 &format!("/svc/comp{i}"),
                 NodeKind::Component,

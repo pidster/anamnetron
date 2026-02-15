@@ -1,59 +1,34 @@
+mod helpers;
+
 use proptest::prelude::*;
 use svt_core::model::*;
 use svt_core::store::{CozoStore, GraphStore};
-
-fn make_node(id: &str, path: &str) -> Node {
-    Node {
-        id: id.to_string(),
-        canonical_path: path.to_string(),
-        qualified_name: None,
-        kind: NodeKind::Component,
-        sub_kind: "module".to_string(),
-        name: path.rsplit('/').next().unwrap_or(path).to_string(),
-        language: None,
-        provenance: Provenance::Design,
-        source_ref: None,
-        metadata: None,
-    }
-}
-
-fn make_edge(id: &str, source: &str, target: &str) -> Edge {
-    Edge {
-        id: id.to_string(),
-        source: source.to_string(),
-        target: target.to_string(),
-        kind: EdgeKind::Depends,
-        provenance: Provenance::Design,
-        metadata: None,
-    }
-}
-
-fn make_constraint(id: &str) -> Constraint {
-    Constraint {
-        id: id.to_string(),
-        kind: "must_not_depend".to_string(),
-        name: format!("constraint-{id}"),
-        scope: "/a/**".to_string(),
-        target: Some("/b/**".to_string()),
-        params: None,
-        message: "Violation".to_string(),
-        severity: Severity::Error,
-    }
-}
 
 #[test]
 fn compact_preserves_kept_version_and_removes_other() {
     let mut store = CozoStore::new_in_memory().unwrap();
 
     let v1 = store.create_snapshot(SnapshotKind::Design, None).unwrap();
-    store.add_node(v1, &make_node("n1", "/svc/a")).unwrap();
-    store.add_edge(v1, &make_edge("e1", "n1", "n1")).unwrap();
-    store.add_constraint(v1, &make_constraint("c1")).unwrap();
+    store
+        .add_node(v1, &helpers::make_node_default("n1", "/svc/a"))
+        .unwrap();
+    store
+        .add_edge(v1, &helpers::make_edge_default("e1", "n1", "n1"))
+        .unwrap();
+    store
+        .add_constraint(v1, &helpers::make_constraint("c1"))
+        .unwrap();
 
     let v2 = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
-    store.add_node(v2, &make_node("n2", "/svc/b")).unwrap();
-    store.add_edge(v2, &make_edge("e2", "n2", "n2")).unwrap();
-    store.add_constraint(v2, &make_constraint("c2")).unwrap();
+    store
+        .add_node(v2, &helpers::make_node_default("n2", "/svc/b"))
+        .unwrap();
+    store
+        .add_edge(v2, &helpers::make_edge_default("e2", "n2", "n2"))
+        .unwrap();
+    store
+        .add_constraint(v2, &helpers::make_constraint("c2"))
+        .unwrap();
 
     // Keep only v2
     store.compact(&[v2]).unwrap();
@@ -87,7 +62,9 @@ fn compact_preserves_kept_version_and_removes_other() {
 fn compact_with_empty_keep_removes_all() {
     let mut store = CozoStore::new_in_memory().unwrap();
     let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
-    store.add_node(v, &make_node("n1", "/svc/a")).unwrap();
+    store
+        .add_node(v, &helpers::make_node_default("n1", "/svc/a"))
+        .unwrap();
 
     store.compact(&[]).unwrap();
 
@@ -100,13 +77,19 @@ fn compact_with_empty_keep_removes_all() {
 fn compact_preserves_multiple_kept_versions() {
     let mut store = CozoStore::new_in_memory().unwrap();
     let v1 = store.create_snapshot(SnapshotKind::Design, None).unwrap();
-    store.add_node(v1, &make_node("n1", "/svc/a")).unwrap();
+    store
+        .add_node(v1, &helpers::make_node_default("n1", "/svc/a"))
+        .unwrap();
 
     let v2 = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
-    store.add_node(v2, &make_node("n2", "/svc/b")).unwrap();
+    store
+        .add_node(v2, &helpers::make_node_default("n2", "/svc/b"))
+        .unwrap();
 
     let v3 = store.create_snapshot(SnapshotKind::Design, None).unwrap();
-    store.add_node(v3, &make_node("n3", "/svc/c")).unwrap();
+    store
+        .add_node(v3, &helpers::make_node_default("n3", "/svc/c"))
+        .unwrap();
 
     // Keep v1 and v3, remove v2
     store.compact(&[v1, v3]).unwrap();
@@ -128,11 +111,11 @@ proptest! {
         let mut versions = Vec::new();
         for i in 0..total {
             let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
-            store.add_node(v, &make_node(&format!("n{i}"), &format!("/svc/v{i}"))).unwrap();
+            store.add_node(v, &helpers::make_node_default(&format!("n{i}"), &format!("/svc/v{i}"))).unwrap();
             versions.push(v);
         }
 
-        // Use a deterministic keep mask based on the version index (keep odd-indexed versions)
+        // Use a deterministic keep mask based on the version index (keep even-indexed versions)
         // This avoids nested strategies while still exercising different subsets.
         let keep: Vec<Version> = versions.iter().enumerate()
             .filter(|(i, _)| i % 2 == 0)

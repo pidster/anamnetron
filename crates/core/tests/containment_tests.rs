@@ -1,32 +1,8 @@
+mod helpers;
+
 use proptest::prelude::*;
 use svt_core::model::*;
 use svt_core::store::{CozoStore, GraphStore};
-
-fn make_node(id: &str, path: &str, kind: NodeKind, sub_kind: &str) -> Node {
-    Node {
-        id: id.to_string(),
-        canonical_path: path.to_string(),
-        qualified_name: None,
-        kind,
-        sub_kind: sub_kind.to_string(),
-        name: path.rsplit('/').next().unwrap_or(path).to_string(),
-        language: None,
-        provenance: Provenance::Design,
-        source_ref: None,
-        metadata: None,
-    }
-}
-
-fn make_contains(id: &str, parent: &str, child: &str) -> Edge {
-    Edge {
-        id: id.to_string(),
-        source: parent.to_string(),
-        target: child.to_string(),
-        kind: EdgeKind::Contains,
-        provenance: Provenance::Design,
-        metadata: None,
-    }
-}
 
 /// Build a 5-level hierarchy:
 /// system -> service -> comp1 -> comp2 -> unit
@@ -37,19 +13,19 @@ fn setup_hierarchy() -> (CozoStore, Version) {
     store
         .add_node(
             v,
-            &make_node("sys", "/myapp", NodeKind::System, "workspace"),
+            &helpers::make_node("sys", "/myapp", NodeKind::System, "workspace"),
         )
         .unwrap();
     store
         .add_node(
             v,
-            &make_node("svc", "/myapp/api", NodeKind::Service, "crate"),
+            &helpers::make_node("svc", "/myapp/api", NodeKind::Service, "crate"),
         )
         .unwrap();
     store
         .add_node(
             v,
-            &make_node(
+            &helpers::make_node(
                 "comp1",
                 "/myapp/api/handlers",
                 NodeKind::Component,
@@ -60,7 +36,7 @@ fn setup_hierarchy() -> (CozoStore, Version) {
     store
         .add_node(
             v,
-            &make_node(
+            &helpers::make_node(
                 "comp2",
                 "/myapp/api/handlers/auth",
                 NodeKind::Component,
@@ -71,7 +47,7 @@ fn setup_hierarchy() -> (CozoStore, Version) {
     store
         .add_node(
             v,
-            &make_node(
+            &helpers::make_node(
                 "unit1",
                 "/myapp/api/handlers/auth/login",
                 NodeKind::Unit,
@@ -82,16 +58,16 @@ fn setup_hierarchy() -> (CozoStore, Version) {
 
     // Contains edges forming the hierarchy
     store
-        .add_edge(v, &make_contains("c1", "sys", "svc"))
+        .add_edge(v, &helpers::make_contains("c1", "sys", "svc"))
         .unwrap();
     store
-        .add_edge(v, &make_contains("c2", "svc", "comp1"))
+        .add_edge(v, &helpers::make_contains("c2", "svc", "comp1"))
         .unwrap();
     store
-        .add_edge(v, &make_contains("c3", "comp1", "comp2"))
+        .add_edge(v, &helpers::make_contains("c3", "comp1", "comp2"))
         .unwrap();
     store
-        .add_edge(v, &make_contains("c4", "comp2", "unit1"))
+        .add_edge(v, &helpers::make_contains("c4", "comp2", "unit1"))
         .unwrap();
 
     (store, v)
@@ -281,10 +257,10 @@ proptest! {
         }).collect();
 
         for i in 0..depth {
-            store.add_node(v, &make_node(&ids[i], &paths[i], NodeKind::Component, "module")).unwrap();
+            store.add_node(v, &helpers::make_node(&ids[i], &paths[i], NodeKind::Component, "module")).unwrap();
         }
         for i in 0..depth - 1 {
-            store.add_edge(v, &make_contains(&format!("c{i}"), &ids[i], &ids[i + 1])).unwrap();
+            store.add_edge(v, &helpers::make_contains(&format!("c{i}"), &ids[i], &ids[i + 1])).unwrap();
         }
 
         // Query ancestors of the deepest node

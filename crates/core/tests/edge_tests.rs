@@ -1,40 +1,22 @@
+mod helpers;
+
 use svt_core::model::*;
 use svt_core::store::{CozoStore, GraphStore};
-
-fn make_node(id: &str, path: &str, kind: NodeKind, sub_kind: &str) -> Node {
-    Node {
-        id: id.to_string(),
-        canonical_path: path.to_string(),
-        qualified_name: None,
-        kind,
-        sub_kind: sub_kind.to_string(),
-        name: path.rsplit('/').next().unwrap_or(path).to_string(),
-        language: None,
-        provenance: Provenance::Design,
-        source_ref: None,
-        metadata: None,
-    }
-}
-
-fn make_edge(id: &str, source: &str, target: &str, kind: EdgeKind) -> Edge {
-    Edge {
-        id: id.to_string(),
-        source: source.to_string(),
-        target: target.to_string(),
-        kind,
-        provenance: Provenance::Design,
-        metadata: None,
-    }
-}
 
 fn setup_two_nodes() -> (CozoStore, Version) {
     let mut store = CozoStore::new_in_memory().unwrap();
     let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
     store
-        .add_node(v, &make_node("a", "/svc/a", NodeKind::Component, "module"))
+        .add_node(
+            v,
+            &helpers::make_node("a", "/svc/a", NodeKind::Component, "module"),
+        )
         .unwrap();
     store
-        .add_node(v, &make_node("b", "/svc/b", NodeKind::Component, "module"))
+        .add_node(
+            v,
+            &helpers::make_node("b", "/svc/b", NodeKind::Component, "module"),
+        )
         .unwrap();
     (store, v)
 }
@@ -42,7 +24,7 @@ fn setup_two_nodes() -> (CozoStore, Version) {
 #[test]
 fn add_edge_then_get_outgoing_returns_it() {
     let (mut store, v) = setup_two_nodes();
-    let edge = make_edge("e1", "a", "b", EdgeKind::Depends);
+    let edge = helpers::make_edge("e1", "a", "b", EdgeKind::Depends);
     store.add_edge(v, &edge).unwrap();
 
     let edges = store
@@ -58,7 +40,7 @@ fn add_edge_then_get_outgoing_returns_it() {
 #[test]
 fn add_edge_then_get_incoming_returns_it() {
     let (mut store, v) = setup_two_nodes();
-    let edge = make_edge("e1", "a", "b", EdgeKind::Depends);
+    let edge = helpers::make_edge("e1", "a", "b", EdgeKind::Depends);
     store.add_edge(v, &edge).unwrap();
 
     let edges = store
@@ -72,14 +54,17 @@ fn add_edge_then_get_incoming_returns_it() {
 fn direction_both_returns_edges_in_either_direction() {
     let (mut store, v) = setup_two_nodes();
     store
-        .add_node(v, &make_node("c", "/svc/c", NodeKind::Component, "module"))
+        .add_node(
+            v,
+            &helpers::make_node("c", "/svc/c", NodeKind::Component, "module"),
+        )
         .unwrap();
 
     store
-        .add_edge(v, &make_edge("e1", "a", "b", EdgeKind::Depends))
+        .add_edge(v, &helpers::make_edge("e1", "a", "b", EdgeKind::Depends))
         .unwrap();
     store
-        .add_edge(v, &make_edge("e2", "c", "b", EdgeKind::Depends))
+        .add_edge(v, &helpers::make_edge("e2", "c", "b", EdgeKind::Depends))
         .unwrap();
 
     let edges = store
@@ -92,10 +77,10 @@ fn direction_both_returns_edges_in_either_direction() {
 fn filter_by_edge_kind_returns_only_matching() {
     let (mut store, v) = setup_two_nodes();
     store
-        .add_edge(v, &make_edge("e1", "a", "b", EdgeKind::Depends))
+        .add_edge(v, &helpers::make_edge("e1", "a", "b", EdgeKind::Depends))
         .unwrap();
     store
-        .add_edge(v, &make_edge("e2", "a", "b", EdgeKind::Calls))
+        .add_edge(v, &helpers::make_edge("e2", "a", "b", EdgeKind::Calls))
         .unwrap();
 
     let depends_edges = store
@@ -131,7 +116,7 @@ fn add_edges_batch_then_all_retrievable() {
         store
             .add_node(
                 v,
-                &make_node(
+                &helpers::make_node(
                     &format!("n{i}"),
                     &format!("/svc/n{i}"),
                     NodeKind::Component,
@@ -144,7 +129,7 @@ fn add_edges_batch_then_all_retrievable() {
     // Create edges between consecutive nodes
     let edges: Vec<Edge> = (0..9)
         .map(|i| {
-            make_edge(
+            helpers::make_edge(
                 &format!("e{i}"),
                 &format!("n{i}"),
                 &format!("n{}", i + 1),

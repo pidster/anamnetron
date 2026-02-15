@@ -1,7 +1,10 @@
+#![allow(dead_code)]
+
 use svt_core::model::*;
 use svt_core::store::{CozoStore, GraphStore};
 
-fn node(id: &str, path: &str, kind: NodeKind, sub_kind: &str) -> Node {
+/// Create a node with all fields specified.
+pub fn make_node(id: &str, path: &str, kind: NodeKind, sub_kind: &str) -> Node {
     Node {
         id: id.to_string(),
         canonical_path: path.to_string(),
@@ -16,7 +19,18 @@ fn node(id: &str, path: &str, kind: NodeKind, sub_kind: &str) -> Node {
     }
 }
 
-fn edge(id: &str, source: &str, target: &str, kind: EdgeKind) -> Edge {
+/// Create a node with a specified kind, defaulting sub_kind to "module".
+pub fn make_node_with_kind(id: &str, path: &str, kind: NodeKind) -> Node {
+    make_node(id, path, kind, "module")
+}
+
+/// Create a Component node with default sub_kind "module".
+pub fn make_node_default(id: &str, path: &str) -> Node {
+    make_node(id, path, NodeKind::Component, "module")
+}
+
+/// Create an edge with explicit kind.
+pub fn make_edge(id: &str, source: &str, target: &str, kind: EdgeKind) -> Edge {
     Edge {
         id: id.to_string(),
         source: source.to_string(),
@@ -24,6 +38,35 @@ fn edge(id: &str, source: &str, target: &str, kind: EdgeKind) -> Edge {
         kind,
         provenance: Provenance::Design,
         metadata: None,
+    }
+}
+
+/// Create a Contains edge.
+pub fn make_contains(id: &str, parent: &str, child: &str) -> Edge {
+    make_edge(id, parent, child, EdgeKind::Contains)
+}
+
+/// Create a Depends edge.
+pub fn make_depends(id: &str, source: &str, target: &str) -> Edge {
+    make_edge(id, source, target, EdgeKind::Depends)
+}
+
+/// Create a Depends edge (default kind) without specifying edge kind.
+pub fn make_edge_default(id: &str, source: &str, target: &str) -> Edge {
+    make_edge(id, source, target, EdgeKind::Depends)
+}
+
+/// Create a test constraint.
+pub fn make_constraint(id: &str) -> Constraint {
+    Constraint {
+        id: id.to_string(),
+        kind: "must_not_depend".to_string(),
+        name: format!("constraint-{id}"),
+        scope: "/a/**".to_string(),
+        target: Some("/b/**".to_string()),
+        params: None,
+        message: "Violation".to_string(),
+        severity: Severity::Error,
     }
 }
 
@@ -44,13 +87,13 @@ pub fn create_simple_service(store: &mut CozoStore, version: Version) {
     store
         .add_node(
             version,
-            &node("svc", "/test-service", NodeKind::Service, "crate"),
+            &make_node("svc", "/test-service", NodeKind::Service, "crate"),
         )
         .unwrap();
     store
         .add_node(
             version,
-            &node(
+            &make_node(
                 "handlers",
                 "/test-service/handlers",
                 NodeKind::Component,
@@ -61,7 +104,7 @@ pub fn create_simple_service(store: &mut CozoStore, version: Version) {
     store
         .add_node(
             version,
-            &node(
+            &make_node(
                 "create",
                 "/test-service/handlers/create",
                 NodeKind::Unit,
@@ -72,7 +115,7 @@ pub fn create_simple_service(store: &mut CozoStore, version: Version) {
     store
         .add_node(
             version,
-            &node(
+            &make_node(
                 "delete",
                 "/test-service/handlers/delete",
                 NodeKind::Unit,
@@ -83,7 +126,7 @@ pub fn create_simple_service(store: &mut CozoStore, version: Version) {
     store
         .add_node(
             version,
-            &node(
+            &make_node(
                 "models",
                 "/test-service/models",
                 NodeKind::Component,
@@ -94,7 +137,7 @@ pub fn create_simple_service(store: &mut CozoStore, version: Version) {
     store
         .add_node(
             version,
-            &node(
+            &make_node(
                 "order",
                 "/test-service/models/order",
                 NodeKind::Unit,
@@ -105,30 +148,24 @@ pub fn create_simple_service(store: &mut CozoStore, version: Version) {
 
     // Containment hierarchy
     store
-        .add_edge(version, &edge("c1", "svc", "handlers", EdgeKind::Contains))
+        .add_edge(version, &make_contains("c1", "svc", "handlers"))
         .unwrap();
     store
-        .add_edge(version, &edge("c2", "svc", "models", EdgeKind::Contains))
+        .add_edge(version, &make_contains("c2", "svc", "models"))
         .unwrap();
     store
-        .add_edge(
-            version,
-            &edge("c3", "handlers", "create", EdgeKind::Contains),
-        )
+        .add_edge(version, &make_contains("c3", "handlers", "create"))
         .unwrap();
     store
-        .add_edge(
-            version,
-            &edge("c4", "handlers", "delete", EdgeKind::Contains),
-        )
+        .add_edge(version, &make_contains("c4", "handlers", "delete"))
         .unwrap();
     store
-        .add_edge(version, &edge("c5", "models", "order", EdgeKind::Contains))
+        .add_edge(version, &make_contains("c5", "models", "order"))
         .unwrap();
 
     // Dependency: create handler depends on order model
     store
-        .add_edge(version, &edge("d1", "create", "order", EdgeKind::Depends))
+        .add_edge(version, &make_depends("d1", "create", "order"))
         .unwrap();
 }
 
@@ -147,55 +184,58 @@ pub fn create_simple_service(store: &mut CozoStore, version: Version) {
 pub fn create_layered_architecture(store: &mut CozoStore, version: Version) {
     // Nodes
     store
-        .add_node(version, &node("app", "/app", NodeKind::System, "workspace"))
-        .unwrap();
-    store
         .add_node(
             version,
-            &node("api", "/app/api", NodeKind::Component, "module"),
+            &make_node("app", "/app", NodeKind::System, "workspace"),
         )
         .unwrap();
     store
         .add_node(
             version,
-            &node("service", "/app/service", NodeKind::Component, "module"),
+            &make_node("api", "/app/api", NodeKind::Component, "module"),
         )
         .unwrap();
     store
         .add_node(
             version,
-            &node("repo", "/app/repository", NodeKind::Component, "module"),
+            &make_node("service", "/app/service", NodeKind::Component, "module"),
         )
         .unwrap();
     store
         .add_node(
             version,
-            &node("db", "/app/database", NodeKind::Component, "module"),
+            &make_node("repo", "/app/repository", NodeKind::Component, "module"),
+        )
+        .unwrap();
+    store
+        .add_node(
+            version,
+            &make_node("db", "/app/database", NodeKind::Component, "module"),
         )
         .unwrap();
 
     // Containment
     store
-        .add_edge(version, &edge("c1", "app", "api", EdgeKind::Contains))
+        .add_edge(version, &make_contains("c1", "app", "api"))
         .unwrap();
     store
-        .add_edge(version, &edge("c2", "app", "service", EdgeKind::Contains))
+        .add_edge(version, &make_contains("c2", "app", "service"))
         .unwrap();
     store
-        .add_edge(version, &edge("c3", "app", "repo", EdgeKind::Contains))
+        .add_edge(version, &make_contains("c3", "app", "repo"))
         .unwrap();
     store
-        .add_edge(version, &edge("c4", "app", "db", EdgeKind::Contains))
+        .add_edge(version, &make_contains("c4", "app", "db"))
         .unwrap();
 
     // Layer dependencies: api -> service -> repo -> db
     store
-        .add_edge(version, &edge("d1", "api", "service", EdgeKind::Depends))
+        .add_edge(version, &make_depends("d1", "api", "service"))
         .unwrap();
     store
-        .add_edge(version, &edge("d2", "service", "repo", EdgeKind::Depends))
+        .add_edge(version, &make_depends("d2", "service", "repo"))
         .unwrap();
     store
-        .add_edge(version, &edge("d3", "repo", "db", EdgeKind::Depends))
+        .add_edge(version, &make_depends("d3", "repo", "db"))
         .unwrap();
 }
