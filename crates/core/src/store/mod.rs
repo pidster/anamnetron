@@ -100,5 +100,9 @@ pub trait GraphStore {
     fn compact(&mut self, keep_versions: &[Version]) -> Result<()>;
 
     /// Get all edges for a version, optionally filtered by kind.
+    ///
+    /// Added during Milestone 1 implementation to support the validation module
+    /// (cycle detection and referential integrity checks). Not in the original
+    /// plan but chosen over working through per-node edge queries.
     fn get_all_edges(&self, version: Version, kind: Option<EdgeKind>) -> Result<Vec<Edge>>;
 }

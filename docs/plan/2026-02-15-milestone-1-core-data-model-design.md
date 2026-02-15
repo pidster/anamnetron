@@ -198,3 +198,7 @@ Shared helper module with common graph builders:
 **Functions:** validate_contains_acyclic, validate_referential_integrity
 **CozoDB:** Cycle detection via recursive Datalog, integrity check for dangling edge references
 **Tests:** Clean graph passes, cycle detected, dangling reference flagged, property: canonical-path-derived graphs have no cycles
+
+## Implementation Notes
+
+- `get_all_edges(version, kind?)` was added to the GraphStore trait during implementation to support the validation module. The plan noted this decision point ("Consider whether to add a validation query method or work through existing trait methods") and the team chose to add a general-purpose method.
