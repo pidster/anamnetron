@@ -248,6 +248,61 @@ nodes: []
     }
 
     #[test]
+    fn parse_yaml_nested_generates_contains_edges() {
+        let yaml = r#"
+format: svt/v1
+kind: design
+nodes:
+  - canonical_path: /app
+    kind: system
+    sub_kind: workspace
+    name: app
+    children:
+      - canonical_path: /app/api
+        kind: component
+        sub_kind: module
+        name: api
+      - canonical_path: /app/db
+        kind: component
+        sub_kind: module
+        name: db
+edges: []
+constraints: []
+"#;
+        let doc = parse_yaml(yaml).unwrap();
+        assert_eq!(doc.nodes.len(), 3, "should flatten to 3 nodes");
+        // 2 contains edges generated from children
+        let contains: Vec<_> = doc
+            .edges
+            .iter()
+            .filter(|e| e.kind == EdgeKind::Contains)
+            .collect();
+        assert_eq!(contains.len(), 2);
+        assert_eq!(contains[0].source, "/app");
+        assert_eq!(contains[0].target, "/app/api");
+    }
+
+    #[test]
+    fn parse_yaml_deeply_nested_children() {
+        let yaml = r#"
+format: svt/v1
+kind: design
+nodes:
+  - canonical_path: /app
+    kind: system
+    children:
+      - canonical_path: /app/core
+        kind: service
+        children:
+          - canonical_path: /app/core/model
+            kind: component
+"#;
+        let doc = parse_yaml(yaml).unwrap();
+        assert_eq!(doc.nodes.len(), 3);
+        assert_eq!(doc.edges.len(), 2, "should have 2 contains edges");
+    }
+
+    #[test]
     fn interchange_constraint_deserialises_severity() {
         let yaml = r#"
 name: no-outward
