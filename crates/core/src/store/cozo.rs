@@ -441,4 +441,118 @@ impl GraphStore for CozoStore {
 
         result.rows.iter().map(|row| row_to_edge(row)).collect()
     }
+
+    fn get_children(&self, version: Version, node_id: &NodeId) -> Result<Vec<Node>> {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "parent_id".to_string(),
+            DataValue::Str(node_id.clone().into()),
+        );
+        params.insert("version".to_string(), DataValue::from(version as i64));
+
+        let result = self.run_query_immutable(
+            "?[id, canonical_path, qualified_name, kind, sub_kind, name, language, provenance, source_ref, metadata] :=
+                *edges{version, source, target, kind: edge_kind},
+                version == $version, source == $parent_id, edge_kind == 'contains',
+                *nodes{id: target, version: $version, canonical_path, qualified_name, kind, sub_kind, name, language, provenance, source_ref, metadata},
+                id = target",
+            params,
+        )?;
+
+        result.rows.iter().map(|row| row_to_node(row)).collect()
+    }
+
+    fn get_parent(&self, version: Version, node_id: &NodeId) -> Result<Option<Node>> {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "child_id".to_string(),
+            DataValue::Str(node_id.clone().into()),
+        );
+        params.insert("version".to_string(), DataValue::from(version as i64));
+
+        let result = self.run_query_immutable(
+            "?[id, canonical_path, qualified_name, kind, sub_kind, name, language, provenance, source_ref, metadata] :=
+                *edges{version, source, target, kind: edge_kind},
+                version == $version, target == $child_id, edge_kind == 'contains',
+                *nodes{id: source, version: $version, canonical_path, qualified_name, kind, sub_kind, name, language, provenance, source_ref, metadata},
+                id = source",
+            params,
+        )?;
+
+        match result.rows.first() {
+            Some(row) => Ok(Some(row_to_node(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    fn query_ancestors(&self, version: Version, node_id: &NodeId) -> Result<Vec<Node>> {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "start_id".to_string(),
+            DataValue::Str(node_id.clone().into()),
+        );
+        params.insert("version".to_string(), DataValue::from(version as i64));
+
+        let result = self.run_query_immutable(
+            "ancestor[node_id] := *edges{version, source, target, kind}, version == $version, kind == 'contains', target == $start_id, node_id = source
+             ancestor[node_id] := ancestor[child], *edges{version, source, target, kind}, version == $version, kind == 'contains', target == child, node_id = source
+             ?[id, canonical_path, qualified_name, kind, sub_kind, name, language, provenance, source_ref, metadata] :=
+                ancestor[ancestor_id],
+                *nodes{id: ancestor_id, version: $version, canonical_path, qualified_name, kind, sub_kind, name, language, provenance, source_ref, metadata},
+                id = ancestor_id",
+            params,
+        )?;
+
+        result.rows.iter().map(|row| row_to_node(row)).collect()
+    }
+
+    fn query_descendants(
+        &self,
+        version: Version,
+        node_id: &NodeId,
+        filter: Option<&NodeFilter>,
+    ) -> Result<Vec<Node>> {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "start_id".to_string(),
+            DataValue::Str(node_id.clone().into()),
+        );
+        params.insert("version".to_string(), DataValue::from(version as i64));
+
+        let mut filter_clauses = String::new();
+        if let Some(f) = filter {
+            if let Some(kind) = &f.kind {
+                let kind_str = enum_to_str(kind)?;
+                params.insert("filter_kind".to_string(), DataValue::Str(kind_str.into()));
+                filter_clauses.push_str(", kind == $filter_kind");
+            }
+            if let Some(sub_kind) = &f.sub_kind {
+                params.insert(
+                    "filter_sub_kind".to_string(),
+                    DataValue::Str(sub_kind.clone().into()),
+                );
+                filter_clauses.push_str(", sub_kind == $filter_sub_kind");
+            }
+            if let Some(language) = &f.language {
+                params.insert(
+                    "filter_language".to_string(),
+                    DataValue::Str(language.clone().into()),
+                );
+                filter_clauses.push_str(", language == $filter_language");
+            }
+        }
+
+        let query = format!(
+            "descendant[node_id] := *edges{{version, source, target, kind: edge_kind}}, version == $version, edge_kind == 'contains', source == $start_id, node_id = target
+             descendant[node_id] := descendant[parent], *edges{{version, source, target, kind: edge_kind}}, version == $version, edge_kind == 'contains', source == parent, node_id = target
+             ?[id, canonical_path, qualified_name, kind, sub_kind, name, language, provenance, source_ref, metadata] :=
+                descendant[desc_id],
+                *nodes{{id: desc_id, version: $version, canonical_path, qualified_name, kind, sub_kind, name, language, provenance, source_ref, metadata}},
+                id = desc_id{filter_clauses}"
+        );
+
+        let result = self.run_query_immutable(&query, params)?;
+
+        result.rows.iter().map(|row| row_to_node(row)).collect()
+    }
 }

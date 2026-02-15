@@ -52,4 +52,21 @@ pub trait GraphStore {
         direction: Direction,
         kind: Option<EdgeKind>,
     ) -> Result<Vec<Edge>>;
+
+    /// Get the direct children of a node (via `Contains` edges where the node is the source).
+    fn get_children(&self, version: Version, node_id: &NodeId) -> Result<Vec<Node>>;
+
+    /// Get the parent of a node (via `Contains` edge where the node is the target).
+    fn get_parent(&self, version: Version, node_id: &NodeId) -> Result<Option<Node>>;
+
+    /// Get all ancestors of a node, from parent up to root. Ordered from immediate parent to root.
+    fn query_ancestors(&self, version: Version, node_id: &NodeId) -> Result<Vec<Node>>;
+
+    /// Get all descendants of a node, optionally filtered by a [`NodeFilter`].
+    fn query_descendants(
+        &self,
+        version: Version,
+        node_id: &NodeId,
+        filter: Option<&NodeFilter>,
+    ) -> Result<Vec<Node>>;
 }
