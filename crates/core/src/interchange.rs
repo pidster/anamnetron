@@ -168,12 +168,25 @@ fn flatten_nodes(nodes: &[InterchangeNode]) -> (Vec<InterchangeNode>, Vec<Interc
 }
 
 /// Parse a JSON string into an interchange document (flat form only).
+///
+/// Returns an error if any node contains `children`, since JSON interchange
+/// only supports the flat form. Use YAML for nested shorthand.
 pub fn parse_json(input: &str) -> Result<InterchangeDocument, InterchangeError> {
     let doc: InterchangeDocument =
         serde_json::from_str(input).map_err(|e| InterchangeError::Parse(e.to_string()))?;
 
     if doc.format != "svt/v1" {
         return Err(InterchangeError::UnsupportedFormat(doc.format));
+    }
+
+    // JSON only supports flat form — reject nested children
+    for node in &doc.nodes {
+        if node.children.as_ref().is_some_and(|c| !c.is_empty()) {
+            return Err(InterchangeError::Validation(format!(
+                "JSON interchange does not support nested children (found on '{}'). Use YAML for nested shorthand.",
+                node.canonical_path
+            )));
+        }
     }
 
     Ok(doc)
@@ -193,10 +206,10 @@ pub fn validate_document(
 
     for node in &doc.nodes {
         // Check for valid canonical paths
-        if let Err(msg) = crate::canonical::validate_canonical_path(&node.canonical_path) {
+        if let Err(err) = crate::canonical::validate_canonical_path(&node.canonical_path) {
             return Err(InterchangeError::Validation(format!(
                 "invalid canonical path '{}': {}",
-                node.canonical_path, msg
+                node.canonical_path, err
             )));
         }
 
@@ -398,6 +411,31 @@ severity: error
         let json = r#"{"format": "svt/v99", "kind": "design", "nodes": [], "edges": [], "constraints": []}"#;
         let err = parse_json(json).unwrap_err();
         assert!(err.to_string().contains("svt/v99"));
+    }
+
+    #[test]
+    fn parse_json_rejects_nested_children() {
+        let json = r#"{
+            "format": "svt/v1",
+            "kind": "design",
+            "nodes": [
+                {
+                    "canonical_path": "/app",
+                    "kind": "system",
+                    "children": [
+                        {"canonical_path": "/app/core", "kind": "service"}
+                    ]
+                }
+            ],
+            "edges": [],
+            "constraints": []
+        }"#;
+        let err = parse_json(json).unwrap_err();
+        assert!(
+            err.to_string().contains("children"),
+            "expected error about children, got: {}",
+            err
+        );
     }
 
     #[test]

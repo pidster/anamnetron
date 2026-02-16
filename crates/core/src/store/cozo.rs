@@ -60,7 +60,7 @@ impl CozoStore {
                 .run_script(query, Default::default(), ScriptMutability::Mutable);
             if let Err(e) = &result {
                 let msg = e.to_string();
-                if !msg.contains("already exists") {
+                if !msg.contains("already exists") && !msg.contains("conflicts") {
                     return Err(StoreError::Internal(msg));
                 }
             }

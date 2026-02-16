@@ -2,6 +2,26 @@
 //!
 //! All functions are WASM-safe -- no platform-specific dependencies.
 
+/// Error returned when a canonical path is malformed.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum CanonicalPathError {
+    /// Path does not start with `/`.
+    #[error("must start with '/'")]
+    MissingLeadingSlash,
+
+    /// Path ends with `/` (not allowed except for root).
+    #[error("must not end with '/'")]
+    TrailingSlash,
+
+    /// Path contains an empty segment (double slash).
+    #[error("empty segment (double slash)")]
+    EmptySegment,
+
+    /// A segment contains characters that are not lowercase kebab-case.
+    #[error("segment '{0}' is not lowercase kebab-case")]
+    InvalidSegment(String),
+}
+
 /// Convert a segment from PascalCase, snake_case, or ALLCAPS to kebab-case.
 ///
 /// Handles acronyms: `HTTPServer` becomes `http-server`.
@@ -45,23 +65,23 @@ pub fn to_kebab_case(segment: &str) -> String {
 ///
 /// Requirements: leading `/`, no trailing slash, lowercase kebab-case segments,
 /// no empty segments.
-pub fn validate_canonical_path(path: &str) -> Result<(), String> {
+pub fn validate_canonical_path(path: &str) -> Result<(), CanonicalPathError> {
     if !path.starts_with('/') {
-        return Err("must start with '/'".to_string());
+        return Err(CanonicalPathError::MissingLeadingSlash);
     }
     if path.len() > 1 && path.ends_with('/') {
-        return Err("must not end with '/'".to_string());
+        return Err(CanonicalPathError::TrailingSlash);
     }
     let segments: Vec<&str> = path[1..].split('/').collect();
     for segment in &segments {
         if segment.is_empty() {
-            return Err("empty segment (double slash)".to_string());
+            return Err(CanonicalPathError::EmptySegment);
         }
         if !segment
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
         {
-            return Err(format!("segment '{}' is not lowercase kebab-case", segment));
+            return Err(CanonicalPathError::InvalidSegment(segment.to_string()));
         }
     }
     Ok(())

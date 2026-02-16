@@ -266,7 +266,7 @@ pub fn evaluate_design(store: &impl GraphStore, version: Version) -> Result<Conf
             .count(),
         failed: results
             .iter()
-            .filter(|r| r.status == ConstraintStatus::Fail)
+            .filter(|r| r.status == ConstraintStatus::Fail && r.severity == Severity::Error)
             .count(),
         warned: results
             .iter()
@@ -288,6 +288,24 @@ pub fn evaluate_design(store: &impl GraphStore, version: Version) -> Result<Conf
         undocumented: vec![],
         summary,
     })
+}
+
+/// Evaluate conformance between a design version and an analysis version.
+///
+/// Compares prescribed architecture against discovered architecture,
+/// evaluating all constraints and reporting unimplemented/undocumented nodes.
+///
+/// Not yet implemented — returns an error. Design-only mode is available
+/// via [`evaluate_design`].
+pub fn evaluate(
+    _store: &impl GraphStore,
+    _design_version: Version,
+    _analysis_version: Version,
+) -> Result<ConformanceReport> {
+    Err(crate::store::StoreError::Internal(
+        "analysis conformance not yet available; use evaluate_design for design-only mode"
+            .to_string(),
+    ))
 }
 
 #[cfg(test)]
@@ -484,5 +502,83 @@ constraints:
         assert_eq!(report.summary.passed, 3);
         assert_eq!(report.summary.failed, 0);
         assert_eq!(report.summary.not_evaluable, 0);
+    }
+
+    #[test]
+    fn evaluate_stub_returns_error() {
+        let store = CozoStore::new_in_memory().unwrap();
+        let err = evaluate(&store, 1, 2).unwrap_err();
+        assert!(
+            err.to_string().contains("not yet available"),
+            "expected 'not yet available' error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn summary_separates_failed_and_warned() {
+        let (store, version) = load_test_doc(
+            r#"
+format: svt/v1
+kind: design
+nodes:
+  - canonical_path: /app
+    kind: system
+    children:
+      - canonical_path: /app/core
+        kind: service
+      - canonical_path: /app/cli
+        kind: service
+      - canonical_path: /app/web
+        kind: service
+edges:
+  - source: /app/core
+    target: /app/cli
+    kind: depends
+  - source: /app/core
+    target: /app/web
+    kind: depends
+constraints:
+  - name: core-no-cli
+    kind: must_not_depend
+    scope: /app/core/**
+    target: /app/cli/**
+    message: "Core must not depend on CLI"
+    severity: error
+  - name: core-no-web
+    kind: must_not_depend
+    scope: /app/core/**
+    target: /app/web/**
+    message: "Core should not depend on web"
+    severity: warning
+"#,
+        );
+        let report = evaluate_design(&store, version).unwrap();
+
+        // Both must_not_depend constraints should fail
+        let core_no_cli = report
+            .constraint_results
+            .iter()
+            .find(|r| r.constraint_name == "core-no-cli")
+            .unwrap();
+        assert_eq!(core_no_cli.status, ConstraintStatus::Fail);
+
+        let core_no_web = report
+            .constraint_results
+            .iter()
+            .find(|r| r.constraint_name == "core-no-web")
+            .unwrap();
+        assert_eq!(core_no_web.status, ConstraintStatus::Fail);
+
+        // failed should only count error-severity failures
+        assert_eq!(
+            report.summary.failed, 1,
+            "failed should only count error-severity failures"
+        );
+        // warned should only count warning-severity failures
+        assert_eq!(
+            report.summary.warned, 1,
+            "warned should only count warning-severity failures"
+        );
     }
 }
