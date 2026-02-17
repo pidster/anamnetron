@@ -50,3 +50,23 @@ pub fn api_router(state: Arc<AppState>) -> Router {
         .layer(CorsLayer::permissive())
         .with_state(state)
 }
+
+/// Build the full router with API routes and optional static file serving.
+///
+/// If `static_dir` is provided and the directory exists, serves static files at `/`.
+/// API routes take priority over static files.
+pub fn full_router(state: Arc<AppState>, static_dir: Option<std::path::PathBuf>) -> Router {
+    let router = api_router(state);
+
+    if let Some(dir) = static_dir {
+        if dir.exists() {
+            tracing::info!(path = %dir.display(), "serving static files");
+            return router.fallback_service(
+                tower_http::services::ServeDir::new(&dir)
+                    .fallback(tower_http::services::ServeFile::new(dir.join("index.html"))),
+            );
+        }
+    }
+
+    router
+}

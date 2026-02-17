@@ -98,7 +98,8 @@ async fn main() -> anyhow::Result<()> {
         analysis_version,
     });
 
-    let app = routes::api_router(state);
+    let static_dir = std::path::PathBuf::from("web/dist");
+    let app = routes::full_router(state, Some(static_dir));
 
     let bind_addr = format!("{}:{}", args.host, args.port);
     let listener = TcpListener::bind(&bind_addr).await?;
