@@ -7,3 +7,11 @@ edition.workspace = true
 [dependencies]
 svt-core = { path = "../core" }
 tree-sitter = "0.24"
+tree-sitter-rust = "0.23"
+cargo_metadata = "0.19"
+walkdir = "2"
+thiserror = "2"
+uuid = { version = "1", features = ["v5"] }
+
+[dev-dependencies]
+tempfile = "3"
