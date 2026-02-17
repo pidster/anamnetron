@@ -1,22 +1,22 @@
 //! Rust language analyzer using tree-sitter-rust.
 //!
 //! Extracts structural elements (modules, structs, enums, traits, functions)
-//! from Rust source files using tree-sitter parsing. Relationship extraction
-//! (use statements, impl blocks, function calls) is handled separately.
+//! and relationships (use dependencies, trait implementations, function calls)
+//! from Rust source files using tree-sitter parsing.
 
 use std::path::Path;
 
-use svt_core::model::NodeKind;
+use svt_core::model::{EdgeKind, NodeKind};
 
-use crate::types::{AnalysisItem, AnalysisWarning};
+use crate::types::{AnalysisItem, AnalysisRelation, AnalysisWarning};
 
 use super::{LanguageAnalyzer, ParseResult};
 
 /// Rust source code analyzer using tree-sitter-rust.
 ///
-/// Extracts structural elements from Rust source files: modules, structs,
-/// enums, traits, and functions. Does not extract relationships (use/impl/calls);
-/// that is handled by a separate pass.
+/// Extracts structural elements (modules, structs, enums, traits, functions)
+/// and relationships (use dependencies, trait implementations, function calls)
+/// from Rust source files.
 #[derive(Debug)]
 pub struct RustAnalyzer {
     _private: (),
@@ -54,6 +54,7 @@ impl LanguageAnalyzer for RustAnalyzer {
                         file,
                         &source,
                         &mut result.items,
+                        &mut result.relations,
                         &mut result.warnings,
                     );
                 }
@@ -70,13 +71,14 @@ impl LanguageAnalyzer for RustAnalyzer {
     }
 }
 
-/// Parse a single Rust source file and extract structural items.
+/// Parse a single Rust source file and extract structural items and relationships.
 fn parse_file(
     parser: &mut tree_sitter::Parser,
     crate_name: &str,
     file_path: &Path,
     source: &str,
     items: &mut Vec<AnalysisItem>,
+    relations: &mut Vec<AnalysisRelation>,
     warnings: &mut Vec<AnalysisWarning>,
 ) {
     let Some(tree) = parser.parse(source, None) else {
@@ -99,37 +101,58 @@ fn parse_file(
         file_path,
         &module_context,
         items,
+        relations,
         warnings,
     );
 }
 
-/// Visit all named children of a node, extracting structural items.
+/// Visit all named children of a node, extracting structural items and relationships.
 fn visit_children(
     node: tree_sitter::Node<'_>,
     source: &[u8],
     file_path: &Path,
     module_context: &[String],
     items: &mut Vec<AnalysisItem>,
+    relations: &mut Vec<AnalysisRelation>,
     warnings: &mut Vec<AnalysisWarning>,
 ) {
     for i in 0..node.named_child_count() {
         if let Some(child) = node.named_child(i) {
-            visit_node(child, source, file_path, module_context, items, warnings);
+            visit_node(
+                child,
+                source,
+                file_path,
+                module_context,
+                items,
+                relations,
+                warnings,
+            );
         }
     }
 }
 
-/// Visit a single tree-sitter node and extract structural items if applicable.
+/// Visit a single tree-sitter node and extract structural items and relationships.
 fn visit_node(
     node: tree_sitter::Node<'_>,
     source: &[u8],
     file_path: &Path,
     module_context: &[String],
     items: &mut Vec<AnalysisItem>,
+    relations: &mut Vec<AnalysisRelation>,
     warnings: &mut Vec<AnalysisWarning>,
 ) {
     match node.kind() {
-        "mod_item" => visit_mod_item(node, source, file_path, module_context, items, warnings),
+        "mod_item" => {
+            visit_mod_item(
+                node,
+                source,
+                file_path,
+                module_context,
+                items,
+                relations,
+                warnings,
+            );
+        }
         "struct_item" => {
             extract_named_item(
                 node,
@@ -173,9 +196,31 @@ fn visit_node(
                 "function",
                 items,
             );
+            // Descend into the function body to find call expressions.
+            if let Some(body) = node.child_by_field_name("body") {
+                visit_call_expressions(
+                    body,
+                    source,
+                    file_path,
+                    module_context,
+                    relations,
+                    warnings,
+                );
+            }
         }
         "impl_item" => {
-            visit_impl_item(node, source, file_path, module_context, items, warnings);
+            visit_impl_item(
+                node,
+                source,
+                file_path,
+                module_context,
+                items,
+                relations,
+                warnings,
+            );
+        }
+        "use_declaration" => {
+            visit_use_declaration(node, source, module_context, relations);
         }
         _ => {
             // For other node types, recurse into children in case they contain items
@@ -221,6 +266,7 @@ fn visit_mod_item(
     file_path: &Path,
     module_context: &[String],
     items: &mut Vec<AnalysisItem>,
+    relations: &mut Vec<AnalysisRelation>,
     warnings: &mut Vec<AnalysisWarning>,
 ) {
     let Some(name) = item_name(node, source) else {
@@ -245,26 +291,172 @@ fn visit_mod_item(
     if let Some(body) = node.child_by_field_name("body") {
         let mut child_context = module_context.to_vec();
         child_context.push(name);
-        visit_children(body, source, file_path, &child_context, items, warnings);
+        visit_children(
+            body,
+            source,
+            file_path,
+            &child_context,
+            items,
+            relations,
+            warnings,
+        );
     }
 }
 
 /// Handle an `impl_item` node. Extract methods as functions scoped under the
-/// type being implemented.
+/// type being implemented, and emit `Implements` relations for trait impls.
 fn visit_impl_item(
     node: tree_sitter::Node<'_>,
     source: &[u8],
     file_path: &Path,
     module_context: &[String],
     items: &mut Vec<AnalysisItem>,
+    relations: &mut Vec<AnalysisRelation>,
     warnings: &mut Vec<AnalysisWarning>,
 ) {
+    // Check for `impl Trait for Type` — emit an Implements relation.
+    let trait_node = node.child_by_field_name("trait");
+    let type_node = node.child_by_field_name("type");
+
+    if let (Some(trait_n), Some(type_n)) = (trait_node, type_node) {
+        if let (Ok(trait_name), Ok(type_name)) = (
+            trait_n.utf8_text(source.as_ref()),
+            type_n.utf8_text(source.as_ref()),
+        ) {
+            let module_qn = build_qualified_name(module_context);
+            let source_qn = format!("{module_qn}::{type_name}");
+            let target_qn = trait_name.to_string();
+
+            relations.push(AnalysisRelation {
+                source_qualified_name: source_qn,
+                target_qualified_name: target_qn,
+                kind: EdgeKind::Implements,
+            });
+        }
+    }
+
     // Find the body of the impl block and extract function items from it.
     if let Some(body) = node.child_by_field_name("body") {
         // Methods inside impl blocks are extracted with the current module context
         // (not scoped under the type name — that would create a false hierarchy).
-        // Relationship extraction (Task 5) will link methods to their impl target.
-        visit_children(body, source, file_path, module_context, items, warnings);
+        visit_children(
+            body,
+            source,
+            file_path,
+            module_context,
+            items,
+            relations,
+            warnings,
+        );
+    }
+}
+
+/// Handle a `use_declaration` node. Extract the use path and emit a `Depends` relation.
+///
+/// For simple uses like `use foo::bar;`, the argument is `foo::bar`.
+/// For grouped uses like `use foo::{bar, baz};`, emit a dependency on the parent path.
+fn visit_use_declaration(
+    node: tree_sitter::Node<'_>,
+    source: &[u8],
+    module_context: &[String],
+    relations: &mut Vec<AnalysisRelation>,
+) {
+    let source_qn = build_qualified_name(module_context);
+
+    if let Some(argument) = node.child_by_field_name("argument") {
+        let target = argument.utf8_text(source).unwrap_or_default().to_string();
+        let target = target.replace(' ', "");
+
+        if target.is_empty() {
+            return;
+        }
+
+        // For grouped uses like `foo::{bar, baz}`, extract the parent path.
+        if target.contains('{') {
+            if let Some(parent_path) = target.split("::{").next() {
+                if !parent_path.is_empty() {
+                    relations.push(AnalysisRelation {
+                        source_qualified_name: source_qn,
+                        target_qualified_name: parent_path.to_string(),
+                        kind: EdgeKind::Depends,
+                    });
+                }
+            }
+        } else {
+            relations.push(AnalysisRelation {
+                source_qualified_name: source_qn,
+                target_qualified_name: target,
+                kind: EdgeKind::Depends,
+            });
+        }
+    }
+}
+
+/// Recursively walk a subtree looking for `call_expression` nodes
+/// and emit `Calls` relations for syntactically resolvable calls.
+///
+/// Method calls (field expressions like `x.foo()`) cannot be resolved
+/// by tree-sitter alone (no type information), so they emit a warning instead.
+fn visit_call_expressions(
+    node: tree_sitter::Node<'_>,
+    source: &[u8],
+    file_path: &Path,
+    module_context: &[String],
+    relations: &mut Vec<AnalysisRelation>,
+    warnings: &mut Vec<AnalysisWarning>,
+) {
+    for i in 0..node.named_child_count() {
+        let Some(child) = node.named_child(i) else {
+            continue;
+        };
+
+        if child.kind() == "call_expression" {
+            if let Some(function) = child.child_by_field_name("function") {
+                let source_qn = build_qualified_name(module_context);
+                let line = child.start_position().row + 1;
+
+                match function.kind() {
+                    "identifier" | "scoped_identifier" => {
+                        // Simple function call or path-qualified call (e.g., `foo()` or `mod::foo()`).
+                        if let Ok(callee) = function.utf8_text(source) {
+                            let callee = callee.replace(' ', "");
+                            if !callee.is_empty() {
+                                relations.push(AnalysisRelation {
+                                    source_qualified_name: source_qn,
+                                    target_qualified_name: callee,
+                                    kind: EdgeKind::Calls,
+                                });
+                            }
+                        }
+                    }
+                    "field_expression" => {
+                        // Method call (e.g., `x.foo()`) — cannot resolve the receiver type.
+                        if let Ok(callee_text) = function.utf8_text(source) {
+                            warnings.push(AnalysisWarning {
+                                source_ref: format!("{}:{line}", file_path.display()),
+                                message: format!(
+                                    "method call `{callee_text}(...)` cannot be resolved \
+                                     without type information"
+                                ),
+                            });
+                        }
+                    }
+                    _ => {
+                        // Other call forms (closures, etc.) — skip silently.
+                    }
+                }
+            }
+        }
+
+        // Recurse into children to find nested call expressions.
+        visit_call_expressions(
+            child,
+            source,
+            file_path,
+            module_context,
+            relations,
+            warnings,
+        );
     }
 }
 
@@ -558,6 +750,197 @@ mod tests {
                 .iter()
                 .any(|i| i.qualified_name == "my_crate::Private"),
             "private items should also be extracted"
+        );
+    }
+
+    // --- Relationship extraction tests ---
+
+    #[test]
+    fn use_statement_generates_depends_relation() {
+        let result = parse_source("my_crate", "use other_crate::something;");
+        let depends: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Depends)
+            .collect();
+        assert!(
+            !depends.is_empty(),
+            "use statement should generate Depends relation"
+        );
+        assert_eq!(
+            depends[0].target_qualified_name, "other_crate::something",
+            "target should be the use path"
+        );
+        assert_eq!(
+            depends[0].source_qualified_name, "my_crate",
+            "source should be the current module"
+        );
+    }
+
+    #[test]
+    fn grouped_use_generates_depends_on_parent_path() {
+        let result = parse_source("my_crate", "use std::collections::{HashMap, HashSet};");
+        let depends: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Depends)
+            .collect();
+        assert!(
+            !depends.is_empty(),
+            "grouped use should generate Depends relation on parent path"
+        );
+        assert_eq!(
+            depends[0].target_qualified_name, "std::collections",
+            "grouped use should depend on parent path"
+        );
+    }
+
+    #[test]
+    fn impl_trait_generates_implements_relation() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub trait Foo {}
+            pub struct Bar;
+            impl Foo for Bar {}
+        "#,
+        );
+        let impls: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Implements)
+            .collect();
+        assert!(
+            !impls.is_empty(),
+            "impl Trait for Type should generate Implements relation"
+        );
+        assert_eq!(
+            impls[0].source_qualified_name, "my_crate::Bar",
+            "source should be the implementing type"
+        );
+        assert_eq!(
+            impls[0].target_qualified_name, "Foo",
+            "target should be the trait"
+        );
+    }
+
+    #[test]
+    fn inherent_impl_does_not_generate_implements_relation() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub struct Foo;
+            impl Foo {
+                pub fn bar(&self) {}
+            }
+        "#,
+        );
+        let impls: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Implements)
+            .collect();
+        assert!(
+            impls.is_empty(),
+            "inherent impl (no trait) should not generate Implements relation"
+        );
+    }
+
+    #[test]
+    fn function_call_generates_calls_relation() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            fn helper() {}
+            fn main() {
+                helper();
+            }
+        "#,
+        );
+        let calls: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Calls)
+            .collect();
+        assert!(
+            !calls.is_empty(),
+            "function call should generate Calls relation"
+        );
+        assert_eq!(
+            calls[0].target_qualified_name, "helper",
+            "target should be the called function"
+        );
+    }
+
+    #[test]
+    fn scoped_function_call_generates_calls_relation() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            fn main() {
+                std::io::stdout();
+            }
+        "#,
+        );
+        let calls: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Calls)
+            .collect();
+        assert!(
+            !calls.is_empty(),
+            "scoped function call should generate Calls relation"
+        );
+        assert_eq!(
+            calls[0].target_qualified_name, "std::io::stdout",
+            "target should be the fully qualified call path"
+        );
+    }
+
+    #[test]
+    fn method_call_generates_warning() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            fn main() {
+                let x = String::new();
+                x.push_str("hello");
+            }
+        "#,
+        );
+        // Method calls can't be resolved by tree-sitter — should produce a warning.
+        let method_warnings: Vec<_> = result
+            .warnings
+            .iter()
+            .filter(|w| w.message.contains("cannot be resolved"))
+            .collect();
+        assert!(
+            !method_warnings.is_empty(),
+            "method call should produce a warning about unresolvable receiver"
+        );
+    }
+
+    #[test]
+    fn method_call_handled_gracefully() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            fn main() {
+                let x = String::new();
+                x.push_str("hello");
+            }
+        "#,
+        );
+        // Method calls can't be resolved by tree-sitter — should not crash.
+        // Should not produce a Calls relation for method calls.
+        let method_calls: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Calls && r.target_qualified_name.contains("push_str"))
+            .collect();
+        assert!(
+            method_calls.is_empty(),
+            "method call should not generate a Calls relation"
         );
     }
 }
