@@ -2,22 +2,28 @@
 
 #![warn(missing_docs)]
 
-// Used by route handlers added in subsequent tasks.
-#[allow(unused)]
 mod error;
-#[allow(unused)]
+mod routes;
 mod state;
 
-use axum::{routing::get, Router};
+use std::sync::Arc;
+
 use tokio::net::TcpListener;
 
-async fn hello() -> &'static str {
-    "software-visualizer-tool server"
-}
+use svt_core::store::CozoStore;
+
+use crate::state::AppState;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let app = Router::new().route("/", get(hello));
+    let store = CozoStore::new_in_memory()?;
+    let state = Arc::new(AppState {
+        store,
+        design_version: None,
+        analysis_version: None,
+    });
+
+    let app = routes::api_router(state);
 
     let listener = TcpListener::bind("0.0.0.0:3000").await?;
     println!("svt-server listening on http://0.0.0.0:3000");

@@ -12,6 +12,7 @@ pub enum ApiError {
     NotFound(String),
     /// Bad request parameters.
     #[error("{0}")]
+    #[allow(dead_code)]
     BadRequest(String),
     /// Internal store error.
     #[error("internal error: {0}")]

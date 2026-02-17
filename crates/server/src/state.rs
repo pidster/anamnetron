@@ -14,8 +14,10 @@ pub struct AppState {
     /// The graph store backing all queries.
     pub store: CozoStore,
     /// Design snapshot version, if a design was loaded.
+    #[allow(dead_code)]
     pub design_version: Option<Version>,
     /// Analysis snapshot version, if a project was analyzed.
+    #[allow(dead_code)]
     pub analysis_version: Option<Version>,
 }
 
