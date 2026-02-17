@@ -29,6 +29,8 @@ enum Commands {
     Import(ImportArgs),
     /// Run conformance checks on the current design.
     Check(CheckArgs),
+    /// Analyze a Rust project and create an analysis snapshot.
+    Analyze(AnalyzeArgs),
 }
 
 #[derive(clap::Args, Debug)]
@@ -43,6 +45,10 @@ struct CheckArgs {
     #[arg(long)]
     design: Option<u64>,
 
+    /// Analysis version to compare against (enables design vs analysis comparison).
+    #[arg(long)]
+    analysis: Option<u64>,
+
     /// Minimum severity to cause a non-zero exit code.
     #[arg(long, default_value = "error")]
     fail_on: String,
@@ -50,6 +56,17 @@ struct CheckArgs {
     /// Output format: human or json.
     #[arg(long, default_value = "human")]
     format: String,
+}
+
+#[derive(clap::Args, Debug)]
+struct AnalyzeArgs {
+    /// Path to the project root (default: current directory).
+    #[arg(default_value = ".")]
+    path: PathBuf,
+
+    /// Optional git commit ref to tag the snapshot.
+    #[arg(long)]
+    commit_ref: Option<String>,
 }
 
 fn open_or_create_store(path: &Path) -> Result<CozoStore> {
@@ -122,7 +139,7 @@ fn run_check(store_path: &Path, args: &CheckArgs) -> Result<()> {
 
     let store = open_store(store_path)?;
 
-    let version = match args.design {
+    let design_version = match args.design {
         Some(v) => v,
         None => store
             .latest_version(SnapshotKind::Design)
@@ -130,8 +147,13 @@ fn run_check(store_path: &Path, args: &CheckArgs) -> Result<()> {
             .ok_or_else(|| anyhow::anyhow!("No design versions found in store"))?,
     };
 
-    let report =
-        conformance::evaluate_design(&store, version).map_err(|e| anyhow::anyhow!("{}", e))?;
+    let report = if let Some(analysis_version) = args.analysis {
+        conformance::evaluate(&store, design_version, analysis_version)
+            .map_err(|e| anyhow::anyhow!("{}", e))?
+    } else {
+        conformance::evaluate_design(&store, design_version)
+            .map_err(|e| anyhow::anyhow!("{}", e))?
+    };
 
     if args.format == "json" {
         println!(
@@ -181,7 +203,14 @@ fn severity_rank(s: svt_core::model::Severity) -> u8 {
 fn print_human_report(report: &svt_core::conformance::ConformanceReport) {
     use svt_core::conformance::ConstraintStatus;
 
-    println!("Checking design v{}...\n", report.design_version);
+    if let Some(av) = report.analysis_version {
+        println!(
+            "Comparing design v{} vs analysis v{}...\n",
+            report.design_version, av
+        );
+    } else {
+        println!("Checking design v{}...\n", report.design_version);
+    }
 
     for result in &report.constraint_results {
         let tag = match result.status {
@@ -201,6 +230,26 @@ fn print_human_report(report: &svt_core::conformance::ConformanceReport) {
         }
     }
 
+    if !report.unimplemented.is_empty() {
+        println!(
+            "\n  Unimplemented design nodes ({}):",
+            report.unimplemented.len()
+        );
+        for node in &report.unimplemented {
+            println!("    - {} ({:?})", node.canonical_path, node.kind);
+        }
+    }
+
+    if !report.undocumented.is_empty() {
+        println!(
+            "\n  Undocumented analysis nodes ({}):",
+            report.undocumented.len()
+        );
+        for node in &report.undocumented {
+            println!("    - {} ({:?})", node.canonical_path, node.kind);
+        }
+    }
+
     println!();
     println!(
         "  {} passed, {} failed, {} warnings, {} not evaluable",
@@ -211,11 +260,42 @@ fn print_human_report(report: &svt_core::conformance::ConformanceReport) {
     );
 }
 
+fn run_analyze(store_path: &Path, args: &AnalyzeArgs) -> Result<()> {
+    let mut store = open_or_create_store(store_path)?;
+
+    let summary = svt_analyzer::analyze_project(&mut store, &args.path, args.commit_ref.as_deref())
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    println!("Analyzed {}\n", args.path.display());
+    println!("  Created analysis snapshot v{}", summary.version);
+    println!(
+        "    {} crates, {} files analyzed",
+        summary.crates_analyzed, summary.files_analyzed
+    );
+    println!(
+        "    {} nodes, {} edges",
+        summary.nodes_created, summary.edges_created
+    );
+
+    if !summary.warnings.is_empty() {
+        eprintln!("\n  {} warnings:", summary.warnings.len());
+        for w in summary.warnings.iter().take(20) {
+            eprintln!("    {} -- {}", w.source_ref, w.message);
+        }
+        if summary.warnings.len() > 20 {
+            eprintln!("    ... and {} more", summary.warnings.len() - 20);
+        }
+    }
+
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match &cli.command {
         Commands::Import(args) => run_import(&cli.store, args),
         Commands::Check(args) => run_check(&cli.store, args),
+        Commands::Analyze(args) => run_analyze(&cli.store, args),
     }
 }
