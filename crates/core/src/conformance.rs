@@ -292,20 +292,176 @@ pub fn evaluate_design(store: &impl GraphStore, version: Version) -> Result<Conf
 
 /// Evaluate conformance between a design version and an analysis version.
 ///
-/// Compares prescribed architecture against discovered architecture,
-/// evaluating all constraints and reporting unimplemented/undocumented nodes.
-///
-/// Not yet implemented — returns an error. Design-only mode is available
-/// via [`evaluate_design`].
+/// Compares prescribed architecture against discovered architecture:
+/// 1. Finds unimplemented nodes (in design but not in analysis)
+/// 2. Finds undocumented nodes (in analysis but not in design, at matching depth)
+/// 3. Evaluates all constraints against analysis edges
 pub fn evaluate(
-    _store: &impl GraphStore,
-    _design_version: Version,
-    _analysis_version: Version,
+    store: &impl GraphStore,
+    design_version: Version,
+    analysis_version: Version,
 ) -> Result<ConformanceReport> {
-    Err(crate::store::StoreError::Internal(
-        "analysis conformance not yet available; use evaluate_design for design-only mode"
-            .to_string(),
-    ))
+    let design_nodes = store.get_all_nodes(design_version)?;
+    let analysis_nodes = store.get_all_nodes(analysis_version)?;
+
+    let design_paths: std::collections::HashSet<&str> = design_nodes
+        .iter()
+        .map(|n| n.canonical_path.as_str())
+        .collect();
+    let analysis_paths: std::collections::HashSet<&str> = analysis_nodes
+        .iter()
+        .map(|n| n.canonical_path.as_str())
+        .collect();
+
+    // Unimplemented: design nodes not found in analysis
+    // Depth tolerance: a design node is "implemented" if any analysis node
+    // has it as a prefix (is a descendant)
+    let mut unimplemented = Vec::new();
+    for node in &design_nodes {
+        let path = &node.canonical_path;
+        let has_match = analysis_paths.contains(path.as_str());
+        let has_descendant = analysis_paths.iter().any(|ap| {
+            ap.starts_with(path.as_str())
+                && ap.len() > path.len()
+                && ap.as_bytes()[path.len()] == b'/'
+        });
+        if !has_match && !has_descendant {
+            unimplemented.push(UnmatchedNode {
+                canonical_path: node.canonical_path.clone(),
+                kind: node.kind,
+                name: node.name.clone(),
+            });
+        }
+    }
+
+    // Undocumented: analysis nodes not in design, filtered to design depth
+    let max_design_depth = design_nodes
+        .iter()
+        .map(|n| n.canonical_path.matches('/').count())
+        .max()
+        .unwrap_or(0);
+
+    let mut undocumented = Vec::new();
+    for node in &analysis_nodes {
+        let depth = node.canonical_path.matches('/').count();
+        if depth <= max_design_depth && !design_paths.contains(node.canonical_path.as_str()) {
+            undocumented.push(UnmatchedNode {
+                canonical_path: node.canonical_path.clone(),
+                kind: node.kind,
+                name: node.name.clone(),
+            });
+        }
+    }
+
+    // Structural checks on analysis version
+    let mut results = Vec::new();
+
+    let cycles = crate::validation::validate_contains_acyclic(store, analysis_version)?;
+    results.push(ConstraintResult {
+        constraint_name: "containment-acyclic".to_string(),
+        constraint_kind: "structural".to_string(),
+        status: if cycles.is_empty() {
+            ConstraintStatus::Pass
+        } else {
+            ConstraintStatus::Fail
+        },
+        severity: Severity::Error,
+        message: if cycles.is_empty() {
+            "Containment hierarchy is acyclic".to_string()
+        } else {
+            format!("Found {} cycle(s) in containment hierarchy", cycles.len())
+        },
+        violations: cycles
+            .iter()
+            .map(|c| Violation {
+                source_path: c.node_ids.first().cloned().unwrap_or_default(),
+                target_path: c.node_ids.last().cloned(),
+                edge_id: None,
+                edge_kind: Some(EdgeKind::Contains),
+                source_ref: None,
+            })
+            .collect(),
+    });
+
+    let integrity_errors =
+        crate::validation::validate_referential_integrity(store, analysis_version)?;
+    results.push(ConstraintResult {
+        constraint_name: "referential-integrity".to_string(),
+        constraint_kind: "structural".to_string(),
+        status: if integrity_errors.is_empty() {
+            ConstraintStatus::Pass
+        } else {
+            ConstraintStatus::Fail
+        },
+        severity: Severity::Error,
+        message: if integrity_errors.is_empty() {
+            "All edge references are valid".to_string()
+        } else {
+            format!(
+                "Found {} referential integrity error(s)",
+                integrity_errors.len()
+            )
+        },
+        violations: integrity_errors
+            .iter()
+            .map(|e| Violation {
+                source_path: e.missing_node_id.clone(),
+                target_path: None,
+                edge_id: Some(e.edge_id.clone()),
+                edge_kind: None,
+                source_ref: None,
+            })
+            .collect(),
+    });
+
+    // Run design constraints against analysis version
+    let constraints = store.get_constraints(design_version)?;
+    for constraint in &constraints {
+        let result = match constraint.kind.as_str() {
+            "must_not_depend" => {
+                evaluate_constraint_must_not_depend(store, constraint, analysis_version)?
+            }
+            _ => ConstraintResult {
+                constraint_name: constraint.name.clone(),
+                constraint_kind: constraint.kind.clone(),
+                status: ConstraintStatus::NotEvaluable,
+                severity: constraint.severity,
+                message: format!("{} not evaluable in analysis mode", constraint.kind),
+                violations: vec![],
+            },
+        };
+        results.push(result);
+    }
+
+    let summary = ConformanceSummary {
+        passed: results
+            .iter()
+            .filter(|r| r.status == ConstraintStatus::Pass)
+            .count(),
+        failed: results
+            .iter()
+            .filter(|r| r.status == ConstraintStatus::Fail && r.severity == Severity::Error)
+            .count(),
+        warned: results
+            .iter()
+            .filter(|r| r.status == ConstraintStatus::Fail && r.severity == Severity::Warning)
+            .count(),
+        not_evaluable: results
+            .iter()
+            .filter(|r| r.status == ConstraintStatus::NotEvaluable)
+            .count(),
+        unimplemented: unimplemented.len(),
+        undocumented: undocumented.len(),
+    };
+
+    Ok(ConformanceReport {
+        design_version,
+        analysis_version: Some(analysis_version),
+        constraint_results: results,
+        unimplemented,
+        undocumented,
+        summary,
+    })
 }
 
 #[cfg(test)]
@@ -505,13 +661,190 @@ constraints:
     }
 
     #[test]
-    fn evaluate_stub_returns_error() {
-        let store = CozoStore::new_in_memory().unwrap();
-        let err = evaluate(&store, 1, 2).unwrap_err();
+    fn evaluate_finds_unimplemented_design_nodes() {
+        let mut store = CozoStore::new_in_memory().unwrap();
+
+        // Create design with 2 nodes
+        let dv = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        store
+            .add_node(dv, &make_node("d1", "/app", NodeKind::System, "workspace"))
+            .unwrap();
+        store
+            .add_node(
+                dv,
+                &make_node("d2", "/app/missing", NodeKind::Service, "crate"),
+            )
+            .unwrap();
+
+        // Create analysis with only 1 matching node
+        let av = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+        store
+            .add_node(av, &make_node("a1", "/app", NodeKind::System, "workspace"))
+            .unwrap();
+
+        let report = evaluate(&store, dv, av).unwrap();
         assert!(
-            err.to_string().contains("not yet available"),
-            "expected 'not yet available' error, got: {}",
-            err
+            !report.unimplemented.is_empty(),
+            "should report /app/missing as unimplemented"
+        );
+        assert!(report
+            .unimplemented
+            .iter()
+            .any(|n| n.canonical_path == "/app/missing"));
+    }
+
+    #[test]
+    fn evaluate_finds_undocumented_analysis_nodes() {
+        let mut store = CozoStore::new_in_memory().unwrap();
+
+        // Design has /app and /app/core
+        let dv = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        store
+            .add_node(dv, &make_node("d1", "/app", NodeKind::System, "workspace"))
+            .unwrap();
+        store
+            .add_node(
+                dv,
+                &make_node("d2", "/app/core", NodeKind::Service, "crate"),
+            )
+            .unwrap();
+
+        // Analysis has /app, /app/core, and /app/extra (undocumented, same depth as design)
+        let av = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+        store
+            .add_node(av, &make_node("a1", "/app", NodeKind::System, "workspace"))
+            .unwrap();
+        store
+            .add_node(
+                av,
+                &make_node("a2", "/app/core", NodeKind::Service, "crate"),
+            )
+            .unwrap();
+        store
+            .add_node(
+                av,
+                &make_node("a3", "/app/extra", NodeKind::Service, "crate"),
+            )
+            .unwrap();
+
+        let report = evaluate(&store, dv, av).unwrap();
+        assert!(report.analysis_version.is_some());
+        // /app/extra should be flagged as undocumented (same depth as design, not child of design node)
+        assert!(
+            report
+                .undocumented
+                .iter()
+                .any(|n| n.canonical_path == "/app/extra"),
+            "should find /app/extra as undocumented, got: {:?}",
+            report.undocumented
+        );
+    }
+
+    #[test]
+    fn evaluate_depth_tolerance_design_node_with_descendants() {
+        let mut store = CozoStore::new_in_memory().unwrap();
+
+        // Design has /app and /app/core
+        let dv = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        store
+            .add_node(dv, &make_node("d1", "/app", NodeKind::System, "workspace"))
+            .unwrap();
+        store
+            .add_node(
+                dv,
+                &make_node("d2", "/app/core", NodeKind::Service, "crate"),
+            )
+            .unwrap();
+
+        // Analysis has /app, /app/core, and /app/core/model (deeper)
+        let av = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+        store
+            .add_node(av, &make_node("a1", "/app", NodeKind::System, "workspace"))
+            .unwrap();
+        store
+            .add_node(
+                av,
+                &make_node("a2", "/app/core", NodeKind::Service, "crate"),
+            )
+            .unwrap();
+        store
+            .add_node(
+                av,
+                &make_node("a3", "/app/core/model", NodeKind::Component, "module"),
+            )
+            .unwrap();
+
+        let report = evaluate(&store, dv, av).unwrap();
+        assert!(
+            report.unimplemented.is_empty(),
+            "all design nodes have matches, none should be unimplemented: {:?}",
+            report.unimplemented
+        );
+    }
+
+    #[test]
+    fn evaluate_runs_constraints_against_analysis() {
+        let mut store = CozoStore::new_in_memory().unwrap();
+
+        // Load design
+        let dv = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        store
+            .add_node(dv, &make_node("d1", "/app", NodeKind::System, "workspace"))
+            .unwrap();
+        store
+            .add_node(
+                dv,
+                &make_node("d2", "/app/core", NodeKind::Service, "crate"),
+            )
+            .unwrap();
+        store
+            .add_node(dv, &make_node("d3", "/app/cli", NodeKind::Service, "crate"))
+            .unwrap();
+        store
+            .add_constraint(
+                dv,
+                &Constraint {
+                    id: "c1".to_string(),
+                    kind: "must_not_depend".to_string(),
+                    name: "core-no-cli".to_string(),
+                    scope: "/app/core/**".to_string(),
+                    target: Some("/app/cli/**".to_string()),
+                    params: None,
+                    message: "Core must not depend on CLI".to_string(),
+                    severity: Severity::Error,
+                },
+            )
+            .unwrap();
+
+        // Create analysis with a forbidden dependency
+        let av = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+        store
+            .add_node(av, &make_node("a1", "/app", NodeKind::System, "workspace"))
+            .unwrap();
+        store
+            .add_node(
+                av,
+                &make_node("a2", "/app/core", NodeKind::Service, "crate"),
+            )
+            .unwrap();
+        store
+            .add_node(av, &make_node("a3", "/app/cli", NodeKind::Service, "crate"))
+            .unwrap();
+        // Forbidden: core depends on cli
+        store
+            .add_edge(av, &make_edge("ae1", "a2", "a3", EdgeKind::Depends))
+            .unwrap();
+
+        let report = evaluate(&store, dv, av).unwrap();
+        let core_constraint = report
+            .constraint_results
+            .iter()
+            .find(|r| r.constraint_name == "core-no-cli")
+            .unwrap();
+        assert_eq!(
+            core_constraint.status,
+            ConstraintStatus::Fail,
+            "constraint should fail against analysis edges"
         );
     }
 
