@@ -1,4 +1,4 @@
-//! CLI integration tests for `svt import` and `svt check`.
+//! CLI integration tests for `svt import`, `svt check`, and `svt analyze`.
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -167,4 +167,95 @@ fn import_on_unsupported_extension_gives_clear_error() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("Unsupported file format"));
+}
+
+#[test]
+fn analyze_succeeds_on_workspace() {
+    let dir = TempDir::new().unwrap();
+    let store_path = dir.path().join(".svt/store");
+
+    // Analyze this project's workspace root
+    let project_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+
+    svt_cmd()
+        .arg("--store")
+        .arg(&store_path)
+        .arg("analyze")
+        .arg(&project_root)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("nodes"))
+        .stdout(predicate::str::contains("edges"));
+}
+
+#[test]
+fn analyze_with_commit_ref() {
+    let dir = TempDir::new().unwrap();
+    let store_path = dir.path().join(".svt/store");
+
+    let project_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+
+    svt_cmd()
+        .arg("--store")
+        .arg(&store_path)
+        .arg("analyze")
+        .arg(&project_root)
+        .arg("--commit-ref")
+        .arg("abc123")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("snapshot"));
+}
+
+#[test]
+fn check_with_analysis_flag_accepted() {
+    let dir = TempDir::new().unwrap();
+    let yaml_path = write_design_yaml(&dir);
+    let store_path = dir.path().join(".svt/store");
+
+    // Import design first
+    svt_cmd()
+        .arg("--store")
+        .arg(&store_path)
+        .arg("import")
+        .arg(&yaml_path)
+        .assert()
+        .success();
+
+    // Check with --analysis flag pointing to nonexistent version succeeds but
+    // reports all design nodes as unimplemented (empty analysis snapshot)
+    svt_cmd()
+        .arg("--store")
+        .arg(&store_path)
+        .arg("check")
+        .arg("--analysis")
+        .arg("999")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Comparing design"))
+        .stdout(predicate::str::contains("Unimplemented"));
+}
+
+#[test]
+fn analyze_on_nonexistent_path_gives_error() {
+    let dir = TempDir::new().unwrap();
+    let store_path = dir.path().join(".svt/store");
+
+    svt_cmd()
+        .arg("--store")
+        .arg(&store_path)
+        .arg("analyze")
+        .arg("/nonexistent/path/to/project")
+        .assert()
+        .failure();
 }
