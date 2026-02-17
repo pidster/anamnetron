@@ -21,7 +21,7 @@
   let container: HTMLDivElement;
   let cy: cytoscape.Core | null = null;
 
-  const styleSheet: cytoscape.Stylesheet[] = [
+  const styleSheet: cytoscape.StylesheetStyle[] = [
     {
       selector: "node",
       style: {
