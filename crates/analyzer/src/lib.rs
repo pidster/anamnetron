@@ -6,8 +6,7 @@
 
 #![warn(missing_docs)]
 
-/// Language-specific analysis drivers.
-pub mod languages {}
-
-/// Project discovery and file scanning.
-pub mod discovery {}
+pub mod discovery;
+pub mod languages;
+pub mod mapping;
+pub mod types;
