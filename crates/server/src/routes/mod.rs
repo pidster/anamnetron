@@ -1,8 +1,11 @@
 //! Route modules and router assembly.
 
+pub mod conformance;
 pub mod edges;
+pub mod graph;
 pub mod health;
 pub mod nodes;
+pub mod search;
 pub mod snapshots;
 
 use std::sync::Arc;
@@ -37,6 +40,13 @@ pub fn api_router(state: Arc<AppState>) -> Router {
             get(nodes::get_dependents),
         )
         .route("/api/snapshots/{version}/edges", get(edges::list_edges))
+        .route("/api/snapshots/{version}/graph", get(graph::get_graph))
+        .route(
+            "/api/conformance/design/{version}",
+            get(conformance::evaluate_design),
+        )
+        .route("/api/conformance", get(conformance::evaluate_conformance))
+        .route("/api/search", get(search::search_nodes))
         .layer(CorsLayer::permissive())
         .with_state(state)
 }
