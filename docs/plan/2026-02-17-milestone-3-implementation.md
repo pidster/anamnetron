@@ -1,5 +1,32 @@
 # Milestone 3: Rust Analyzer Implementation Plan
 
+## Status: COMPLETE
+
+All 15 tasks implemented, reviewed, and fixes applied. 190 tests passing across the workspace.
+
+**Completed:** 2026-02-17
+**Commits:** `1444bdc`..`0084caa` (16 commits)
+**Final test count:** 190 (39 analyzer unit + 8 analyzer integration/dogfood + 68 core + 10 CLI + 65 other)
+
+### Dog-food results (this project)
+- 271 analysis nodes, 275 analysis edges
+- 7/7 constraints passed (all `must_not_depend` rules hold)
+- 27 unimplemented design nodes (naming convention mismatches + web frontend not yet built)
+- 262 undocumented analysis nodes (expected — analysis is much more granular than design)
+
+### Post-implementation review
+Code review identified 8 issues (4 Important, 4 Minor), all fixed in `0084caa`:
+- I-1: Added recursion in `visit_node` default branch
+- I-2: Removed nested `unwrap()` in discovery
+- I-3: Replaced `expect()` with graceful error handling
+- I-4: Added `#[must_use]` to `map_to_graph()`
+- M-1: Replaced glob import with explicit imports
+- M-2: Extracted `structural_checks`, `evaluate_constraints`, `compute_summary` helpers
+- M-3: Added doc-test for `qualified_name_to_canonical`
+- M-4: Added single-crate and non-Rust directory tests
+
+---
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Full discovery-mode pipeline: analyze a Rust project with tree-sitter, produce an analysis snapshot, compare against a design snapshot, report drift. Dog-food on this project.
@@ -31,6 +58,27 @@ Task 7 ──→ Task 8 (e2e test) ──→ Task 11 (CLI analyze) ──→ Tas
 ```
 
 **Parallelism:** Builder A takes the parser track (Tasks 0,1,3,4,5,7,8,11,14). Builder B takes the mapping + conformance track (Tasks 2,6,9,10,12,13).
+
+### Task completion summary
+
+| Task | Description | Commit | Tests |
+|------|-------------|--------|-------|
+| 0 | Add dependencies | `1444bdc` | compile |
+| 1 | Intermediate types | `ba2816a` | compile |
+| 2 | Discovery module | `da81439` | 3 |
+| 3 | LanguageAnalyzer trait | `67bae38` | compile |
+| 4 | Rust structure extraction | `2644a77` | 16 |
+| 5 | Relationship extraction | `4e59a56` | 24 |
+| 6 | Mapping module | `f045688` | 8 |
+| 7 | analyze_project API | `563488c` | 2 |
+| 8 | E2E integration tests | `21ca3c8` | 6 |
+| 9 | Real evaluate() | `0121017` | 4 |
+| 10 | Conformance edge cases | `356ec9d` | 4 |
+| 11 | CLI analyze command | `0804426` | — |
+| 12 | CLI check --analysis | `0804426` | — |
+| 13 | CLI integration tests | `21ec552` | 4 |
+| 14 | Dog-food test | `ca78132` | 2 |
+| Review | Fix all 8 review issues | `0084caa` | +3 |
 
 ---
 

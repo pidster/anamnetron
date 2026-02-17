@@ -1,5 +1,11 @@
 # Milestone 1: Core Data Model + CozoDB Store — Implementation Plan
 
+## Status: COMPLETE
+
+Completed: 2026-02-15
+
+---
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Implement `svt-core` with Rust type definitions, `GraphStore` trait, and CozoDB backend supporting write, read, and basic traversal operations.
