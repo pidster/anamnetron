@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use svt_core::canonical::to_kebab_case;
-use svt_core::model::*;
+use svt_core::model::{Edge, EdgeKind, Node, Provenance};
 use uuid::Uuid;
 
 use crate::types::{AnalysisItem, AnalysisRelation, AnalysisWarning};
@@ -17,6 +17,15 @@ const SVT_NAMESPACE: Uuid = Uuid::from_bytes([
 ///
 /// Splits on `::`, applies `to_kebab_case` to each segment,
 /// joins with `/`, prepends `/`.
+///
+/// # Examples
+///
+/// ```
+/// use svt_analyzer::mapping::qualified_name_to_canonical;
+///
+/// assert_eq!(qualified_name_to_canonical("svt_core"), "/svt-core");
+/// assert_eq!(qualified_name_to_canonical("svt_core::model::Node"), "/svt-core/model/node");
+/// ```
 #[must_use]
 pub fn qualified_name_to_canonical(qualified_name: &str) -> String {
     let segments: Vec<String> = qualified_name.split("::").map(to_kebab_case).collect();
@@ -39,6 +48,7 @@ fn edge_id(source_path: &str, target_path: &str, kind: EdgeKind) -> String {
 /// Pure function: no I/O, no store access. Converts qualified names
 /// to canonical paths, generates deterministic IDs, and builds
 /// containment edges from parent relationships.
+#[must_use]
 pub fn map_to_graph(
     items: &[AnalysisItem],
     relations: &[AnalysisRelation],
@@ -128,7 +138,7 @@ pub fn map_to_graph(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use svt_core::model::{EdgeKind, NodeKind};
+    use svt_core::model::NodeKind;
 
     fn make_item(
         qualified_name: &str,

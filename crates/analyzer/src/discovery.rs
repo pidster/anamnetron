@@ -46,7 +46,8 @@ pub fn discover_project(project_root: &Path) -> Result<ProjectLayout, DiscoveryE
                 .manifest_path
                 .parent()
                 .map(|p| p.as_std_path().to_path_buf())
-                .unwrap_or_else(|| entry_point.parent().unwrap().to_path_buf());
+                .or_else(|| entry_point.parent().map(|p| p.to_path_buf()))
+                .unwrap_or_else(|| entry_point.clone());
 
             let source_files = walk_rs_files(&crate_root.join("src"));
 
@@ -86,6 +87,7 @@ fn walk_rs_files(dir: &Path) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     #[test]
     fn discovers_workspace_crates() {
@@ -147,5 +149,32 @@ mod tests {
             .iter()
             .find(|c| c.name == "svt-cli" || c.name == "svt");
         assert!(cli_bin.is_some(), "should find CLI binary crate");
+    }
+
+    #[test]
+    fn discovers_single_crate_project() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"single-crate\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/lib.rs"), "pub fn hello() {}\n").unwrap();
+
+        let layout = discover_project(dir.path()).unwrap();
+        assert_eq!(layout.crates.len(), 1, "should find exactly 1 crate");
+        assert_eq!(layout.crates[0].name, "single-crate");
+        assert_eq!(layout.crates[0].crate_type, CrateType::Lib);
+    }
+
+    #[test]
+    fn non_rust_directory_returns_error() {
+        let dir = TempDir::new().unwrap();
+        let result = discover_project(dir.path());
+        assert!(
+            result.is_err(),
+            "directory without Cargo.toml should return error"
+        );
     }
 }

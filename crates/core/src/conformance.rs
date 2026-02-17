@@ -175,14 +175,10 @@ pub fn evaluate_constraint_must_not_depend(
     })
 }
 
-/// Evaluate a design version: structural checks + constraint evaluation.
-///
-/// Design-only mode: no analysis version. Non-evaluable constraints
-/// (e.g., must_contain without analysis data) are marked `NotEvaluable`.
-pub fn evaluate_design(store: &impl GraphStore, version: Version) -> Result<ConformanceReport> {
+/// Run structural checks (containment acyclicity and referential integrity) on a version.
+fn structural_checks(store: &impl GraphStore, version: Version) -> Result<Vec<ConstraintResult>> {
     let mut results = Vec::new();
 
-    // Structural check: containment acyclicity
     let cycles = crate::validation::validate_contains_acyclic(store, version)?;
     results.push(ConstraintResult {
         constraint_name: "containment-acyclic".to_string(),
@@ -210,7 +206,6 @@ pub fn evaluate_design(store: &impl GraphStore, version: Version) -> Result<Conf
             .collect(),
     });
 
-    // Structural check: referential integrity
     let integrity_errors = crate::validation::validate_referential_integrity(store, version)?;
     results.push(ConstraintResult {
         constraint_name: "referential-integrity".to_string(),
@@ -241,25 +236,43 @@ pub fn evaluate_design(store: &impl GraphStore, version: Version) -> Result<Conf
             .collect(),
     });
 
-    // Evaluate each constraint
-    let constraints = store.get_constraints(version)?;
+    Ok(results)
+}
+
+/// Evaluate constraints from `constraint_version` against data in `eval_version`.
+fn evaluate_constraints(
+    store: &impl GraphStore,
+    constraint_version: Version,
+    eval_version: Version,
+) -> Result<Vec<ConstraintResult>> {
+    let mut results = Vec::new();
+    let constraints = store.get_constraints(constraint_version)?;
     for constraint in &constraints {
         let result = match constraint.kind.as_str() {
-            "must_not_depend" => evaluate_constraint_must_not_depend(store, constraint, version)?,
+            "must_not_depend" => {
+                evaluate_constraint_must_not_depend(store, constraint, eval_version)?
+            }
             _ => ConstraintResult {
                 constraint_name: constraint.name.clone(),
                 constraint_kind: constraint.kind.clone(),
                 status: ConstraintStatus::NotEvaluable,
                 severity: constraint.severity,
-                message: format!("{} not evaluable (design-only mode)", constraint.kind),
+                message: format!("{} not evaluable", constraint.kind),
                 violations: vec![],
             },
         };
         results.push(result);
     }
+    Ok(results)
+}
 
-    // Compute summary
-    let summary = ConformanceSummary {
+/// Compute summary counts from constraint results and unmatched node counts.
+fn compute_summary(
+    results: &[ConstraintResult],
+    unimplemented: usize,
+    undocumented: usize,
+) -> ConformanceSummary {
+    ConformanceSummary {
         passed: results
             .iter()
             .filter(|r| r.status == ConstraintStatus::Pass)
@@ -276,9 +289,19 @@ pub fn evaluate_design(store: &impl GraphStore, version: Version) -> Result<Conf
             .iter()
             .filter(|r| r.status == ConstraintStatus::NotEvaluable)
             .count(),
-        unimplemented: 0,
-        undocumented: 0,
-    };
+        unimplemented,
+        undocumented,
+    }
+}
+
+/// Evaluate a design version: structural checks + constraint evaluation.
+///
+/// Design-only mode: no analysis version. Non-evaluable constraints
+/// (e.g., must_contain without analysis data) are marked `NotEvaluable`.
+pub fn evaluate_design(store: &impl GraphStore, version: Version) -> Result<ConformanceReport> {
+    let mut results = structural_checks(store, version)?;
+    results.extend(evaluate_constraints(store, version, version)?);
+    let summary = compute_summary(&results, 0, 0);
 
     Ok(ConformanceReport {
         design_version: version,
@@ -353,106 +376,14 @@ pub fn evaluate(
         }
     }
 
-    // Structural checks on analysis version
-    let mut results = Vec::new();
-
-    let cycles = crate::validation::validate_contains_acyclic(store, analysis_version)?;
-    results.push(ConstraintResult {
-        constraint_name: "containment-acyclic".to_string(),
-        constraint_kind: "structural".to_string(),
-        status: if cycles.is_empty() {
-            ConstraintStatus::Pass
-        } else {
-            ConstraintStatus::Fail
-        },
-        severity: Severity::Error,
-        message: if cycles.is_empty() {
-            "Containment hierarchy is acyclic".to_string()
-        } else {
-            format!("Found {} cycle(s) in containment hierarchy", cycles.len())
-        },
-        violations: cycles
-            .iter()
-            .map(|c| Violation {
-                source_path: c.node_ids.first().cloned().unwrap_or_default(),
-                target_path: c.node_ids.last().cloned(),
-                edge_id: None,
-                edge_kind: Some(EdgeKind::Contains),
-                source_ref: None,
-            })
-            .collect(),
-    });
-
-    let integrity_errors =
-        crate::validation::validate_referential_integrity(store, analysis_version)?;
-    results.push(ConstraintResult {
-        constraint_name: "referential-integrity".to_string(),
-        constraint_kind: "structural".to_string(),
-        status: if integrity_errors.is_empty() {
-            ConstraintStatus::Pass
-        } else {
-            ConstraintStatus::Fail
-        },
-        severity: Severity::Error,
-        message: if integrity_errors.is_empty() {
-            "All edge references are valid".to_string()
-        } else {
-            format!(
-                "Found {} referential integrity error(s)",
-                integrity_errors.len()
-            )
-        },
-        violations: integrity_errors
-            .iter()
-            .map(|e| Violation {
-                source_path: e.missing_node_id.clone(),
-                target_path: None,
-                edge_id: Some(e.edge_id.clone()),
-                edge_kind: None,
-                source_ref: None,
-            })
-            .collect(),
-    });
-
-    // Run design constraints against analysis version
-    let constraints = store.get_constraints(design_version)?;
-    for constraint in &constraints {
-        let result = match constraint.kind.as_str() {
-            "must_not_depend" => {
-                evaluate_constraint_must_not_depend(store, constraint, analysis_version)?
-            }
-            _ => ConstraintResult {
-                constraint_name: constraint.name.clone(),
-                constraint_kind: constraint.kind.clone(),
-                status: ConstraintStatus::NotEvaluable,
-                severity: constraint.severity,
-                message: format!("{} not evaluable in analysis mode", constraint.kind),
-                violations: vec![],
-            },
-        };
-        results.push(result);
-    }
-
-    let summary = ConformanceSummary {
-        passed: results
-            .iter()
-            .filter(|r| r.status == ConstraintStatus::Pass)
-            .count(),
-        failed: results
-            .iter()
-            .filter(|r| r.status == ConstraintStatus::Fail && r.severity == Severity::Error)
-            .count(),
-        warned: results
-            .iter()
-            .filter(|r| r.status == ConstraintStatus::Fail && r.severity == Severity::Warning)
-            .count(),
-        not_evaluable: results
-            .iter()
-            .filter(|r| r.status == ConstraintStatus::NotEvaluable)
-            .count(),
-        unimplemented: unimplemented.len(),
-        undocumented: undocumented.len(),
-    };
+    // Structural checks + constraints
+    let mut results = structural_checks(store, analysis_version)?;
+    results.extend(evaluate_constraints(
+        store,
+        design_version,
+        analysis_version,
+    )?);
+    let summary = compute_summary(&results, unimplemented.len(), undocumented.len());
 
     Ok(ConformanceReport {
         design_version,

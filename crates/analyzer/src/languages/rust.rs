@@ -41,9 +41,16 @@ impl LanguageAnalyzer for RustAnalyzer {
         let mut result = ParseResult::default();
 
         let mut parser = tree_sitter::Parser::new();
-        parser
+        if parser
             .set_language(&tree_sitter_rust::LANGUAGE.into())
-            .expect("failed to load tree-sitter-rust grammar");
+            .is_err()
+        {
+            result.warnings.push(AnalysisWarning {
+                source_ref: String::new(),
+                message: "failed to load tree-sitter-rust grammar".to_string(),
+            });
+            return result;
+        }
 
         for file in files {
             match std::fs::read_to_string(file) {
@@ -223,8 +230,17 @@ fn visit_node(
             visit_use_declaration(node, source, module_context, relations);
         }
         _ => {
-            // For other node types, recurse into children in case they contain items
+            // Recurse into children in case they contain items
             // (e.g., items inside cfg-gated blocks).
+            visit_children(
+                node,
+                source,
+                file_path,
+                module_context,
+                items,
+                relations,
+                warnings,
+            );
         }
     }
 }
