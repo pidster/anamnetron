@@ -2,6 +2,12 @@
 
 #![warn(missing_docs)]
 
+// Used by route handlers added in subsequent tasks.
+#[allow(unused)]
+mod error;
+#[allow(unused)]
+mod state;
+
 use axum::{routing::get, Router};
 use tokio::net::TcpListener;
 
