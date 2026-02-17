@@ -1,5 +1,26 @@
 # Milestone 4: Server API Implementation Plan
 
+## Status: COMPLETE (2026-02-17)
+
+- **Tests:** 17 new (13 unit + 4 integration), 218 total workspace tests passing
+- **Commits:** 10 implementation commits (`3279f17`..`e4a1f42`)
+- **Verification:** clippy clean, fmt clean, audit clean
+
+| Task | Description | Commit | Tests |
+|------|-------------|--------|-------|
+| 0 | Dependencies | `3279f17` | — |
+| 1 | AppState + ApiError | `8ba52fd` | — |
+| 2 | Health + Snapshots | `71f3408` | 2 |
+| 3 | Nodes routes | `531670f` | 4 |
+| 4 | Edges route | `b3b3820` | 2 |
+| 5 | Graph (Cytoscape.js) | `18af029` | 1 |
+| 6 | Conformance endpoints | `3ffaad4` | 2 |
+| 7 | Search endpoint | `e26d5b4` | 2 |
+| 8 | CLI startup | `81f0cd3` | — |
+| 9+10 | Integration tests + verification | `e4a1f42` | 4 |
+
+---
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Axum REST API serving graph data read-only from a pre-loaded CozoStore, enabling architecture exploration via HTTP.
