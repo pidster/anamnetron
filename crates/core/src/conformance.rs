@@ -914,4 +914,132 @@ constraints:
             "warned should only count warning-severity failures"
         );
     }
+
+    #[test]
+    fn evaluate_empty_analysis_reports_all_design_as_unimplemented() {
+        let mut store = CozoStore::new_in_memory().unwrap();
+
+        // Design has 2 nodes
+        let dv = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        store
+            .add_node(dv, &make_node("d1", "/app", NodeKind::System, "workspace"))
+            .unwrap();
+        store
+            .add_node(
+                dv,
+                &make_node("d2", "/app/core", NodeKind::Service, "crate"),
+            )
+            .unwrap();
+
+        // Analysis is empty
+        let av = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+
+        let report = evaluate(&store, dv, av).unwrap();
+        assert_eq!(
+            report.unimplemented.len(),
+            2,
+            "all design nodes should be unimplemented when analysis is empty"
+        );
+    }
+
+    #[test]
+    fn evaluate_both_empty_produces_clean_report() {
+        let mut store = CozoStore::new_in_memory().unwrap();
+
+        let dv = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        let av = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+
+        let report = evaluate(&store, dv, av).unwrap();
+        assert!(report.unimplemented.is_empty());
+        assert!(report.undocumented.is_empty());
+        assert_eq!(
+            report.summary.passed, 2,
+            "structural checks should pass on empty graph"
+        );
+        assert_eq!(report.summary.failed, 0);
+    }
+
+    #[test]
+    fn evaluate_summary_counts_are_correct() {
+        let mut store = CozoStore::new_in_memory().unwrap();
+
+        let dv = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        store
+            .add_node(dv, &make_node("d1", "/app", NodeKind::System, "workspace"))
+            .unwrap();
+        store
+            .add_node(
+                dv,
+                &make_node("d2", "/app/core", NodeKind::Service, "crate"),
+            )
+            .unwrap();
+        store
+            .add_node(
+                dv,
+                &make_node("d3", "/app/missing", NodeKind::Service, "crate"),
+            )
+            .unwrap();
+
+        let av = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+        store
+            .add_node(av, &make_node("a1", "/app", NodeKind::System, "workspace"))
+            .unwrap();
+        store
+            .add_node(
+                av,
+                &make_node("a2", "/app/core", NodeKind::Service, "crate"),
+            )
+            .unwrap();
+        store
+            .add_node(
+                av,
+                &make_node("a3", "/app/extra", NodeKind::Service, "crate"),
+            )
+            .unwrap();
+
+        let report = evaluate(&store, dv, av).unwrap();
+        assert_eq!(report.summary.unimplemented, 1, "/app/missing");
+        assert_eq!(report.summary.undocumented, 1, "/app/extra");
+        assert!(report.summary.passed >= 2, "structural checks should pass");
+    }
+
+    #[test]
+    fn evaluate_design_node_with_only_descendant_is_implemented() {
+        let mut store = CozoStore::new_in_memory().unwrap();
+
+        // Design has /app/core but analysis only has /app/core/model (descendant)
+        let dv = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        store
+            .add_node(dv, &make_node("d1", "/app", NodeKind::System, "workspace"))
+            .unwrap();
+        store
+            .add_node(
+                dv,
+                &make_node("d2", "/app/core", NodeKind::Service, "crate"),
+            )
+            .unwrap();
+
+        let av = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+        store
+            .add_node(av, &make_node("a1", "/app", NodeKind::System, "workspace"))
+            .unwrap();
+        // No exact /app/core — but has a descendant
+        store
+            .add_node(
+                av,
+                &make_node("a3", "/app/core/model", NodeKind::Component, "module"),
+            )
+            .unwrap();
+
+        let report = evaluate(&store, dv, av).unwrap();
+        // /app/core should NOT be unimplemented due to depth tolerance
+        assert!(
+            !report
+                .unimplemented
+                .iter()
+                .any(|n| n.canonical_path == "/app/core"),
+            "/app/core should be considered implemented via descendant, unimplemented: {:?}",
+            report.unimplemented
+        );
+    }
 }
