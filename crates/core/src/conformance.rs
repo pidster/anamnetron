@@ -175,6 +175,249 @@ pub fn evaluate_constraint_must_not_depend(
     })
 }
 
+/// Evaluate a `boundary` constraint (scope_only access mode).
+///
+/// Checks that no node outside the scope pattern has a `Depends` edge
+/// targeting a node inside the scope. Internal-to-internal deps are allowed.
+pub fn evaluate_constraint_boundary(
+    store: &impl GraphStore,
+    constraint: &Constraint,
+    version: Version,
+) -> Result<ConstraintResult> {
+    let all_nodes = store.get_all_nodes(version)?;
+    let depends_edges = store.get_all_edges(version, Some(EdgeKind::Depends))?;
+
+    let mut scoped_ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut id_to_path: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+
+    for node in &all_nodes {
+        id_to_path.insert(&node.id, &node.canonical_path);
+        if canonical_path_matches(&node.canonical_path, &constraint.scope) {
+            scoped_ids.insert(&node.id);
+        }
+    }
+
+    let mut violations = Vec::new();
+    for edge in &depends_edges {
+        let target_in_scope = scoped_ids.contains(edge.target.as_str());
+        let source_in_scope = scoped_ids.contains(edge.source.as_str());
+
+        // Violation: external source depends on internal target
+        if target_in_scope && !source_in_scope {
+            violations.push(Violation {
+                source_path: id_to_path
+                    .get(edge.source.as_str())
+                    .unwrap_or(&"")
+                    .to_string(),
+                target_path: Some(
+                    id_to_path
+                        .get(edge.target.as_str())
+                        .unwrap_or(&"")
+                        .to_string(),
+                ),
+                edge_id: Some(edge.id.clone()),
+                edge_kind: Some(edge.kind),
+                source_ref: None,
+            });
+        }
+    }
+
+    let status = if violations.is_empty() {
+        ConstraintStatus::Pass
+    } else {
+        ConstraintStatus::Fail
+    };
+
+    Ok(ConstraintResult {
+        constraint_name: constraint.name.clone(),
+        constraint_kind: constraint.kind.clone(),
+        status,
+        severity: constraint.severity,
+        message: constraint.message.clone(),
+        violations,
+    })
+}
+
+/// Evaluate a `must_contain` constraint.
+///
+/// Checks that the scope node has at least one child matching
+/// `params.child_pattern` (by name) and optionally `params.child_kind` (by NodeKind).
+pub fn evaluate_constraint_must_contain(
+    store: &impl GraphStore,
+    constraint: &Constraint,
+    version: Version,
+) -> Result<ConstraintResult> {
+    let scope_node = store.get_node_by_path(version, &constraint.scope)?;
+
+    let scope_node = match scope_node {
+        Some(n) => n,
+        None => {
+            return Ok(ConstraintResult {
+                constraint_name: constraint.name.clone(),
+                constraint_kind: constraint.kind.clone(),
+                status: ConstraintStatus::NotEvaluable,
+                severity: constraint.severity,
+                message: format!("Scope node '{}' not found", constraint.scope),
+                violations: vec![],
+            });
+        }
+    };
+
+    let children = store.get_children(version, &scope_node.id)?;
+
+    let child_pattern = constraint
+        .params
+        .as_ref()
+        .and_then(|p| p.get("child_pattern"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let child_kind = constraint
+        .params
+        .as_ref()
+        .and_then(|p| p.get("child_kind"))
+        .and_then(|v| v.as_str());
+
+    let has_match = children.iter().any(|child| {
+        let name_matches = child.name == child_pattern;
+        let kind_matches = child_kind
+            .map(|k| {
+                let kind_str = serde_json::to_string(&child.kind).unwrap_or_default();
+                // Compare without quotes: serde produces "\"unit\""
+                kind_str.trim_matches('"') == k
+            })
+            .unwrap_or(true);
+        name_matches && kind_matches
+    });
+
+    if has_match {
+        Ok(ConstraintResult {
+            constraint_name: constraint.name.clone(),
+            constraint_kind: constraint.kind.clone(),
+            status: ConstraintStatus::Pass,
+            severity: constraint.severity,
+            message: constraint.message.clone(),
+            violations: vec![],
+        })
+    } else {
+        Ok(ConstraintResult {
+            constraint_name: constraint.name.clone(),
+            constraint_kind: constraint.kind.clone(),
+            status: ConstraintStatus::Fail,
+            severity: constraint.severity,
+            message: constraint.message.clone(),
+            violations: vec![Violation {
+                source_path: constraint.scope.clone(),
+                target_path: None,
+                edge_id: None,
+                edge_kind: None,
+                source_ref: None,
+            }],
+        })
+    }
+}
+
+/// Evaluate a `max_fan_in` constraint.
+///
+/// Counts incoming edges of the specified kind to the scope node.
+/// If `params.level` is specified, only counts edges from nodes of that `NodeKind`.
+/// Fails if the count exceeds `params.limit`.
+pub fn evaluate_constraint_max_fan_in(
+    store: &impl GraphStore,
+    constraint: &Constraint,
+    version: Version,
+) -> Result<ConstraintResult> {
+    let scope_node = store.get_node_by_path(version, &constraint.scope)?;
+
+    let scope_node = match scope_node {
+        Some(n) => n,
+        None => {
+            return Ok(ConstraintResult {
+                constraint_name: constraint.name.clone(),
+                constraint_kind: constraint.kind.clone(),
+                status: ConstraintStatus::NotEvaluable,
+                severity: constraint.severity,
+                message: format!("Scope node '{}' not found", constraint.scope),
+                violations: vec![],
+            });
+        }
+    };
+
+    let params = constraint.params.as_ref();
+
+    let edge_kind_str = params
+        .and_then(|p| p.get("edge_kind"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("depends");
+
+    let edge_kind_filter: Option<EdgeKind> =
+        serde_json::from_str(&format!("\"{}\"", edge_kind_str)).ok();
+
+    let limit = params
+        .and_then(|p| p.get("limit"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(u64::MAX) as usize;
+
+    let level_filter: Option<NodeKind> = params
+        .and_then(|p| p.get("level"))
+        .and_then(|v| v.as_str())
+        .and_then(|s| serde_json::from_str(&format!("\"{}\"", s)).ok());
+
+    // Get incoming edges of the specified kind
+    let incoming = store.get_edges(
+        version,
+        &scope_node.id,
+        Direction::Incoming,
+        edge_kind_filter,
+    )?;
+
+    // Apply level filter if specified
+    let fan_in = if let Some(level) = level_filter {
+        incoming
+            .iter()
+            .filter(|edge| {
+                store
+                    .get_node(version, &edge.source)
+                    .ok()
+                    .flatten()
+                    .map(|n| n.kind == level)
+                    .unwrap_or(false)
+            })
+            .count()
+    } else {
+        incoming.len()
+    };
+
+    if fan_in <= limit {
+        Ok(ConstraintResult {
+            constraint_name: constraint.name.clone(),
+            constraint_kind: constraint.kind.clone(),
+            status: ConstraintStatus::Pass,
+            severity: constraint.severity,
+            message: constraint.message.clone(),
+            violations: vec![],
+        })
+    } else {
+        Ok(ConstraintResult {
+            constraint_name: constraint.name.clone(),
+            constraint_kind: constraint.kind.clone(),
+            status: ConstraintStatus::Fail,
+            severity: constraint.severity,
+            message: format!(
+                "{} (fan-in: {}, limit: {})",
+                constraint.message, fan_in, limit
+            ),
+            violations: vec![Violation {
+                source_path: constraint.scope.clone(),
+                target_path: None,
+                edge_id: None,
+                edge_kind: edge_kind_filter,
+                source_ref: None,
+            }],
+        })
+    }
+}
+
 /// Run structural checks (containment acyclicity and referential integrity) on a version.
 fn structural_checks(store: &impl GraphStore, version: Version) -> Result<Vec<ConstraintResult>> {
     let mut results = Vec::new();
@@ -252,6 +495,9 @@ fn evaluate_constraints(
             "must_not_depend" => {
                 evaluate_constraint_must_not_depend(store, constraint, eval_version)?
             }
+            "boundary" => evaluate_constraint_boundary(store, constraint, eval_version)?,
+            "must_contain" => evaluate_constraint_must_contain(store, constraint, eval_version)?,
+            "max_fan_in" => evaluate_constraint_max_fan_in(store, constraint, eval_version)?,
             _ => ConstraintResult {
                 constraint_name: constraint.name.clone(),
                 constraint_kind: constraint.kind.clone(),
@@ -553,13 +799,13 @@ constraints:
             .unwrap();
         assert_eq!(mnd.status, ConstraintStatus::Pass);
 
-        // must_contain should be NotEvaluable
+        // must_contain should Fail (scope node exists but has no matching child)
         let mc = report
             .constraint_results
             .iter()
             .find(|r| r.constraint_name == "cli-has-main")
             .unwrap();
-        assert_eq!(mc.status, ConstraintStatus::NotEvaluable);
+        assert_eq!(mc.status, ConstraintStatus::Fail);
     }
 
     #[test]
@@ -932,6 +1178,335 @@ constraints:
         assert_eq!(report.summary.unimplemented, 1, "/app/missing");
         assert_eq!(report.summary.undocumented, 1, "/app/extra");
         assert!(report.summary.passed >= 2, "structural checks should pass");
+    }
+
+    // --- boundary constraint tests ---
+
+    #[test]
+    fn boundary_passes_when_no_external_deps_on_internal() {
+        let mut store = CozoStore::new_in_memory().unwrap();
+        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+
+        let app = make_node("n1", "/app", NodeKind::System, "workspace");
+        let store_mod = make_node("n2", "/app/store", NodeKind::Component, "module");
+        let store_cozo = make_node("n3", "/app/store/cozo", NodeKind::Component, "module");
+        let api = make_node("n4", "/app/api", NodeKind::Component, "module");
+        store.add_node(v, &app).unwrap();
+        store.add_node(v, &store_mod).unwrap();
+        store.add_node(v, &store_cozo).unwrap();
+        store.add_node(v, &api).unwrap();
+
+        // api depends on store (allowed -- store is not inside boundary)
+        store
+            .add_edge(v, &make_edge("e1", "n4", "n2", EdgeKind::Depends))
+            .unwrap();
+
+        let constraint = Constraint {
+            id: "c1".to_string(),
+            kind: "boundary".to_string(),
+            name: "store-encapsulation".to_string(),
+            scope: "/app/store/cozo/**".to_string(),
+            target: None,
+            params: Some(serde_json::json!({"access": "scope_only"})),
+            message: "CozoDB internals must not leak".to_string(),
+            severity: Severity::Error,
+        };
+        store.add_constraint(v, &constraint).unwrap();
+
+        let result = evaluate_constraint_boundary(&store, &constraint, v).unwrap();
+        assert_eq!(result.status, ConstraintStatus::Pass);
+        assert!(result.violations.is_empty());
+    }
+
+    #[test]
+    fn boundary_fails_when_external_depends_on_internal() {
+        let mut store = CozoStore::new_in_memory().unwrap();
+        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+
+        let app = make_node("n1", "/app", NodeKind::System, "workspace");
+        let store_mod = make_node("n2", "/app/store", NodeKind::Component, "module");
+        let store_cozo = make_node("n3", "/app/store/cozo", NodeKind::Component, "module");
+        let api = make_node("n4", "/app/api", NodeKind::Component, "module");
+        store.add_node(v, &app).unwrap();
+        store.add_node(v, &store_mod).unwrap();
+        store.add_node(v, &store_cozo).unwrap();
+        store.add_node(v, &api).unwrap();
+
+        // api depends on store/cozo (FORBIDDEN -- inside boundary)
+        store
+            .add_edge(v, &make_edge("e1", "n4", "n3", EdgeKind::Depends))
+            .unwrap();
+
+        let constraint = Constraint {
+            id: "c1".to_string(),
+            kind: "boundary".to_string(),
+            name: "store-encapsulation".to_string(),
+            scope: "/app/store/cozo/**".to_string(),
+            target: None,
+            params: Some(serde_json::json!({"access": "scope_only"})),
+            message: "CozoDB internals must not leak".to_string(),
+            severity: Severity::Error,
+        };
+        store.add_constraint(v, &constraint).unwrap();
+
+        let result = evaluate_constraint_boundary(&store, &constraint, v).unwrap();
+        assert_eq!(result.status, ConstraintStatus::Fail);
+        assert_eq!(result.violations.len(), 1);
+        assert_eq!(result.violations[0].source_path, "/app/api");
+        assert_eq!(
+            result.violations[0].target_path,
+            Some("/app/store/cozo".to_string())
+        );
+    }
+
+    #[test]
+    fn boundary_allows_internal_to_internal_deps() {
+        let mut store = CozoStore::new_in_memory().unwrap();
+        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+
+        let app = make_node("n1", "/app", NodeKind::System, "workspace");
+        let cozo = make_node("n2", "/app/store/cozo", NodeKind::Component, "module");
+        let cozo_inner = make_node("n3", "/app/store/cozo/queries", NodeKind::Unit, "module");
+        store.add_node(v, &app).unwrap();
+        store.add_node(v, &cozo).unwrap();
+        store.add_node(v, &cozo_inner).unwrap();
+
+        // internal depends on internal (allowed)
+        store
+            .add_edge(v, &make_edge("e1", "n3", "n2", EdgeKind::Depends))
+            .unwrap();
+
+        let constraint = Constraint {
+            id: "c1".to_string(),
+            kind: "boundary".to_string(),
+            name: "store-encapsulation".to_string(),
+            scope: "/app/store/cozo/**".to_string(),
+            target: None,
+            params: Some(serde_json::json!({"access": "scope_only"})),
+            message: "CozoDB internals must not leak".to_string(),
+            severity: Severity::Error,
+        };
+        store.add_constraint(v, &constraint).unwrap();
+
+        let result = evaluate_constraint_boundary(&store, &constraint, v).unwrap();
+        assert_eq!(result.status, ConstraintStatus::Pass);
+    }
+
+    // --- must_contain constraint tests ---
+
+    #[test]
+    fn must_contain_passes_when_child_exists() {
+        let mut store = CozoStore::new_in_memory().unwrap();
+        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+
+        let cli = make_node("n1", "/app/cli", NodeKind::Service, "crate");
+        let cmds = make_node("n2", "/app/cli/commands", NodeKind::Component, "module");
+        let check = make_node("n3", "/app/cli/commands/check", NodeKind::Unit, "function");
+        store.add_node(v, &cli).unwrap();
+        store.add_node(v, &cmds).unwrap();
+        store.add_node(v, &check).unwrap();
+        // Containment edges
+        store
+            .add_edge(v, &make_edge("e1", "n1", "n2", EdgeKind::Contains))
+            .unwrap();
+        store
+            .add_edge(v, &make_edge("e2", "n2", "n3", EdgeKind::Contains))
+            .unwrap();
+
+        let constraint = Constraint {
+            id: "c1".to_string(),
+            kind: "must_contain".to_string(),
+            name: "cli-has-check".to_string(),
+            scope: "/app/cli/commands".to_string(),
+            target: None,
+            params: Some(serde_json::json!({"child_pattern": "check", "child_kind": "unit"})),
+            message: "CLI must have check command".to_string(),
+            severity: Severity::Error,
+        };
+        store.add_constraint(v, &constraint).unwrap();
+
+        let result = evaluate_constraint_must_contain(&store, &constraint, v).unwrap();
+        assert_eq!(result.status, ConstraintStatus::Pass);
+    }
+
+    #[test]
+    fn must_contain_fails_when_child_missing() {
+        let mut store = CozoStore::new_in_memory().unwrap();
+        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+
+        let cli = make_node("n1", "/app/cli", NodeKind::Service, "crate");
+        let cmds = make_node("n2", "/app/cli/commands", NodeKind::Component, "module");
+        store.add_node(v, &cli).unwrap();
+        store.add_node(v, &cmds).unwrap();
+        store
+            .add_edge(v, &make_edge("e1", "n1", "n2", EdgeKind::Contains))
+            .unwrap();
+        // No children of /app/cli/commands
+
+        let constraint = Constraint {
+            id: "c1".to_string(),
+            kind: "must_contain".to_string(),
+            name: "cli-has-check".to_string(),
+            scope: "/app/cli/commands".to_string(),
+            target: None,
+            params: Some(serde_json::json!({"child_pattern": "check", "child_kind": "unit"})),
+            message: "CLI must have check command".to_string(),
+            severity: Severity::Error,
+        };
+        store.add_constraint(v, &constraint).unwrap();
+
+        let result = evaluate_constraint_must_contain(&store, &constraint, v).unwrap();
+        assert_eq!(result.status, ConstraintStatus::Fail);
+        assert_eq!(result.violations.len(), 1);
+    }
+
+    #[test]
+    fn must_contain_fails_when_name_matches_but_kind_does_not() {
+        let mut store = CozoStore::new_in_memory().unwrap();
+        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+
+        let cmds = make_node("n1", "/app/cli/commands", NodeKind::Component, "module");
+        // Child named "check" but kind is Component, not Unit
+        let check = make_node(
+            "n2",
+            "/app/cli/commands/check",
+            NodeKind::Component,
+            "module",
+        );
+        store.add_node(v, &cmds).unwrap();
+        store.add_node(v, &check).unwrap();
+        store
+            .add_edge(v, &make_edge("e1", "n1", "n2", EdgeKind::Contains))
+            .unwrap();
+
+        let constraint = Constraint {
+            id: "c1".to_string(),
+            kind: "must_contain".to_string(),
+            name: "cli-has-check".to_string(),
+            scope: "/app/cli/commands".to_string(),
+            target: None,
+            params: Some(serde_json::json!({"child_pattern": "check", "child_kind": "unit"})),
+            message: "CLI must have check command".to_string(),
+            severity: Severity::Error,
+        };
+        store.add_constraint(v, &constraint).unwrap();
+
+        let result = evaluate_constraint_must_contain(&store, &constraint, v).unwrap();
+        assert_eq!(result.status, ConstraintStatus::Fail);
+    }
+
+    // --- max_fan_in constraint tests ---
+
+    #[test]
+    fn max_fan_in_passes_when_under_limit() {
+        let mut store = CozoStore::new_in_memory().unwrap();
+        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+
+        let model = make_node("n1", "/app/model", NodeKind::Component, "module");
+        let api = make_node("n2", "/app/api", NodeKind::Component, "module");
+        store.add_node(v, &model).unwrap();
+        store.add_node(v, &api).unwrap();
+
+        // 1 incoming depends edge (limit is 5)
+        store
+            .add_edge(v, &make_edge("e1", "n2", "n1", EdgeKind::Depends))
+            .unwrap();
+
+        let constraint = Constraint {
+            id: "c1".to_string(),
+            kind: "max_fan_in".to_string(),
+            name: "model-fan-in".to_string(),
+            scope: "/app/model".to_string(),
+            target: None,
+            params: Some(serde_json::json!({"edge_kind": "depends", "limit": 5})),
+            message: "Model fan-in should be reasonable".to_string(),
+            severity: Severity::Warning,
+        };
+        store.add_constraint(v, &constraint).unwrap();
+
+        let result = evaluate_constraint_max_fan_in(&store, &constraint, v).unwrap();
+        assert_eq!(result.status, ConstraintStatus::Pass);
+    }
+
+    #[test]
+    fn max_fan_in_fails_when_over_limit() {
+        let mut store = CozoStore::new_in_memory().unwrap();
+        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+
+        let model = make_node("n1", "/app/model", NodeKind::Component, "module");
+        let a = make_node("n2", "/app/a", NodeKind::Component, "module");
+        let b = make_node("n3", "/app/b", NodeKind::Component, "module");
+        let c = make_node("n4", "/app/c", NodeKind::Component, "module");
+        store.add_node(v, &model).unwrap();
+        store.add_node(v, &a).unwrap();
+        store.add_node(v, &b).unwrap();
+        store.add_node(v, &c).unwrap();
+
+        // 3 incoming depends edges (limit is 2)
+        store
+            .add_edge(v, &make_edge("e1", "n2", "n1", EdgeKind::Depends))
+            .unwrap();
+        store
+            .add_edge(v, &make_edge("e2", "n3", "n1", EdgeKind::Depends))
+            .unwrap();
+        store
+            .add_edge(v, &make_edge("e3", "n4", "n1", EdgeKind::Depends))
+            .unwrap();
+
+        let constraint = Constraint {
+            id: "c1".to_string(),
+            kind: "max_fan_in".to_string(),
+            name: "model-fan-in".to_string(),
+            scope: "/app/model".to_string(),
+            target: None,
+            params: Some(serde_json::json!({"edge_kind": "depends", "limit": 2})),
+            message: "Model fan-in too high".to_string(),
+            severity: Severity::Warning,
+        };
+        store.add_constraint(v, &constraint).unwrap();
+
+        let result = evaluate_constraint_max_fan_in(&store, &constraint, v).unwrap();
+        assert_eq!(result.status, ConstraintStatus::Fail);
+        assert_eq!(result.violations.len(), 1);
+    }
+
+    #[test]
+    fn max_fan_in_with_level_filter_counts_only_matching_kind() {
+        let mut store = CozoStore::new_in_memory().unwrap();
+        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+
+        let model = make_node("n1", "/app/model", NodeKind::Component, "module");
+        let api = make_node("n2", "/app/api", NodeKind::Component, "module");
+        let handler = make_node("n3", "/app/api/handler", NodeKind::Unit, "function");
+        store.add_node(v, &model).unwrap();
+        store.add_node(v, &api).unwrap();
+        store.add_node(v, &handler).unwrap();
+
+        // 2 incoming edges, but only 1 from component level
+        store
+            .add_edge(v, &make_edge("e1", "n2", "n1", EdgeKind::Depends))
+            .unwrap();
+        store
+            .add_edge(v, &make_edge("e2", "n3", "n1", EdgeKind::Depends))
+            .unwrap();
+
+        let constraint = Constraint {
+            id: "c1".to_string(),
+            kind: "max_fan_in".to_string(),
+            name: "model-fan-in".to_string(),
+            scope: "/app/model".to_string(),
+            target: None,
+            params: Some(
+                serde_json::json!({"edge_kind": "depends", "limit": 1, "level": "component"}),
+            ),
+            message: "Model fan-in at component level".to_string(),
+            severity: Severity::Warning,
+        };
+        store.add_constraint(v, &constraint).unwrap();
+
+        let result = evaluate_constraint_max_fan_in(&store, &constraint, v).unwrap();
+        // Only 1 component-level edge, limit is 1, so it passes
+        assert_eq!(result.status, ConstraintStatus::Pass);
     }
 
     #[test]

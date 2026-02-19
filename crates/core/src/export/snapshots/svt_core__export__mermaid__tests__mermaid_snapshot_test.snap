@@ -1,0 +1,13 @@
+---
+source: crates/core/src/export/mermaid.rs
+assertion_line: 232
+expression: output
+---
+flowchart TD
+    subgraph app["/app"]
+        app_cli["/app/cli"]
+        subgraph app_core["/app/core"]
+            app_core_model["/app/core/model"]
+        end
+    end
+    app_cli -->|depends| app_core

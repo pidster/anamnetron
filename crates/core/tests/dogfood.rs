@@ -70,20 +70,23 @@ fn dogfood_conformance_all_must_not_depend_pass() {
         );
     }
 
-    // Non-evaluable constraints should be marked as such
+    // No constraints should be NotEvaluable -- all types are now implemented
     let not_evaluable: Vec<_> = report
         .constraint_results
         .iter()
         .filter(|r| r.status == ConstraintStatus::NotEvaluable)
         .collect();
 
-    // boundary, must_contain, max_fan_in are not evaluable in design-only mode
     assert!(
-        !not_evaluable.is_empty(),
-        "should have some not-evaluable constraints"
+        not_evaluable.is_empty(),
+        "all constraints should be evaluable, but these are not: {:?}",
+        not_evaluable
+            .iter()
+            .map(|r| &r.constraint_name)
+            .collect::<Vec<_>>()
     );
 
-    // No failures
+    // No error-level failures
     assert_eq!(report.summary.failed, 0);
 }
 

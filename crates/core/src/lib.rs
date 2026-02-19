@@ -26,6 +26,10 @@ pub mod interchange_store;
 #[cfg(feature = "store")]
 pub mod conformance;
 
+/// Export graph data in various formats (Mermaid, JSON).
+#[cfg(feature = "store")]
+pub mod export;
+
 /// Conformance and validation rules.
 #[cfg(feature = "store")]
 pub mod validation;
