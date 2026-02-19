@@ -31,6 +31,8 @@ enum Commands {
     Check(CheckArgs),
     /// Analyze a Rust project and create an analysis snapshot.
     Analyze(AnalyzeArgs),
+    /// Export graph as Mermaid or JSON.
+    Export(ExportArgs),
 }
 
 #[derive(clap::Args, Debug)]
@@ -67,6 +69,21 @@ struct AnalyzeArgs {
     /// Optional git commit ref to tag the snapshot.
     #[arg(long)]
     commit_ref: Option<String>,
+}
+
+#[derive(clap::Args, Debug)]
+struct ExportArgs {
+    /// Output format: mermaid or json.
+    #[arg(long)]
+    format: String,
+
+    /// Snapshot version to export (default: latest design).
+    #[arg(long)]
+    version: Option<u64>,
+
+    /// Output file path (default: stdout).
+    #[arg(long, short)]
+    output: Option<PathBuf>,
 }
 
 fn open_or_create_store(path: &Path) -> Result<CozoStore> {
@@ -290,6 +307,39 @@ fn run_analyze(store_path: &Path, args: &AnalyzeArgs) -> Result<()> {
     Ok(())
 }
 
+fn run_export(store_path: &Path, args: &ExportArgs) -> Result<()> {
+    use svt_core::model::SnapshotKind;
+
+    let store = open_store(store_path)?;
+
+    let version = match args.version {
+        Some(v) => v,
+        None => store
+            .latest_version(SnapshotKind::Design)
+            .map_err(|e| anyhow::anyhow!("{}", e))?
+            .ok_or_else(|| anyhow::anyhow!("No design versions found in store"))?,
+    };
+
+    let content = match args.format.as_str() {
+        "mermaid" => svt_core::export::mermaid::to_mermaid(&store, version)
+            .map_err(|e| anyhow::anyhow!("{}", e))?,
+        "json" => {
+            interchange_store::export_json(&store, version).map_err(|e| anyhow::anyhow!("{}", e))?
+        }
+        other => bail!("Unsupported format: {other}. Use 'mermaid' or 'json'."),
+    };
+
+    if let Some(output_path) = &args.output {
+        std::fs::write(output_path, &content)
+            .with_context(|| format!("writing to {}", output_path.display()))?;
+        println!("Exported to {}", output_path.display());
+    } else {
+        print!("{content}");
+    }
+
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -297,5 +347,6 @@ fn main() -> Result<()> {
         Commands::Import(args) => run_import(&cli.store, args),
         Commands::Check(args) => run_check(&cli.store, args),
         Commands::Analyze(args) => run_analyze(&cli.store, args),
+        Commands::Export(args) => run_export(&cli.store, args),
     }
 }

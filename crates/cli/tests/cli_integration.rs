@@ -259,3 +259,104 @@ fn analyze_on_nonexistent_path_gives_error() {
         .assert()
         .failure();
 }
+
+#[test]
+fn export_mermaid_produces_flowchart() {
+    let dir = TempDir::new().unwrap();
+    let yaml_path = write_design_yaml(&dir);
+    let store_path = dir.path().join(".svt/store");
+
+    svt_cmd()
+        .arg("--store")
+        .arg(&store_path)
+        .arg("import")
+        .arg(&yaml_path)
+        .assert()
+        .success();
+
+    svt_cmd()
+        .arg("--store")
+        .arg(&store_path)
+        .arg("export")
+        .arg("--format")
+        .arg("mermaid")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("flowchart TD"))
+        .stdout(predicate::str::contains("subgraph"));
+}
+
+#[test]
+fn export_json_produces_valid_interchange() {
+    let dir = TempDir::new().unwrap();
+    let yaml_path = write_design_yaml(&dir);
+    let store_path = dir.path().join(".svt/store");
+
+    svt_cmd()
+        .arg("--store")
+        .arg(&store_path)
+        .arg("import")
+        .arg(&yaml_path)
+        .assert()
+        .success();
+
+    let output = svt_cmd()
+        .arg("--store")
+        .arg(&store_path)
+        .arg("export")
+        .arg("--format")
+        .arg("json")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json_str = String::from_utf8(output).unwrap();
+    let parsed: serde_json::Value =
+        serde_json::from_str(&json_str).expect("output should be valid JSON");
+    assert_eq!(parsed["format"], "svt/v1");
+}
+
+#[test]
+fn export_to_file_creates_output() {
+    let dir = TempDir::new().unwrap();
+    let yaml_path = write_design_yaml(&dir);
+    let store_path = dir.path().join(".svt/store");
+    let output_path = dir.path().join("output.mmd");
+
+    svt_cmd()
+        .arg("--store")
+        .arg(&store_path)
+        .arg("import")
+        .arg(&yaml_path)
+        .assert()
+        .success();
+
+    svt_cmd()
+        .arg("--store")
+        .arg(&store_path)
+        .arg("export")
+        .arg("--format")
+        .arg("mermaid")
+        .arg("--output")
+        .arg(&output_path)
+        .assert()
+        .success();
+
+    let content = fs::read_to_string(&output_path).unwrap();
+    assert!(content.starts_with("flowchart TD"));
+}
+
+#[test]
+fn export_without_format_gives_error() {
+    let dir = TempDir::new().unwrap();
+    let store_path = dir.path().join(".svt/store");
+
+    svt_cmd()
+        .arg("--store")
+        .arg(&store_path)
+        .arg("export")
+        .assert()
+        .failure();
+}
