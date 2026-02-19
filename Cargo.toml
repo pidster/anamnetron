@@ -4,6 +4,7 @@ members = [
     "crates/analyzer",
     "crates/cli",
     "crates/server",
+    "crates/wasm",
 ]
 resolver = "2"
 

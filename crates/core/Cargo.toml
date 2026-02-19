@@ -7,7 +7,7 @@ edition.workspace = true
 [features]
 default = ["store"]
 store = ["dep:cozo", "dep:chrono"]
-wasm = ["dep:wasm-bindgen"]
+wasm = ["store", "dep:wasm-bindgen", "dep:serde-wasm-bindgen", "dep:js-sys", "cozo?/wasm"]
 
 [dependencies]
 cozo = { version = "0.7", features = ["storage-sqlite"], optional = true }
@@ -19,6 +19,8 @@ chrono = { version = "0.4", optional = true }
 thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
 wasm-bindgen = { version = "0.2", optional = true }
+serde-wasm-bindgen = { version = "0.6", optional = true }
+js-sys = { version = "0.3", optional = true }
 
 [dev-dependencies]
 proptest = "1"
