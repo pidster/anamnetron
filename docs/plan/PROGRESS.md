@@ -33,13 +33,101 @@ svt-server --design design/architecture.yaml --project .
 
 The web UI renders the architecture graph with compound nodes, click-to-inspect node details, search, layout switching (force-directed / hierarchical), and conformance overlay. With WASM loaded, node detail lookups and search run entirely in the browser — zero API round-trips after initial snapshot load.
 
-All 10 constraints in `design/architecture.yaml` are now fully evaluated — zero `NotEvaluable`.
+All 10 constraints in `design/architecture.yaml` are now fully evaluated — zero `NotEvaluable` (design-only mode). In full conformance mode (design vs analysis), 4 constraints are not evaluable because the analyzer does not yet produce nodes at the exact canonical paths expected by the design model (e.g., `/svt/cli/commands` for `must_contain` and `/svt/core/model` for `max_fan_in`).
 
-## Not Yet Built (from design/architecture.yaml & PRINCIPLES.md)
+## Known Gaps
 
-### Infrastructure
-- ~~**CI integration** — GitHub Actions workflow, conformance as CI gate (PRINCIPLES.md: Quality)~~ — **Done (Milestone 9)**
-- ~~**Plugin API** — Extensibility for language analyzers, constraint types, export formats (PRINCIPLES.md: Extensibility)~~ — **Foundations done (Milestone 10)**; dynamic loading and external plugin discovery remain future work
+### Analyzer Wiring
+- `AnalyzerRegistry` exists (M10) but `analyze_project()` still hardcodes the Rust and TypeScript phases directly rather than dispatching through the registry. The `LanguageAnalyzer` trait needs `can_analyze()` and `discover()` methods before registry-based dispatch is viable.
+
+### Canonical Path Alignment
+- 4 dog-food constraints are "not evaluable" in conformance mode because analysis nodes don't align with design model paths. The Rust analyzer produces crate-level nodes (e.g., `/svt/svt-cli`) but the design model expects logical paths (e.g., `/svt/cli/commands/check`). A mapping layer is needed to bridge the gap.
+
+### Analysis Depth
+- The analyzer extracts crate/module/type/function structure but does not resolve cross-crate call graphs, method calls, or trait implementations. ~3,500 warnings are generated during dog-food analysis (mostly "method call resolution not yet supported"). This limits the accuracy of dependency-direction constraints.
+
+### Export Formats
+- Only Mermaid and JSON are implemented. The design mentions SVG/PNG and DOT/Graphviz as goals (PRINCIPLES.md: Interoperability).
+
+### Web UI
+- No dark mode, no persistence of layout/filter state, no diff view for comparing snapshots, no URL routing/permalinks.
+
+### Additional Languages
+- Only Rust and TypeScript analyzers exist. Go, Python, and Java are mentioned as future goals (PRINCIPLES.md: Extensibility).
+
+### Git Integration
+- `analyze_project()` accepts an optional `commit_ref` but there is no automatic git-aware snapshot creation or change detection.
+
+### Dynamic Plugin Loading
+- Plugin registries exist with `.register()` API but all plugins are compiled in. No external plugin discovery, no dynamic loading, no plugin manifest format.
+
+## Suggested Next Milestones
+
+### Milestone 11: Analyzer Registry Wiring + Canonical Path Alignment
+
+**Goal:** Wire `AnalyzerRegistry` into the analysis pipeline and fix the 4 not-evaluable dog-food constraints by aligning analysis canonical paths with the design model.
+
+**Scope:**
+- Extend `LanguageAnalyzer` trait with `can_analyze(&self, file: &Path) -> bool` and `discover(&self, root: &Path) -> Vec<ProjectUnit>` methods
+- Refactor `analyze_project()` to iterate registered analyzers instead of hardcoding Rust/TS phases
+- Add a configurable canonical path mapping layer between design paths and analysis paths
+- Fix `must_contain` constraints for `/svt/cli/commands` by emitting function-level nodes for CLI commands
+- Fix `max_fan_in` constraint for `/svt/core/model` by aligning module paths
+- Target: 0 not-evaluable constraints in full conformance mode
+
+### Milestone 12: Additional Export Formats
+
+**Goal:** Add DOT/Graphviz and SVG export formats through the `ExportRegistry`.
+
+**Scope:**
+- DOT exporter implementing the `ExportFormat` trait (subgraph nesting for compound nodes, edge styling)
+- SVG exporter via DOT-to-SVG pipeline (using Graphviz CLI or embedded renderer)
+- Register in `ExportRegistry::with_defaults()`
+- CLI `svt export --format dot|svg` support (automatic through registry)
+
+### Milestone 13: Snapshot Diffing + Git Integration
+
+**Goal:** Enable comparing two analysis snapshots and integrate with git for automatic version tracking.
+
+**Scope:**
+- Core diff engine: compute added/removed/changed nodes and edges between two versions
+- `svt diff` CLI command comparing two snapshots
+- Git-aware analysis: auto-detect HEAD commit, store as snapshot metadata
+- API endpoint: `GET /api/diff?from=V1&to=V2`
+- Web UI diff view: highlight added/removed/changed nodes in graph
+
+### Milestone 14: Web UI Polish
+
+**Goal:** Improve the web frontend with dark mode, persistence, URL routing, and better UX.
+
+**Scope:**
+- Dark mode toggle with system-preference detection
+- URL routing (hash-based): selected node, active view, layout mode
+- LocalStorage persistence for layout preferences and filter state
+- Error boundary components with retry
+- Loading states and empty-state UI
+- Keyboard navigation (arrow keys to traverse graph, Escape to deselect)
+
+### Milestone 15: Additional Language Analyzers
+
+**Goal:** Add Go and Python analyzers through the `AnalyzerRegistry`.
+
+**Scope:**
+- Go analyzer: tree-sitter-go, package/type/function extraction, `go.mod` discovery
+- Python analyzer: tree-sitter-python, package/module/class/function extraction, `pyproject.toml`/`setup.py` discovery
+- Register in `AnalyzerRegistry::with_defaults()`
+- Dog-food tests for each new analyzer on sample projects
+
+### Milestone 16: Dynamic Plugin Loading
+
+**Goal:** Support external plugins loaded at runtime from the filesystem.
+
+**Scope:**
+- Plugin manifest format (`svt-plugin.toml` or similar)
+- Filesystem discovery conventions (`~/.svt/plugins/`, project-local `.svt/plugins/`)
+- Dynamic loading via `libloading` for Rust dylib plugins
+- CLI `svt plugin list|install|remove` commands
+- Security considerations: plugin sandboxing, version compatibility
 
 ## Plan Documents
 
@@ -64,3 +152,4 @@ All 10 constraints in `design/architecture.yaml` are now fully evaluated — zer
 | `2026-02-19-milestone-9-implementation.md` | M9 implementation plan (COMPLETE) |
 | `2026-02-19-milestone-10-design.md` | M10 design (COMPLETE) |
 | `2026-02-19-milestone-10-implementation.md` | M10 implementation plan (COMPLETE) |
+| `2026-02-19-milestones-11-16-design.md` | M11–M16 design (roadmap for remaining work) |
