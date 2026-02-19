@@ -50,10 +50,17 @@ fn full_pipeline_produces_nodes_and_edges() {
         nodes.len()
     );
 
-    // All nodes should have Analysis provenance
+    // All nodes should have Analysis provenance and a known language
     for node in &nodes {
         assert_eq!(node.provenance, Provenance::Analysis);
-        assert_eq!(node.language, Some("rust".to_string()));
+        assert!(
+            node.language == Some("rust".to_string())
+                || node.language == Some("typescript".to_string())
+                || node.language == Some("svelte".to_string()),
+            "unexpected language: {:?} for node {}",
+            node.language,
+            node.canonical_path
+        );
     }
 }
 

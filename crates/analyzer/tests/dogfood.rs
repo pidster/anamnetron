@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use svt_core::conformance;
 use svt_core::interchange::parse_yaml;
 use svt_core::interchange_store::load_into_store;
-use svt_core::store::CozoStore;
+use svt_core::store::{CozoStore, GraphStore};
 
 use svt_analyzer::analyze_project;
 
@@ -44,13 +44,54 @@ fn dogfood_analyze_produces_meaningful_results() {
         summary.edges_created
     );
 
+    // Should find at least one TypeScript package (web/)
+    assert!(
+        summary.ts_packages_analyzed >= 1,
+        "should analyze at least 1 TS package, got {}",
+        summary.ts_packages_analyzed
+    );
+
     println!(
-        "Dog-food analysis: {} crates, {} files, {} nodes, {} edges, {} warnings",
+        "Dog-food analysis: {} crates, {} TS packages, {} files, {} nodes, {} edges, {} warnings",
         summary.crates_analyzed,
+        summary.ts_packages_analyzed,
         summary.files_analyzed,
         summary.nodes_created,
         summary.edges_created,
         summary.warnings.len()
+    );
+}
+
+#[test]
+fn dogfood_typescript_nodes_in_store() {
+    let mut store = CozoStore::new_in_memory().unwrap();
+    let summary = analyze_project(&mut store, &project_root(), None).unwrap();
+
+    let nodes = store.get_all_nodes(summary.version).unwrap();
+
+    // Should find the web package node
+    let package_nodes: Vec<_> = nodes.iter().filter(|n| n.sub_kind == "package").collect();
+    assert!(
+        !package_nodes.is_empty(),
+        "should have at least one TS package node"
+    );
+
+    // Should find TypeScript nodes (language == "typescript" or "svelte")
+    let ts_nodes: Vec<_> = nodes
+        .iter()
+        .filter(|n| {
+            n.language == Some("typescript".to_string()) || n.language == Some("svelte".to_string())
+        })
+        .collect();
+    assert!(
+        !ts_nodes.is_empty(),
+        "should have TypeScript/Svelte nodes in store"
+    );
+
+    println!(
+        "Dog-food TS: {} package nodes, {} TS/Svelte nodes",
+        package_nodes.len(),
+        ts_nodes.len()
     );
 }
 

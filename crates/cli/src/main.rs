@@ -286,8 +286,8 @@ fn run_analyze(store_path: &Path, args: &AnalyzeArgs) -> Result<()> {
     println!("Analyzed {}\n", args.path.display());
     println!("  Created analysis snapshot v{}", summary.version);
     println!(
-        "    {} crates, {} files analyzed",
-        summary.crates_analyzed, summary.files_analyzed
+        "    {} crates, {} TS packages, {} files analyzed",
+        summary.crates_analyzed, summary.ts_packages_analyzed, summary.files_analyzed
     );
     println!(
         "    {} nodes, {} edges",

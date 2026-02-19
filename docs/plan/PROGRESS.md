@@ -10,15 +10,16 @@
 | **4** | Server API (Axum) | 2026-02-17 | 218 | 13 REST endpoints, Cytoscape.js graph format, conformance endpoints, search, integration tests |
 | **5** | Svelte Web Frontend | 2026-02-17 | 224 | Svelte 5 + Cytoscape.js, compound nodes, conformance overlay, node detail panel, static serving |
 | **6** | CLI Export + Additional Constraints | 2026-02-19 | 234 | `boundary`, `must_contain`, `max_fan_in` constraints; `svt export --format mermaid\|json`; Mermaid flowchart generation; all dog-food constraints evaluable |
+| **7** | TypeScript Analyzer | 2026-02-19 | 259 | tree-sitter-typescript analysis, Svelte script block extraction, TS package discovery, multi-language orchestrator integration, dog-food on `web/` |
 
-**Current state:** 229 Rust tests + 5 vitest tests = 234 total. All passing. clippy/fmt/audit clean.
+**Current state:** 254 Rust tests + 5 vitest tests = 259 total. All passing. clippy/fmt/audit clean.
 
 ## What's Working Now
 
 ```
 svt import design/architecture.yaml     # Load a design model
 svt check                                # Conformance check (design-only)
-svt analyze --project .                  # Analyze Rust project with tree-sitter
+svt analyze .                            # Analyze Rust + TypeScript project with tree-sitter
 svt check --analysis                     # Compare design vs analysis
 svt export --format mermaid              # Export as Mermaid flowchart
 svt export --format json                 # Export as interchange JSON
@@ -33,9 +34,6 @@ All 10 constraints in `design/architecture.yaml` are now fully evaluated — zer
 
 ## Not Yet Built (from design/architecture.yaml & PRINCIPLES.md)
 
-### Analyzers
-- **TypeScript analyzer** — tree-sitter-typescript (architecture.yaml: `/svt/analyzer/languages/typescript`)
-
 ### WASM
 - **WASM bridge** — svt-core compiled to wasm-bindgen for browser-side queries (architecture.yaml: `/svt/web/wasm`)
 
@@ -44,19 +42,6 @@ All 10 constraints in `design/architecture.yaml` are now fully evaluated — zer
 - **CI integration** — GitHub Actions workflow, conformance as CI gate (PRINCIPLES.md: Quality)
 
 ## Suggested Next Milestones
-
-### Milestone 7: TypeScript Analyzer
-
-**Goal:** Add a second language analyzer, proving the multi-language architecture works.
-
-**Scope:**
-- tree-sitter-typescript integration
-- Package/module/class/function/interface extraction
-- Import/export edge detection
-- Canonical path mapping for TypeScript projects
-- Dog-food: analyze the `web/` Svelte/TS code alongside the Rust crates
-
-**Why next:** The analyzer architecture was designed for multiple languages. TypeScript is the natural second language given the web frontend is TypeScript. Dog-fooding on the project's own frontend code validates the multi-language story.
 
 ### Milestone 8: WASM Bridge
 
@@ -93,3 +78,5 @@ All 10 constraints in `design/architecture.yaml` are now fully evaluated — zer
 | `2026-02-17-milestone-5-implementation.md` | M5 implementation plan (COMPLETE) |
 | `2026-02-19-milestone-6-design.md` | M6 design (COMPLETE) |
 | `2026-02-19-milestone-6-implementation.md` | M6 implementation plan (COMPLETE) |
+| `2026-02-19-milestone-7-design.md` | M7 design (COMPLETE) |
+| `2026-02-19-milestone-7-implementation.md` | M7 implementation plan (COMPLETE) |
