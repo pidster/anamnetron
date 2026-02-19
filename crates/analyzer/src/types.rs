@@ -37,6 +37,19 @@ pub struct ProjectLayout {
     pub crates: Vec<CrateInfo>,
 }
 
+/// Information about a TypeScript/JavaScript package.
+#[derive(Debug, Clone)]
+pub struct TsPackageInfo {
+    /// Package name (from package.json "name" field).
+    pub name: String,
+    /// Root directory of the package (where package.json lives).
+    pub root: PathBuf,
+    /// Source root directory (typically root/src/).
+    pub source_root: PathBuf,
+    /// All .ts, .tsx, .svelte source files under the source root.
+    pub source_files: Vec<PathBuf>,
+}
+
 /// A code element extracted by tree-sitter (before canonical path mapping).
 #[derive(Debug, Clone)]
 pub struct AnalysisItem {

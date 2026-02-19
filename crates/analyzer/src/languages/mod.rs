@@ -1,6 +1,8 @@
 //! Language-specific analysis drivers.
 
 pub mod rust;
+pub mod svelte;
+pub mod typescript;
 
 use std::path::Path;
 
