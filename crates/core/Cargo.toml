@@ -5,12 +5,13 @@ version.workspace = true
 edition.workspace = true
 
 [features]
-default = ["store"]
+default = ["store-sqlite"]
 store = ["dep:cozo", "dep:chrono"]
-wasm = ["store", "dep:wasm-bindgen", "dep:serde-wasm-bindgen", "dep:js-sys", "cozo?/wasm"]
+store-sqlite = ["store", "cozo/storage-sqlite", "cozo/storage-sqlite-src", "cozo/rayon"]
+wasm = ["store", "dep:wasm-bindgen", "dep:serde-wasm-bindgen", "dep:js-sys", "cozo/wasm"]
 
 [dependencies]
-cozo = { version = "0.7", features = ["storage-sqlite"], optional = true }
+cozo = { version = "0.7", optional = true, default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"

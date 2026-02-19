@@ -4,6 +4,7 @@
   import type { Version } from "./lib/types";
   import { graphStore } from "./stores/graph";
   import { selectionStore } from "./stores/selection";
+  import { initWasm, getWasmStore } from "./lib/wasm";
   import GraphView from "./components/GraphView.svelte";
   import NodeDetail from "./components/NodeDetail.svelte";
   import ConformanceReport from "./components/ConformanceReport.svelte";
@@ -15,11 +16,17 @@
   let showConformance = $state(false);
   let conformanceDesign = $state<Version | null>(null);
   let conformanceAnalysis = $state<Version | null>(null);
+  let wasmVersion = $state<Version | null>(null);
 
   onMount(async () => {
     try {
       graphStore.loading = true;
-      graphStore.snapshots = await api.getSnapshots();
+      // Initialize WASM and load snapshots in parallel
+      const [, snapshots] = await Promise.all([
+        initWasm(),
+        api.getSnapshots(),
+      ]);
+      graphStore.snapshots = snapshots;
       if (graphStore.snapshots.length > 0) {
         await selectVersion(graphStore.snapshots[0].version);
       }
@@ -35,10 +42,24 @@
       graphStore.loading = true;
       graphStore.error = null;
       graphStore.selectedVersion = version;
-      graphStore.graph = await api.getGraph(version);
       graphStore.conformanceReport = null;
       showConformance = false;
       selectionStore.clear();
+      wasmVersion = null;
+
+      const wasmStore = getWasmStore();
+      if (wasmStore) {
+        // Fetch graph, nodes, and edges in parallel for WASM loading
+        const [graph, nodes, edges] = await Promise.all([
+          api.getGraph(version),
+          api.getNodes(version),
+          api.getEdges(version),
+        ]);
+        graphStore.graph = graph;
+        wasmVersion = wasmStore.loadSnapshot(nodes, edges);
+      } else {
+        graphStore.graph = await api.getGraph(version);
+      }
     } catch (e) {
       graphStore.error = e instanceof Error ? e.message : "Failed to load graph";
     } finally {
@@ -58,18 +79,29 @@
   async function loadNodeDetails(version: Version, nodeId: string) {
     selectionStore.loading = true;
     try {
-      const [node, children, ancestors, deps, dependents] = await Promise.all([
-        api.getNode(version, nodeId),
-        api.getChildren(version, nodeId),
-        api.getAncestors(version, nodeId),
-        api.getDependencies(version, nodeId),
-        api.getDependents(version, nodeId),
-      ]);
-      selectionStore.selectedNode = node;
-      selectionStore.children = children;
-      selectionStore.ancestors = ancestors;
-      selectionStore.dependencies = deps;
-      selectionStore.dependents = dependents;
+      const wasmStore = getWasmStore();
+      if (wasmStore && wasmVersion !== null) {
+        // WASM path — zero API round-trips
+        selectionStore.selectedNode = wasmStore.getNode(wasmVersion, nodeId);
+        selectionStore.children = wasmStore.getChildren(wasmVersion, nodeId);
+        selectionStore.ancestors = wasmStore.getAncestors(wasmVersion, nodeId);
+        selectionStore.dependencies = wasmStore.getEdges(wasmVersion, nodeId, "outgoing", "depends");
+        selectionStore.dependents = wasmStore.getEdges(wasmVersion, nodeId, "incoming", "depends");
+      } else {
+        // API fallback
+        const [node, children, ancestors, deps, dependents] = await Promise.all([
+          api.getNode(version, nodeId),
+          api.getChildren(version, nodeId),
+          api.getAncestors(version, nodeId),
+          api.getDependencies(version, nodeId),
+          api.getDependents(version, nodeId),
+        ]);
+        selectionStore.selectedNode = node;
+        selectionStore.children = children;
+        selectionStore.ancestors = ancestors;
+        selectionStore.dependencies = deps;
+        selectionStore.dependents = dependents;
+      }
     } catch {
       // Node may not have all data — partial load is OK
     } finally {
@@ -80,7 +112,13 @@
   async function handleSearch(query: string) {
     if (!graphStore.selectedVersion) return;
     try {
-      const results = await api.searchNodes(query, graphStore.selectedVersion);
+      const wasmStore = getWasmStore();
+      let results;
+      if (wasmStore && wasmVersion !== null) {
+        results = wasmStore.search(wasmVersion, query);
+      } else {
+        results = await api.searchNodes(query, graphStore.selectedVersion);
+      }
       if (results.length > 0) {
         selectionStore.selectedNodeId = results[0].id;
         selectionStore.panelOpen = true;
