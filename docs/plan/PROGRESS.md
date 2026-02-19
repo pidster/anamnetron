@@ -14,8 +14,9 @@
 | **8** | WASM Bridge | 2026-02-19 | 282 | `svt-wasm` crate with wasm-bindgen, CozoDB in-memory for browser, 12 read-only query methods, TypeScript wrapper, web integration for zero-roundtrip detail lookups |
 | **9** | CI Pipeline | 2026-02-19 | 282 | GitHub Actions CI: Rust fmt/clippy/test/audit, WASM build, web tests, conformance gate with step summary |
 | **10** | Plugin Foundations | 2026-02-19 | 282 | `ConstraintEvaluator`, `ExportFormat`, `LanguageAnalyzer` traits; `ConstraintRegistry`, `ExportRegistry`, `AnalyzerRegistry` with `with_defaults()` + `.register()`; registry-based dispatch in CLI, server, conformance engine; `&dyn GraphStore` migration |
+| **11** | Canonical Path Alignment | 2026-02-19 | 293 | Workspace-aware canonical paths (`svt-core` → `/svt/core`), enum variant extraction, workspace root node, 0 not-evaluable constraints in full conformance mode |
 
-**Current state:** 277 Rust tests + 5 vitest tests = 282 total. All passing. clippy/fmt/audit clean. CI pipeline operational. Plugin registries wired end-to-end.
+**Current state:** 288 Rust tests + 5 vitest tests = 293 total. All passing. clippy/fmt/audit clean. CI pipeline operational. Dog-food conformance: 12 passed, 0 failed, 0 warned, 0 not evaluable.
 
 ## What's Working Now
 
@@ -33,15 +34,15 @@ svt-server --design design/architecture.yaml --project .
 
 The web UI renders the architecture graph with compound nodes, click-to-inspect node details, search, layout switching (force-directed / hierarchical), and conformance overlay. With WASM loaded, node detail lookups and search run entirely in the browser — zero API round-trips after initial snapshot load.
 
-All 10 constraints in `design/architecture.yaml` are now fully evaluated — zero `NotEvaluable` (design-only mode). In full conformance mode (design vs analysis), 4 constraints are not evaluable because the analyzer does not yet produce nodes at the exact canonical paths expected by the design model (e.g., `/svt/cli/commands` for `must_contain` and `/svt/core/model` for `max_fan_in`).
+All 12 constraints in `design/architecture.yaml` are fully evaluated in both design-only and full conformance mode — zero `NotEvaluable`. Dog-food conformance: 12 passed, 0 failed, 0 warned, 0 not evaluable. There are 10 unimplemented design nodes (expected — some are future work like `/svt/web`) and ~518 undocumented analysis nodes (expected — analysis is much more granular than the design model).
 
 ## Known Gaps
 
 ### Analyzer Wiring
 - `AnalyzerRegistry` exists (M10) but `analyze_project()` still hardcodes the Rust and TypeScript phases directly rather than dispatching through the registry. The `LanguageAnalyzer` trait needs `can_analyze()` and `discover()` methods before registry-based dispatch is viable.
 
-### Canonical Path Alignment
-- 4 dog-food constraints are "not evaluable" in conformance mode because analysis nodes don't align with design model paths. The Rust analyzer produces crate-level nodes (e.g., `/svt/svt-cli`) but the design model expects logical paths (e.g., `/svt/cli/commands/check`). A mapping layer is needed to bridge the gap.
+### Canonical Path Alignment — RESOLVED (M11)
+- ~~4 dog-food constraints were "not evaluable" in conformance mode.~~ Fixed by workspace-aware canonical path mapping (`svt-core` → `svt::core` → `/svt/core`) and enum variant extraction. All 12 constraints now pass.
 
 ### Analysis Depth
 - The analyzer extracts crate/module/type/function structure but does not resolve cross-crate call graphs, method calls, or trait implementations. ~3,500 warnings are generated during dog-food analysis (mostly "method call resolution not yet supported"). This limits the accuracy of dependency-direction constraints.
@@ -63,17 +64,19 @@ All 10 constraints in `design/architecture.yaml` are now fully evaluated — zer
 
 ## Suggested Next Milestones
 
-### Milestone 11: Analyzer Registry Wiring + Canonical Path Alignment
+### Milestone 11: Canonical Path Alignment — COMPLETE
 
-**Goal:** Wire `AnalyzerRegistry` into the analysis pipeline and fix the 4 not-evaluable dog-food constraints by aligning analysis canonical paths with the design model.
+**Goal:** Fix the 4 not-evaluable dog-food constraints by aligning analysis canonical paths with the design model.
 
-**Scope:**
-- Extend `LanguageAnalyzer` trait with `can_analyze(&self, file: &Path) -> bool` and `discover(&self, root: &Path) -> Vec<ProjectUnit>` methods
-- Refactor `analyze_project()` to iterate registered analyzers instead of hardcoding Rust/TS phases
-- Add a configurable canonical path mapping layer between design paths and analysis paths
-- Fix `must_contain` constraints for `/svt/cli/commands` by emitting function-level nodes for CLI commands
-- Fix `max_fan_in` constraint for `/svt/core/model` by aligning module paths
-- Target: 0 not-evaluable constraints in full conformance mode
+**Delivered:**
+- Workspace name detection from common crate name prefix (`svt-core`, `svt-cli` → workspace `svt`)
+- Workspace-aware qualified name mapping (`svt-core` → `svt::core` → `/svt/core`)
+- Workspace root node emission (`/svt` as `System`/`workspace`)
+- Enum variant extraction via tree-sitter (enabling `must_contain` constraints)
+- Binary target naming fix (always use package name, not target name)
+- **Result: 12 passed, 0 failed, 0 warned, 0 not evaluable**
+
+**Not yet done (deferred):** `AnalyzerRegistry`-based dispatch — `analyze_project()` still hardcodes Rust/TS phases. Registry wiring deferred until additional language analyzers (M15) make it necessary.
 
 ### Milestone 12: Additional Export Formats
 
