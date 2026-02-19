@@ -42,14 +42,16 @@ All 10 constraints in `design/architecture.yaml` are now fully evaluated — zer
 
 ## Suggested Next Milestones
 
-### Milestone 10: Plugin Foundations
+### Milestone 10: Plugin Foundations (in progress)
 
-**Goal:** Extensibility infrastructure for language analyzers and constraint types.
+**Goal:** Trait-based registries for constraint evaluators, export formats, and language analyzers.
 
 **Scope:**
-- Plugin trait definitions for analyzers and constraint types
-- Plugin registry and discovery mechanism
-- Plugin API surface design
+- `ConstraintEvaluator`, `ExportFormat`, and extended `LanguageAnalyzer` traits
+- `ConstraintRegistry`, `ExportRegistry`, `AnalyzerRegistry` structs with `with_defaults()` + `.register()`
+- Refactor existing built-ins into trait implementations
+- Replace hardcoded `match` dispatch with registry lookups in CLI, server, and conformance engine
+- `GraphStore` as `dyn` for trait object compatibility
 
 ## Plan Documents
 
@@ -72,3 +74,4 @@ All 10 constraints in `design/architecture.yaml` are now fully evaluated — zer
 | `2026-02-19-milestone-8-implementation.md` | M8 implementation plan (COMPLETE) |
 | `2026-02-19-milestone-9-design.md` | M9 design (COMPLETE) |
 | `2026-02-19-milestone-9-implementation.md` | M9 implementation plan (COMPLETE) |
+| `2026-02-19-milestone-10-design.md` | M10 design |
