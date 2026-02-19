@@ -14,90 +14,108 @@
     graph: CytoscapeGraph | null;
     conformance?: ConformanceReport | null;
     layout?: "cose-bilkent" | "dagre";
+    theme?: "dark" | "light";
   }
 
-  let { graph, conformance = null, layout = "cose-bilkent" }: Props = $props();
+  let { graph, conformance = null, layout = "cose-bilkent", theme = "dark" }: Props = $props();
 
   let container: HTMLDivElement;
   let cy: cytoscape.Core | null = null;
 
-  const styleSheet: cytoscape.StylesheetStyle[] = [
-    {
-      selector: "node",
-      style: {
-        label: "data(label)",
-        "text-valign": "center",
-        "text-halign": "center",
-        "background-color": "#53a8b6",
-        color: "#fff",
-        "font-size": "12px",
-        "text-wrap": "wrap",
-        "text-max-width": "80px",
-        width: "label",
-        height: "label",
-        padding: "10px",
-        shape: "roundrectangle",
+  function getCssVar(name: string): string {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+
+  function buildStyleSheet(): cytoscape.StylesheetStyle[] {
+    const accent = getCssVar("--accent") || "#53a8b6";
+    const muted = getCssVar("--muted") || "#607d8b";
+    const pass = getCssVar("--pass") || "#4caf50";
+    const fail = getCssVar("--fail") || "#f44336";
+    const warn = getCssVar("--warn") || "#ff9800";
+    const text = getCssVar("--text") || "#e0e0e0";
+    const isDark = theme === "dark";
+    const parentBg = isDark ? "#16213e" : "#e8eef3";
+    const parentBorder = isDark ? "#0f3460" : "#b0c4d8";
+    const selectedBorder = isDark ? "#fff" : "#000";
+
+    return [
+      {
+        selector: "node",
+        style: {
+          label: "data(label)",
+          "text-valign": "center",
+          "text-halign": "center",
+          "background-color": accent,
+          color: isDark ? "#fff" : "#fff",
+          "font-size": "12px",
+          "text-wrap": "wrap",
+          "text-max-width": "80px",
+          width: "label",
+          height: "label",
+          padding: "10px",
+          shape: "roundrectangle",
+        },
       },
-    },
-    {
-      selector: "node:parent",
-      style: {
-        "background-color": "#16213e",
-        "background-opacity": 0.6,
-        "border-color": "#0f3460",
-        "border-width": 2,
-        "text-valign": "top",
-        "text-halign": "center",
-        "font-size": "14px",
-        "font-weight": "bold",
-        padding: "20px",
+      {
+        selector: "node:parent",
+        style: {
+          "background-color": parentBg,
+          "background-opacity": 0.6,
+          "border-color": parentBorder,
+          "border-width": 2,
+          "text-valign": "top",
+          "text-halign": "center",
+          color: text,
+          "font-size": "14px",
+          "font-weight": "bold",
+          padding: "20px",
+        },
       },
-    },
-    {
-      selector: "edge",
-      style: {
-        width: 2,
-        "line-color": "#607d8b",
-        "target-arrow-color": "#607d8b",
-        "target-arrow-shape": "triangle",
-        "curve-style": "bezier",
-        "arrow-scale": 0.8,
+      {
+        selector: "edge",
+        style: {
+          width: 2,
+          "line-color": muted,
+          "target-arrow-color": muted,
+          "target-arrow-shape": "triangle",
+          "curve-style": "bezier",
+          "arrow-scale": 0.8,
+        },
       },
-    },
-    {
-      selector: "edge[kind = 'depends']",
-      style: { "line-style": "solid", "line-color": "#53a8b6", "target-arrow-color": "#53a8b6" },
-    },
-    {
-      selector: "edge[kind = 'data_flow']",
-      style: { "line-style": "dashed", "line-color": "#ff9800", "target-arrow-color": "#ff9800" },
-    },
-    {
-      selector: "edge[kind = 'implements']",
-      style: { "line-style": "dotted", "line-color": "#4caf50", "target-arrow-color": "#4caf50" },
-    },
-    {
-      selector: "node:selected",
-      style: { "border-color": "#fff", "border-width": 3 },
-    },
-    // Conformance overlay classes
-    {
-      selector: ".conformance-pass",
-      style: { "border-color": "#4caf50", "border-width": 3 },
-    },
-    {
-      selector: ".conformance-fail",
-      style: { "border-color": "#f44336", "border-width": 3 },
-    },
-    {
-      selector: ".conformance-unimplemented",
-      style: { "border-color": "#ff9800", "border-width": 3 },
-    },
-    {
-      selector: ".conformance-undocumented",
-      style: { "border-color": "#607d8b", "border-width": 3 },
-    },
-  ];
+      {
+        selector: "edge[kind = 'depends']",
+        style: { "line-style": "solid", "line-color": accent, "target-arrow-color": accent },
+      },
+      {
+        selector: "edge[kind = 'data_flow']",
+        style: { "line-style": "dashed", "line-color": warn, "target-arrow-color": warn },
+      },
+      {
+        selector: "edge[kind = 'implements']",
+        style: { "line-style": "dotted", "line-color": pass, "target-arrow-color": pass },
+      },
+      {
+        selector: "node:selected",
+        style: { "border-color": selectedBorder, "border-width": 3 },
+      },
+      {
+        selector: ".conformance-pass",
+        style: { "border-color": pass, "border-width": 3 },
+      },
+      {
+        selector: ".conformance-fail",
+        style: { "border-color": fail, "border-width": 3 },
+      },
+      {
+        selector: ".conformance-unimplemented",
+        style: { "border-color": warn, "border-width": 3 },
+      },
+      {
+        selector: ".conformance-undocumented",
+        style: { "border-color": muted, "border-width": 3 },
+      },
+    ];
+  }
 
   function initCytoscape(elements: CytoscapeGraph["elements"]) {
     if (cy) cy.destroy();
@@ -108,7 +126,7 @@
         nodes: elements.nodes,
         edges: elements.edges,
       },
-      style: styleSheet,
+      style: buildStyleSheet(),
       layout: {
         name: layout,
         animate: false,
@@ -189,6 +207,31 @@
       applyConformanceOverlay(conformance);
     }
   });
+
+  // Re-apply styles when theme changes
+  $effect(() => {
+    // Access theme to track it as a dependency
+    const _ = theme;
+    if (cy) {
+      cy.style(buildStyleSheet() as unknown as cytoscape.StylesheetCSS[]);
+    }
+  });
+
+  /** Select and center on a node. */
+  export function selectAndCenter(nodeId: string) {
+    if (!cy) return;
+    const node = cy.getElementById(nodeId);
+    if (node.length === 0) return;
+    cy.animate({ center: { eles: node }, duration: 200 });
+    selectionStore.selectedNodeId = nodeId;
+    selectionStore.panelOpen = true;
+  }
+
+  /** Fit all elements in viewport. */
+  export function fitAll() {
+    if (!cy) return;
+    cy.fit(undefined, 50);
+  }
 
   /** Re-run layout. */
   export function relayout(name?: "cose-bilkent" | "dagre") {

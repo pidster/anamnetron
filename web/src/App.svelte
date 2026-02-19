@@ -5,18 +5,39 @@
   import { graphStore } from "./stores/graph";
   import { selectionStore } from "./stores/selection";
   import { initWasm, getWasmStore } from "./lib/wasm";
+  import { parseHash, buildHash } from "./lib/router";
   import GraphView from "./components/GraphView.svelte";
   import NodeDetail from "./components/NodeDetail.svelte";
   import ConformanceReport from "./components/ConformanceReport.svelte";
   import SnapshotSelector from "./components/SnapshotSelector.svelte";
   import SearchBar from "./components/SearchBar.svelte";
 
-  let layoutChoice = $state<"cose-bilkent" | "dagre">("cose-bilkent");
+  const savedLayout = typeof localStorage !== "undefined" ? localStorage.getItem("svt-layout") : null;
+  let layoutChoice = $state<"cose-bilkent" | "dagre">(
+    savedLayout === "dagre" ? "dagre" : "cose-bilkent"
+  );
   let graphView = $state<GraphView>();
   let showConformance = $state(false);
   let conformanceDesign = $state<Version | null>(null);
   let conformanceAnalysis = $state<Version | null>(null);
   let wasmVersion = $state<Version | null>(null);
+  let theme = $state<"dark" | "light">(
+    (typeof localStorage !== "undefined" && localStorage.getItem("svt-theme") as "dark" | "light") || "dark"
+  );
+
+  function toggleTheme() {
+    theme = theme === "dark" ? "light" : "dark";
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem("svt-theme", theme);
+  }
+
+  // Apply initial theme
+  if (typeof document !== "undefined") {
+    document.documentElement.dataset.theme = theme;
+  }
+
+  // Hash routing: suppress writes during reads to avoid loops
+  let suppressHashWrite = false;
 
   onMount(async () => {
     try {
@@ -27,14 +48,52 @@
         api.getSnapshots(),
       ]);
       graphStore.snapshots = snapshots;
-      if (graphStore.snapshots.length > 0) {
-        await selectVersion(graphStore.snapshots[0].version);
+
+      // Apply initial state from hash
+      const initial = parseHash(window.location.hash);
+      if (initial.layout === "dagre" || initial.layout === "cose-bilkent") {
+        layoutChoice = initial.layout;
+      }
+
+      const initialVersion = initial.version && snapshots.some((s) => s.version === initial.version)
+        ? initial.version
+        : snapshots.length > 0 ? snapshots[0].version : null;
+
+      if (initialVersion) {
+        suppressHashWrite = true;
+        await selectVersion(initialVersion);
+        if (initial.node) {
+          selectionStore.selectedNodeId = initial.node;
+          selectionStore.panelOpen = true;
+        }
+        suppressHashWrite = false;
       }
     } catch (e) {
       graphStore.error = e instanceof Error ? e.message : "Failed to load";
     } finally {
       graphStore.loading = false;
     }
+
+    // Listen for back/forward navigation
+    function onHashChange() {
+      const state = parseHash(window.location.hash);
+      suppressHashWrite = true;
+      if (state.version && state.version !== graphStore.selectedVersion) {
+        selectVersion(state.version);
+      }
+      if (state.node) {
+        selectionStore.selectedNodeId = state.node;
+        selectionStore.panelOpen = true;
+      } else {
+        selectionStore.clear();
+      }
+      if (state.layout === "dagre" || state.layout === "cose-bilkent") {
+        layoutChoice = state.layout;
+      }
+      suppressHashWrite = false;
+    }
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
   });
 
   async function selectVersion(version: Version) {
@@ -66,6 +125,24 @@
       graphStore.loading = false;
     }
   }
+
+  // Persist layout choice
+  $effect(() => {
+    localStorage.setItem("svt-layout", layoutChoice);
+  });
+
+  // Sync state to URL hash
+  $effect(() => {
+    if (suppressHashWrite) return;
+    const hash = buildHash({
+      version: graphStore.selectedVersion ?? undefined,
+      node: selectionStore.selectedNodeId ?? undefined,
+      layout: layoutChoice,
+    });
+    if (hash !== window.location.hash) {
+      history.replaceState(null, "", hash || window.location.pathname);
+    }
+  });
 
   // React to node selection changes
   $effect(() => {
@@ -152,12 +229,40 @@
     graphStore.conformanceReport = null;
     showConformance = false;
   }
+
+  function handleKeydown(e: KeyboardEvent) {
+    // Escape: close any open panel
+    if (e.key === "Escape") {
+      if (selectionStore.panelOpen) {
+        selectionStore.clear();
+        e.preventDefault();
+      } else if (showConformance) {
+        clearConformance();
+        e.preventDefault();
+      }
+      return;
+    }
+
+    // Don't handle keys when focus is in an input/select
+    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+
+    // f: fit all elements in viewport
+    if (e.key === "f") {
+      graphView?.fitAll();
+      e.preventDefault();
+    }
+  }
 </script>
+
+<svelte:window onkeydown={handleKeydown} />
 
 <div class="app">
   <nav class="toolbar">
     <div class="toolbar-left">
       <span class="logo">SVT</span>
+      <button class="theme-toggle" onclick={toggleTheme} aria-label="Toggle theme">
+        {theme === "dark" ? "Light" : "Dark"}
+      </button>
       <SnapshotSelector
         snapshots={graphStore.snapshots}
         selectedVersion={graphStore.selectedVersion}
@@ -204,16 +309,23 @@
 
   <div class="main-content">
     {#if graphStore.loading && !graphStore.graph}
-      <div class="center-message">Loading...</div>
+      <div class="center-message">
+        <div class="spinner"></div>
+        <p>Loading graph data...</p>
+      </div>
     {:else if graphStore.graph}
       <GraphView
         bind:this={graphView}
         graph={graphStore.graph}
         conformance={graphStore.conformanceReport}
         layout={layoutChoice}
+        {theme}
       />
     {:else}
-      <div class="center-message">No data loaded. Start the server with --design or --project.</div>
+      <div class="center-message">
+        <p>No data loaded</p>
+        <p class="hint">Start the server with <code>--design</code> or <code>--project</code> flags.</p>
+      </div>
     {/if}
 
     {#if selectionStore.panelOpen}
@@ -265,6 +377,14 @@
     margin-right: 0.5rem;
   }
 
+  .theme-toggle {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    font-size: 0.8rem;
+    padding: 0.25rem 0.5rem;
+  }
+
   select,
   button {
     background: var(--bg);
@@ -310,9 +430,37 @@
   .center-message {
     flex: 1;
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
     color: var(--text-muted);
     font-size: 1.2rem;
+  }
+
+  .center-message p {
+    margin: 0.25rem 0;
+  }
+
+  .hint {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+  }
+
+  .hint code {
+    color: var(--accent);
+  }
+
+  .spinner {
+    width: 32px;
+    height: 32px;
+    border: 3px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin-bottom: 1rem;
+  }
+
+  @keyframes spin {
+    to { transform: rotate(360deg); }
   }
 </style>

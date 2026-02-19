@@ -4,6 +4,7 @@ import type {
   ApiEdge,
   CytoscapeGraph,
   ConformanceReport,
+  SnapshotDiff,
   Version,
 } from "./types";
 
@@ -82,4 +83,9 @@ export function getConformance(design: Version, analysis: Version): Promise<Conf
 /** GET /api/search?path=GLOB&version=V */
 export function searchNodes(path: string, version: Version): Promise<ApiNode[]> {
   return fetchJson(`${BASE}/api/search?path=${encodeURIComponent(path)}&version=${version}`);
+}
+
+/** GET /api/diff?from=V1&to=V2 */
+export function getDiff(from: Version, to: Version): Promise<SnapshotDiff> {
+  return fetchJson(`${BASE}/api/diff?from=${from}&to=${to}`);
 }

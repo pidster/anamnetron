@@ -17,8 +17,9 @@
 | **11** | Canonical Path Alignment | 2026-02-19 | 293 | Workspace-aware canonical paths (`svt-core` → `/svt/core`), enum variant extraction, workspace root node, 0 not-evaluable constraints in full conformance mode |
 | **12** | DOT Export | 2026-02-19 | 302 | `DotExporter` implementing `ExportFormat` trait, `subgraph cluster_*` containment, labelled edges, registered in `ExportRegistry`, `svt export --format dot`, snapshot test |
 | **13** | Snapshot Diffing + Git Integration | 2026-02-19 | 315 | Core diff engine (node/edge matching by canonical path), `svt diff --from V1 --to V2` (human + JSON output), `GET /api/diff?from=V1&to=V2` endpoint, git HEAD auto-detection in `svt analyze` |
+| **14** | Web UI Polish | 2026-02-19 | 329 | Dark/light theme toggle, hash-based URL routing (`#v=1&node=id&layout=dagre`), localStorage persistence, keyboard navigation (Escape/f), loading spinner, empty state, `getDiff` API client + diff types |
 
-**Current state:** 310 Rust tests + 5 vitest tests = 315 total. All passing. clippy/fmt/audit clean. CI pipeline operational.
+**Current state:** 310 Rust tests + 19 vitest tests = 329 total. All passing. clippy/fmt/audit clean. CI pipeline operational.
 
 ## What's Working Now
 
@@ -55,8 +56,8 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 ### Export Formats
 - Mermaid, JSON, and DOT are implemented. SVG/PNG rendering could be added via Graphviz CLI piping or embedded renderer (PRINCIPLES.md: Interoperability).
 
-### Web UI
-- No dark mode, no persistence of layout/filter state, no diff view for comparing snapshots, no URL routing/permalinks.
+### Web UI — PARTIALLY RESOLVED (M14)
+- ~~No dark mode, no persistence of layout/filter state, no URL routing/permalinks.~~ Dark/light theme toggle, hash-based URL routing, localStorage persistence, and keyboard shortcuts added. Remaining: diff view overlay for comparing snapshots in the graph.
 
 ### Additional Languages
 - Only Rust and TypeScript analyzers exist. Go, Python, and Java are mentioned as future goals (PRINCIPLES.md: Extensibility).
@@ -110,17 +111,21 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 
 **Not yet done (deferred):** Web UI diff view — highlight added/removed/changed nodes in graph overlay.
 
-### Milestone 14: Web UI Polish
+### Milestone 14: Web UI Polish — COMPLETE
 
 **Goal:** Improve the web frontend with dark mode, persistence, URL routing, and better UX.
 
-**Scope:**
-- Dark mode toggle with system-preference detection
-- URL routing (hash-based): selected node, active view, layout mode
-- LocalStorage persistence for layout preferences and filter state
-- Error boundary components with retry
-- Loading states and empty-state UI
-- Keyboard navigation (arrow keys to traverse graph, Escape to deselect)
+**Delivered:**
+- Dark/light theme toggle with CSS custom properties and localStorage persistence
+- Theme-aware Cytoscape graph (colors adapt to light/dark mode)
+- Hash-based URL routing (`#v=1&node=id&layout=dagre`) with back/forward support
+- localStorage persistence for layout preference and theme
+- Keyboard navigation: Escape to close panels, `f` to fit-all
+- Loading spinner animation and improved empty state messaging
+- `getDiff` API client function and `SnapshotDiff` TypeScript types
+- 13 new router tests + 1 new API test = 19 total vitest tests
+
+**Not yet done (deferred):** Error boundary components with retry, diff view overlay in graph, arrow-key graph traversal.
 
 ### Milestone 15: Additional Language Analyzers
 
@@ -167,4 +172,5 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 | `2026-02-19-milestone-10-design.md` | M10 design (COMPLETE) |
 | `2026-02-19-milestone-10-implementation.md` | M10 implementation plan (COMPLETE) |
 | `2026-02-19-milestone-13-implementation.md` | M13 implementation plan (COMPLETE) |
+| `2026-02-19-milestone-14-implementation.md` | M14 implementation plan (COMPLETE) |
 | `2026-02-19-milestones-11-16-design.md` | M11–M16 design (roadmap for remaining work) |

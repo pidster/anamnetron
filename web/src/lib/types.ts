@@ -135,3 +135,41 @@ export interface ConformanceReport {
 export interface ApiError {
   error: string;
 }
+
+/** How a node or edge changed between snapshots. */
+export type ChangeKind = "added" | "removed" | "changed";
+
+/** A node that changed between two versions. */
+export interface NodeChange {
+  canonical_path: string;
+  change: ChangeKind;
+  kind: NodeKind;
+  sub_kind: string;
+  changed_fields: string[];
+}
+
+/** An edge that changed between two versions. */
+export interface EdgeChange {
+  source_path: string;
+  target_path: string;
+  edge_kind: EdgeKind;
+  change: ChangeKind;
+}
+
+/** Summary counts for a snapshot diff. */
+export interface DiffSummary {
+  nodes_added: number;
+  nodes_removed: number;
+  nodes_changed: number;
+  edges_added: number;
+  edges_removed: number;
+}
+
+/** GET /api/diff response. */
+export interface SnapshotDiff {
+  from_version: Version;
+  to_version: Version;
+  node_changes: NodeChange[];
+  edge_changes: EdgeChange[];
+  summary: DiffSummary;
+}

@@ -1,6 +1,6 @@
 // web/src/lib/__tests__/api.test.ts
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { getSnapshots, getGraph, getHealth, searchNodes } from "../api";
+import { getSnapshots, getGraph, getHealth, searchNodes, getDiff } from "../api";
 
 // Mock fetch globally
 const mockFetch = vi.fn();
@@ -47,6 +47,20 @@ describe("api", () => {
     mockFetch.mockResolvedValueOnce(mockResponse([]));
     await searchNodes("/svt/**", 1);
     expect(mockFetch).toHaveBeenCalledWith("/api/search?path=%2Fsvt%2F**&version=1");
+  });
+
+  it("getDiff fetches correct endpoint", async () => {
+    const data = {
+      from_version: 1,
+      to_version: 2,
+      node_changes: [],
+      edge_changes: [],
+      summary: { nodes_added: 0, nodes_removed: 0, nodes_changed: 0, edges_added: 0, edges_removed: 0 },
+    };
+    mockFetch.mockResolvedValueOnce(mockResponse(data));
+    const result = await getDiff(1, 2);
+    expect(result).toEqual(data);
+    expect(mockFetch).toHaveBeenCalledWith("/api/diff?from=1&to=2");
   });
 
   it("throws on HTTP error with server message", async () => {
