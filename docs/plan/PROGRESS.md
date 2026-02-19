@@ -12,8 +12,9 @@
 | **6** | CLI Export + Additional Constraints | 2026-02-19 | 234 | `boundary`, `must_contain`, `max_fan_in` constraints; `svt export --format mermaid\|json`; Mermaid flowchart generation; all dog-food constraints evaluable |
 | **7** | TypeScript Analyzer | 2026-02-19 | 259 | tree-sitter-typescript analysis, Svelte script block extraction, TS package discovery, multi-language orchestrator integration, dog-food on `web/` |
 | **8** | WASM Bridge | 2026-02-19 | 282 | `svt-wasm` crate with wasm-bindgen, CozoDB in-memory for browser, 12 read-only query methods, TypeScript wrapper, web integration for zero-roundtrip detail lookups |
+| **9** | CI Pipeline | 2026-02-19 | 282 | GitHub Actions CI: Rust fmt/clippy/test/audit, WASM build, web tests, conformance gate with step summary |
 
-**Current state:** 277 Rust tests + 5 vitest tests = 282 total. All passing. clippy/fmt/audit clean.
+**Current state:** 277 Rust tests + 5 vitest tests = 282 total. All passing. clippy/fmt/audit clean. CI pipeline operational.
 
 ## What's Working Now
 
@@ -36,21 +37,10 @@ All 10 constraints in `design/architecture.yaml` are now fully evaluated — zer
 ## Not Yet Built (from design/architecture.yaml & PRINCIPLES.md)
 
 ### Infrastructure
-- **CI integration** — GitHub Actions workflow, conformance as CI gate (PRINCIPLES.md: Quality) — **Milestone 9 (in progress)**
+- ~~**CI integration** — GitHub Actions workflow, conformance as CI gate (PRINCIPLES.md: Quality)~~ — **Done (Milestone 9)**
 - **Plugin API** — Extensibility for language analyzers, constraint types, export formats (PRINCIPLES.md: Extensibility)
 
 ## Suggested Next Milestones
-
-### Milestone 9: CI Pipeline (in progress)
-
-**Goal:** GitHub Actions CI workflow with full-stack checks and conformance dog-food gate.
-
-**Scope:**
-- GitHub Actions workflow on ubuntu-latest (build, test, clippy, fmt, audit)
-- WASM build verification via wasm-pack
-- Web frontend checks (npm ci, vitest)
-- Conformance check as visible but non-blocking gate
-- Audit ignore config for known CozoDB transitive dependency warnings
 
 ### Milestone 10: Plugin Foundations
 
@@ -80,4 +70,5 @@ All 10 constraints in `design/architecture.yaml` are now fully evaluated — zer
 | `2026-02-19-milestone-7-implementation.md` | M7 implementation plan (COMPLETE) |
 | `2026-02-19-milestone-8-design.md` | M8 design (COMPLETE) |
 | `2026-02-19-milestone-8-implementation.md` | M8 implementation plan (COMPLETE) |
-| `2026-02-19-milestone-9-design.md` | M9 design |
+| `2026-02-19-milestone-9-design.md` | M9 design (COMPLETE) |
+| `2026-02-19-milestone-9-implementation.md` | M9 implementation plan (COMPLETE) |
