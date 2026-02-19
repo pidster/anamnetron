@@ -625,30 +625,28 @@ fn structural_checks(store: &dyn GraphStore, version: Version) -> Result<Vec<Con
     Ok(results)
 }
 
-/// Evaluate constraints from `constraint_version` against data in `eval_version`.
+/// Evaluate constraints from `constraint_version` against data in `eval_version`,
+/// using the provided registry to look up evaluators by constraint kind.
 fn evaluate_constraints(
     store: &dyn GraphStore,
     constraint_version: Version,
     eval_version: Version,
+    registry: &ConstraintRegistry,
 ) -> Result<Vec<ConstraintResult>> {
     let mut results = Vec::new();
     let constraints = store.get_constraints(constraint_version)?;
     for constraint in &constraints {
-        let result = match constraint.kind.as_str() {
-            "must_not_depend" => {
-                evaluate_constraint_must_not_depend(store, constraint, eval_version)?
-            }
-            "boundary" => evaluate_constraint_boundary(store, constraint, eval_version)?,
-            "must_contain" => evaluate_constraint_must_contain(store, constraint, eval_version)?,
-            "max_fan_in" => evaluate_constraint_max_fan_in(store, constraint, eval_version)?,
-            _ => ConstraintResult {
+        let result = if let Some(evaluator) = registry.get(&constraint.kind) {
+            evaluator.evaluate(store, constraint, eval_version)?
+        } else {
+            ConstraintResult {
                 constraint_name: constraint.name.clone(),
                 constraint_kind: constraint.kind.clone(),
                 status: ConstraintStatus::NotEvaluable,
                 severity: constraint.severity,
                 message: format!("{} not evaluable", constraint.kind),
                 violations: vec![],
-            },
+            }
         };
         results.push(result);
     }
@@ -687,9 +685,14 @@ fn compute_summary(
 ///
 /// Design-only mode: no analysis version. Non-evaluable constraints
 /// (e.g., must_contain without analysis data) are marked `NotEvaluable`.
-pub fn evaluate_design(store: &impl GraphStore, version: Version) -> Result<ConformanceReport> {
+/// Uses the provided `ConstraintRegistry` to look up evaluators by kind.
+pub fn evaluate_design(
+    store: &dyn GraphStore,
+    version: Version,
+    registry: &ConstraintRegistry,
+) -> Result<ConformanceReport> {
     let mut results = structural_checks(store, version)?;
-    results.extend(evaluate_constraints(store, version, version)?);
+    results.extend(evaluate_constraints(store, version, version, registry)?);
     let summary = compute_summary(&results, 0, 0);
 
     Ok(ConformanceReport {
@@ -708,10 +711,13 @@ pub fn evaluate_design(store: &impl GraphStore, version: Version) -> Result<Conf
 /// 1. Finds unimplemented nodes (in design but not in analysis)
 /// 2. Finds undocumented nodes (in analysis but not in design, at matching depth)
 /// 3. Evaluates all constraints against analysis edges
+///
+/// Uses the provided `ConstraintRegistry` to look up evaluators by kind.
 pub fn evaluate(
-    store: &impl GraphStore,
+    store: &dyn GraphStore,
     design_version: Version,
     analysis_version: Version,
+    registry: &ConstraintRegistry,
 ) -> Result<ConformanceReport> {
     let design_nodes = store.get_all_nodes(design_version)?;
     let analysis_nodes = store.get_all_nodes(analysis_version)?;
@@ -771,6 +777,7 @@ pub fn evaluate(
         store,
         design_version,
         analysis_version,
+        registry,
     )?);
     let summary = compute_summary(&results, unimplemented.len(), undocumented.len());
 
@@ -928,7 +935,8 @@ constraints:
     severity: warning
 "#,
         );
-        let report = evaluate_design(&store, version).unwrap();
+        let registry = ConstraintRegistry::with_defaults();
+        let report = evaluate_design(&store, version, &registry).unwrap();
         // 2 structural + 2 constraints
         assert_eq!(report.constraint_results.len(), 4);
         assert_eq!(report.design_version, version);
@@ -973,7 +981,8 @@ constraints:
     severity: error
 "#,
         );
-        let report = evaluate_design(&store, version).unwrap();
+        let registry = ConstraintRegistry::with_defaults();
+        let report = evaluate_design(&store, version, &registry).unwrap();
         // 2 structural (both pass) + 1 must_not_depend (pass)
         assert_eq!(report.summary.passed, 3);
         assert_eq!(report.summary.failed, 0);
@@ -1002,7 +1011,8 @@ constraints:
             .add_node(av, &make_node("a1", "/app", NodeKind::System, "workspace"))
             .unwrap();
 
-        let report = evaluate(&store, dv, av).unwrap();
+        let registry = ConstraintRegistry::with_defaults();
+        let report = evaluate(&store, dv, av, &registry).unwrap();
         assert!(
             !report.unimplemented.is_empty(),
             "should report /app/missing as unimplemented"
@@ -1047,7 +1057,8 @@ constraints:
             )
             .unwrap();
 
-        let report = evaluate(&store, dv, av).unwrap();
+        let registry = ConstraintRegistry::with_defaults();
+        let report = evaluate(&store, dv, av, &registry).unwrap();
         assert!(report.analysis_version.is_some());
         // /app/extra should be flagged as undocumented (same depth as design, not child of design node)
         assert!(
@@ -1094,7 +1105,8 @@ constraints:
             )
             .unwrap();
 
-        let report = evaluate(&store, dv, av).unwrap();
+        let registry = ConstraintRegistry::with_defaults();
+        let report = evaluate(&store, dv, av, &registry).unwrap();
         assert!(
             report.unimplemented.is_empty(),
             "all design nodes have matches, none should be unimplemented: {:?}",
@@ -1155,7 +1167,8 @@ constraints:
             .add_edge(av, &make_edge("ae1", "a2", "a3", EdgeKind::Depends))
             .unwrap();
 
-        let report = evaluate(&store, dv, av).unwrap();
+        let registry = ConstraintRegistry::with_defaults();
+        let report = evaluate(&store, dv, av, &registry).unwrap();
         let core_constraint = report
             .constraint_results
             .iter()
@@ -1206,7 +1219,8 @@ constraints:
     severity: warning
 "#,
         );
-        let report = evaluate_design(&store, version).unwrap();
+        let registry = ConstraintRegistry::with_defaults();
+        let report = evaluate_design(&store, version, &registry).unwrap();
 
         // Both must_not_depend constraints should fail
         let core_no_cli = report
@@ -1254,7 +1268,8 @@ constraints:
         // Analysis is empty
         let av = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
 
-        let report = evaluate(&store, dv, av).unwrap();
+        let registry = ConstraintRegistry::with_defaults();
+        let report = evaluate(&store, dv, av, &registry).unwrap();
         assert_eq!(
             report.unimplemented.len(),
             2,
@@ -1269,7 +1284,8 @@ constraints:
         let dv = store.create_snapshot(SnapshotKind::Design, None).unwrap();
         let av = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
 
-        let report = evaluate(&store, dv, av).unwrap();
+        let registry = ConstraintRegistry::with_defaults();
+        let report = evaluate(&store, dv, av, &registry).unwrap();
         assert!(report.unimplemented.is_empty());
         assert!(report.undocumented.is_empty());
         assert_eq!(
@@ -1317,7 +1333,8 @@ constraints:
             )
             .unwrap();
 
-        let report = evaluate(&store, dv, av).unwrap();
+        let registry = ConstraintRegistry::with_defaults();
+        let report = evaluate(&store, dv, av, &registry).unwrap();
         assert_eq!(report.summary.unimplemented, 1, "/app/missing");
         assert_eq!(report.summary.undocumented, 1, "/app/extra");
         assert!(report.summary.passed >= 2, "structural checks should pass");
@@ -1716,7 +1733,8 @@ constraints:
             )
             .unwrap();
 
-        let report = evaluate(&store, dv, av).unwrap();
+        let registry = ConstraintRegistry::with_defaults();
+        let report = evaluate(&store, dv, av, &registry).unwrap();
         // /app/core should NOT be unimplemented due to depth tolerance
         assert!(
             !report

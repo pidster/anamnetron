@@ -4,7 +4,7 @@ use axum::extract::{Path, Query, State};
 use axum::Json;
 use serde::Deserialize;
 
-use svt_core::conformance::{self, ConformanceReport};
+use svt_core::conformance::{self, ConformanceReport, ConstraintRegistry};
 use svt_core::model::Version;
 
 use crate::error::ApiError;
@@ -24,7 +24,8 @@ pub async fn evaluate_design(
     State(state): State<SharedState>,
     Path(version): Path<Version>,
 ) -> Result<Json<ConformanceReport>, ApiError> {
-    let report = conformance::evaluate_design(&state.store, version)?;
+    let registry = ConstraintRegistry::with_defaults();
+    let report = conformance::evaluate_design(&state.store, version, &registry)?;
     Ok(Json(report))
 }
 
@@ -33,7 +34,8 @@ pub async fn evaluate_conformance(
     State(state): State<SharedState>,
     Query(params): Query<ConformanceParams>,
 ) -> Result<Json<ConformanceReport>, ApiError> {
-    let report = conformance::evaluate(&state.store, params.design, params.analysis)?;
+    let registry = ConstraintRegistry::with_defaults();
+    let report = conformance::evaluate(&state.store, params.design, params.analysis, &registry)?;
     Ok(Json(report))
 }
 

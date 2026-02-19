@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use svt_core::conformance;
+use svt_core::conformance::{self, ConstraintRegistry};
 use svt_core::interchange::parse_yaml;
 use svt_core::interchange_store::load_into_store;
 use svt_core::store::{CozoStore, GraphStore};
@@ -109,7 +109,8 @@ fn dogfood_conformance_comparison() {
     let summary = analyze_project(&mut store, &project_root(), None).unwrap();
 
     // Compare
-    let report = conformance::evaluate(&store, design_version, summary.version).unwrap();
+    let registry = ConstraintRegistry::with_defaults();
+    let report = conformance::evaluate(&store, design_version, summary.version, &registry).unwrap();
 
     // All must_not_depend constraints should pass
     // (our code respects dependency direction: cli -> analyzer -> core)

@@ -152,10 +152,11 @@ fn run_import(store_path: &Path, args: &ImportArgs) -> Result<()> {
 }
 
 fn run_check(store_path: &Path, args: &CheckArgs) -> Result<()> {
-    use svt_core::conformance::{self, ConstraintStatus};
+    use svt_core::conformance::{self, ConstraintRegistry, ConstraintStatus};
     use svt_core::model::{Severity, SnapshotKind};
 
     let store = open_store(store_path)?;
+    let registry = ConstraintRegistry::with_defaults();
 
     let design_version = match args.design {
         Some(v) => v,
@@ -175,10 +176,10 @@ fn run_check(store_path: &Path, args: &CheckArgs) -> Result<()> {
         } else {
             analysis_version_arg
         };
-        conformance::evaluate(&store, design_version, analysis_version)
+        conformance::evaluate(&store, design_version, analysis_version, &registry)
             .map_err(|e| anyhow::anyhow!("{}", e))?
     } else {
-        conformance::evaluate_design(&store, design_version)
+        conformance::evaluate_design(&store, design_version, &registry)
             .map_err(|e| anyhow::anyhow!("{}", e))?
     };
 
@@ -318,9 +319,11 @@ fn run_analyze(store_path: &Path, args: &AnalyzeArgs) -> Result<()> {
 }
 
 fn run_export(store_path: &Path, args: &ExportArgs) -> Result<()> {
+    use svt_core::export::ExportRegistry;
     use svt_core::model::SnapshotKind;
 
     let store = open_store(store_path)?;
+    let registry = ExportRegistry::with_defaults();
 
     let version = match args.version {
         Some(v) => v,
@@ -330,14 +333,17 @@ fn run_export(store_path: &Path, args: &ExportArgs) -> Result<()> {
             .ok_or_else(|| anyhow::anyhow!("No design versions found in store"))?,
     };
 
-    let content = match args.format.as_str() {
-        "mermaid" => svt_core::export::mermaid::to_mermaid(&store, version)
-            .map_err(|e| anyhow::anyhow!("{}", e))?,
-        "json" => {
-            interchange_store::export_json(&store, version).map_err(|e| anyhow::anyhow!("{}", e))?
-        }
-        other => bail!("Unsupported format: {other}. Use 'mermaid' or 'json'."),
-    };
+    let exporter = registry.get(&args.format).ok_or_else(|| {
+        let available: Vec<&str> = registry.names();
+        anyhow::anyhow!(
+            "Unknown format: '{}'. Available: {}",
+            args.format,
+            available.join(", ")
+        )
+    })?;
+    let content = exporter
+        .export(&store, version)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     if let Some(output_path) = &args.output {
         std::fs::write(output_path, &content)

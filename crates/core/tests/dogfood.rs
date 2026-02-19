@@ -1,6 +1,6 @@
 //! Dog-food test: load design/architecture.yaml and run conformance checks.
 
-use svt_core::conformance::{self, ConstraintStatus};
+use svt_core::conformance::{self, ConstraintRegistry, ConstraintStatus};
 use svt_core::interchange;
 use svt_core::interchange_store;
 use svt_core::store::{CozoStore, GraphStore};
@@ -45,7 +45,8 @@ fn dogfood_conformance_all_must_not_depend_pass() {
     let mut store = CozoStore::new_in_memory().unwrap();
     let version = interchange_store::load_into_store(&mut store, &doc).unwrap();
 
-    let report = conformance::evaluate_design(&store, version).unwrap();
+    let registry = ConstraintRegistry::with_defaults();
+    let report = conformance::evaluate_design(&store, version, &registry).unwrap();
 
     // All must_not_depend constraints should pass
     let must_not_depend_results: Vec<_> = report
@@ -97,7 +98,8 @@ fn dogfood_conformance_report_serialises_to_json() {
     let mut store = CozoStore::new_in_memory().unwrap();
     let version = interchange_store::load_into_store(&mut store, &doc).unwrap();
 
-    let report = conformance::evaluate_design(&store, version).unwrap();
+    let registry = ConstraintRegistry::with_defaults();
+    let report = conformance::evaluate_design(&store, version, &registry).unwrap();
     let json = serde_json::to_string_pretty(&report).unwrap();
 
     // Verify it's valid JSON

@@ -16,7 +16,7 @@ use axum::Json;
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
-use svt_core::conformance;
+use svt_core::conformance::{self, ConstraintRegistry};
 use svt_core::interchange;
 use svt_core::interchange_store;
 use svt_core::model::Version;
@@ -52,7 +52,8 @@ async fn design_conformance(
     State(state): State<TestState>,
     Path(version): Path<Version>,
 ) -> Json<serde_json::Value> {
-    let report = conformance::evaluate_design(&state.0, version).unwrap();
+    let registry = ConstraintRegistry::with_defaults();
+    let report = conformance::evaluate_design(&state.0, version, &registry).unwrap();
     Json(serde_json::to_value(report).unwrap())
 }
 
