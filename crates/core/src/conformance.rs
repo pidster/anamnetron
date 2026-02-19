@@ -97,12 +97,153 @@ pub struct ConformanceReport {
     pub summary: ConformanceSummary,
 }
 
+/// Extension point for constraint evaluation.
+///
+/// Implement this trait to add custom constraint kinds beyond the built-in set.
+/// Each evaluator handles a single constraint kind string.
+pub trait ConstraintEvaluator: Send + Sync {
+    /// The constraint kind string this evaluator handles.
+    fn kind(&self) -> &str;
+    /// Evaluate a constraint against the store data.
+    fn evaluate(
+        &self,
+        store: &dyn GraphStore,
+        constraint: &Constraint,
+        eval_version: Version,
+    ) -> Result<ConstraintResult>;
+}
+
+/// Built-in evaluator for `must_not_depend` constraints.
+#[derive(Debug)]
+pub struct MustNotDependEvaluator;
+
+impl ConstraintEvaluator for MustNotDependEvaluator {
+    fn kind(&self) -> &str {
+        "must_not_depend"
+    }
+    fn evaluate(
+        &self,
+        store: &dyn GraphStore,
+        constraint: &Constraint,
+        eval_version: Version,
+    ) -> Result<ConstraintResult> {
+        evaluate_constraint_must_not_depend(store, constraint, eval_version)
+    }
+}
+
+/// Built-in evaluator for `boundary` constraints.
+#[derive(Debug)]
+pub struct BoundaryEvaluator;
+
+impl ConstraintEvaluator for BoundaryEvaluator {
+    fn kind(&self) -> &str {
+        "boundary"
+    }
+    fn evaluate(
+        &self,
+        store: &dyn GraphStore,
+        constraint: &Constraint,
+        eval_version: Version,
+    ) -> Result<ConstraintResult> {
+        evaluate_constraint_boundary(store, constraint, eval_version)
+    }
+}
+
+/// Built-in evaluator for `must_contain` constraints.
+#[derive(Debug)]
+pub struct MustContainEvaluator;
+
+impl ConstraintEvaluator for MustContainEvaluator {
+    fn kind(&self) -> &str {
+        "must_contain"
+    }
+    fn evaluate(
+        &self,
+        store: &dyn GraphStore,
+        constraint: &Constraint,
+        eval_version: Version,
+    ) -> Result<ConstraintResult> {
+        evaluate_constraint_must_contain(store, constraint, eval_version)
+    }
+}
+
+/// Built-in evaluator for `max_fan_in` constraints.
+#[derive(Debug)]
+pub struct MaxFanInEvaluator;
+
+impl ConstraintEvaluator for MaxFanInEvaluator {
+    fn kind(&self) -> &str {
+        "max_fan_in"
+    }
+    fn evaluate(
+        &self,
+        store: &dyn GraphStore,
+        constraint: &Constraint,
+        eval_version: Version,
+    ) -> Result<ConstraintResult> {
+        evaluate_constraint_max_fan_in(store, constraint, eval_version)
+    }
+}
+
+/// Registry of constraint evaluators, keyed by constraint kind string.
+///
+/// Use [`ConstraintRegistry::with_defaults`] to create a registry pre-populated
+/// with all built-in evaluators, or [`ConstraintRegistry::new`] for an empty one.
+pub struct ConstraintRegistry {
+    evaluators: std::collections::HashMap<String, Box<dyn ConstraintEvaluator>>,
+}
+
+impl ConstraintRegistry {
+    /// Create an empty registry with no evaluators.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            evaluators: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Create a registry pre-populated with all built-in evaluators.
+    #[must_use]
+    pub fn with_defaults() -> Self {
+        let mut registry = Self::new();
+        registry.register(Box::new(MustNotDependEvaluator));
+        registry.register(Box::new(BoundaryEvaluator));
+        registry.register(Box::new(MustContainEvaluator));
+        registry.register(Box::new(MaxFanInEvaluator));
+        registry
+    }
+
+    /// Register a constraint evaluator. Replaces any existing evaluator for the same kind.
+    pub fn register(&mut self, evaluator: Box<dyn ConstraintEvaluator>) {
+        self.evaluators
+            .insert(evaluator.kind().to_string(), evaluator);
+    }
+
+    /// Look up an evaluator by constraint kind.
+    #[must_use]
+    pub fn get(&self, kind: &str) -> Option<&dyn ConstraintEvaluator> {
+        self.evaluators.get(kind).map(|b| b.as_ref())
+    }
+
+    /// Return all registered constraint kind strings.
+    #[must_use]
+    pub fn kinds(&self) -> Vec<String> {
+        self.evaluators.keys().cloned().collect()
+    }
+}
+
+impl Default for ConstraintRegistry {
+    fn default() -> Self {
+        Self::with_defaults()
+    }
+}
+
 /// Evaluate a single `must_not_depend` constraint.
 ///
 /// Finds all nodes matching `scope`, all nodes matching `target`,
 /// and checks for `Depends` edges between them.
 pub fn evaluate_constraint_must_not_depend(
-    store: &impl GraphStore,
+    store: &dyn GraphStore,
     constraint: &Constraint,
     version: Version,
 ) -> Result<ConstraintResult> {
@@ -180,7 +321,7 @@ pub fn evaluate_constraint_must_not_depend(
 /// Checks that no node outside the scope pattern has a `Depends` edge
 /// targeting a node inside the scope. Internal-to-internal deps are allowed.
 pub fn evaluate_constraint_boundary(
-    store: &impl GraphStore,
+    store: &dyn GraphStore,
     constraint: &Constraint,
     version: Version,
 ) -> Result<ConstraintResult> {
@@ -250,7 +391,7 @@ pub fn evaluate_constraint_boundary(
 /// Checks that the scope node has at least one child matching
 /// `params.child_pattern` (by name) and optionally `params.child_kind` (by NodeKind).
 pub fn evaluate_constraint_must_contain(
-    store: &impl GraphStore,
+    store: &dyn GraphStore,
     constraint: &Constraint,
     version: Version,
 ) -> Result<ConstraintResult> {
@@ -325,7 +466,7 @@ pub fn evaluate_constraint_must_contain(
 /// If `params.level` is specified, only counts edges from nodes of that `NodeKind`.
 /// Fails if the count exceeds `params.limit`.
 pub fn evaluate_constraint_max_fan_in(
-    store: &impl GraphStore,
+    store: &dyn GraphStore,
     constraint: &Constraint,
     version: Version,
 ) -> Result<ConstraintResult> {
@@ -421,7 +562,7 @@ pub fn evaluate_constraint_max_fan_in(
 }
 
 /// Run structural checks (containment acyclicity and referential integrity) on a version.
-fn structural_checks(store: &impl GraphStore, version: Version) -> Result<Vec<ConstraintResult>> {
+fn structural_checks(store: &dyn GraphStore, version: Version) -> Result<Vec<ConstraintResult>> {
     let mut results = Vec::new();
 
     let cycles = crate::validation::validate_contains_acyclic(store, version)?;
@@ -486,7 +627,7 @@ fn structural_checks(store: &impl GraphStore, version: Version) -> Result<Vec<Co
 
 /// Evaluate constraints from `constraint_version` against data in `eval_version`.
 fn evaluate_constraints(
-    store: &impl GraphStore,
+    store: &dyn GraphStore,
     constraint_version: Version,
     eval_version: Version,
 ) -> Result<Vec<ConstraintResult>> {
@@ -1509,6 +1650,42 @@ constraints:
         let result = evaluate_constraint_max_fan_in(&store, &constraint, v).unwrap();
         // Only 1 component-level edge, limit is 1, so it passes
         assert_eq!(result.status, ConstraintStatus::Pass);
+    }
+
+    #[test]
+    fn constraint_evaluator_trait_returns_correct_kind() {
+        let evaluator = MustNotDependEvaluator;
+        assert_eq!(evaluator.kind(), "must_not_depend");
+        let evaluator = BoundaryEvaluator;
+        assert_eq!(evaluator.kind(), "boundary");
+        let evaluator = MustContainEvaluator;
+        assert_eq!(evaluator.kind(), "must_contain");
+        let evaluator = MaxFanInEvaluator;
+        assert_eq!(evaluator.kind(), "max_fan_in");
+    }
+
+    #[test]
+    fn constraint_registry_with_defaults_has_all_built_ins() {
+        let registry = ConstraintRegistry::with_defaults();
+        assert!(registry.get("must_not_depend").is_some());
+        assert!(registry.get("boundary").is_some());
+        assert!(registry.get("must_contain").is_some());
+        assert!(registry.get("max_fan_in").is_some());
+        assert!(registry.get("unknown_kind").is_none());
+        let mut kinds = registry.kinds();
+        kinds.sort();
+        assert_eq!(
+            kinds,
+            vec!["boundary", "max_fan_in", "must_contain", "must_not_depend"]
+        );
+    }
+
+    #[test]
+    fn constraint_registry_register_adds_evaluator() {
+        let mut registry = ConstraintRegistry::new();
+        assert!(registry.get("must_not_depend").is_none());
+        registry.register(Box::new(MustNotDependEvaluator));
+        assert!(registry.get("must_not_depend").is_some());
     }
 
     #[test]

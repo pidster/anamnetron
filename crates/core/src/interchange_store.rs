@@ -115,7 +115,7 @@ pub fn load_into_store(store: &mut impl GraphStore, doc: &InterchangeDocument) -
 }
 
 /// Build an InterchangeDocument from store data for a given version.
-fn build_export_document(store: &impl GraphStore, version: Version) -> Result<InterchangeDocument> {
+fn build_export_document(store: &dyn GraphStore, version: Version) -> Result<InterchangeDocument> {
     // Find the snapshot for metadata
     let snapshots = store.list_snapshots()?;
     let snapshot = snapshots
@@ -188,13 +188,13 @@ fn build_export_document(store: &impl GraphStore, version: Version) -> Result<In
 }
 
 /// Export a version from the store as YAML (flat format).
-pub fn export_yaml(store: &impl GraphStore, version: Version) -> Result<String> {
+pub fn export_yaml(store: &dyn GraphStore, version: Version) -> Result<String> {
     let doc = build_export_document(store, version)?;
     serde_yaml::to_string(&doc).map_err(|e| StoreError::Internal(e.to_string()))
 }
 
 /// Export a version from the store as JSON (flat format).
-pub fn export_json(store: &impl GraphStore, version: Version) -> Result<String> {
+pub fn export_json(store: &dyn GraphStore, version: Version) -> Result<String> {
     let doc = build_export_document(store, version)?;
     serde_json::to_string_pretty(&doc).map_err(|e| StoreError::Internal(e.to_string()))
 }

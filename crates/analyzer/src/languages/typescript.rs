@@ -34,6 +34,10 @@ impl Default for TypeScriptAnalyzer {
 }
 
 impl LanguageAnalyzer for TypeScriptAnalyzer {
+    fn language_id(&self) -> &str {
+        "typescript"
+    }
+
     fn analyze_crate(&self, package_name: &str, files: &[&Path]) -> ParseResult {
         let mut result = ParseResult::default();
 

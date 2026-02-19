@@ -12,7 +12,7 @@ fn mermaid_id(path: &str) -> String {
 ///
 /// Containment hierarchy is expressed via `subgraph` blocks.
 /// Non-containment edges are rendered as labelled arrows.
-pub fn to_mermaid(store: &impl GraphStore, version: Version) -> Result<String> {
+pub fn to_mermaid(store: &dyn GraphStore, version: Version) -> Result<String> {
     let nodes = store.get_all_nodes(version)?;
     let edges = store.get_all_edges(version, None)?;
 

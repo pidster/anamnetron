@@ -27,7 +27,10 @@ pub struct IntegrityError {
 ///
 /// Collects all `Contains` edges and performs DFS-based cycle detection.
 /// Returns a list of detected cycles (empty if the graph is acyclic).
-pub fn validate_contains_acyclic(store: &impl GraphStore, version: Version) -> Result<Vec<Cycle>> {
+pub fn validate_contains_acyclic(
+    store: &(impl GraphStore + ?Sized),
+    version: Version,
+) -> Result<Vec<Cycle>> {
     let contains_edges = store.get_all_edges(version, Some(EdgeKind::Contains))?;
 
     // Build adjacency list: parent -> [children]
@@ -108,7 +111,7 @@ pub fn validate_contains_acyclic(store: &impl GraphStore, version: Version) -> R
 /// then checks each unique ID once. This is O(1 + U) store queries where U is
 /// the number of unique node IDs, rather than O(7 + 2E) in the naive approach.
 pub fn validate_referential_integrity(
-    store: &impl GraphStore,
+    store: &(impl GraphStore + ?Sized),
     version: Version,
 ) -> Result<Vec<IntegrityError>> {
     let all_edges = store.get_all_edges(version, None)?;

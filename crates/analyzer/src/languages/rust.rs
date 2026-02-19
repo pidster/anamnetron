@@ -37,6 +37,10 @@ impl Default for RustAnalyzer {
 }
 
 impl LanguageAnalyzer for RustAnalyzer {
+    fn language_id(&self) -> &str {
+        "rust"
+    }
+
     fn analyze_crate(&self, crate_name: &str, files: &[&Path]) -> ParseResult {
         let mut result = ParseResult::default();
 
