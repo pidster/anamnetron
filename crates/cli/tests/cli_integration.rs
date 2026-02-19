@@ -349,6 +349,91 @@ fn export_to_file_creates_output() {
 }
 
 #[test]
+fn diff_shows_changes_between_versions() {
+    let dir = TempDir::new().unwrap();
+    let yaml_path = write_design_yaml(&dir);
+    let store_path = dir.path().join(".svt/store");
+
+    // Import design (creates version 1)
+    svt_cmd()
+        .arg("--store")
+        .arg(&store_path)
+        .arg("import")
+        .arg(&yaml_path)
+        .assert()
+        .success();
+
+    // Import again (creates version 2 with same content)
+    svt_cmd()
+        .arg("--store")
+        .arg(&store_path)
+        .arg("import")
+        .arg(&yaml_path)
+        .assert()
+        .success();
+
+    // Diff v1 vs v2 — same content, should show no changes
+    svt_cmd()
+        .arg("--store")
+        .arg(&store_path)
+        .arg("diff")
+        .arg("--from")
+        .arg("1")
+        .arg("--to")
+        .arg("2")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Diff: v1 -> v2"))
+        .stdout(predicate::str::contains("No changes"));
+}
+
+#[test]
+fn diff_json_format_produces_valid_json() {
+    let dir = TempDir::new().unwrap();
+    let yaml_path = write_design_yaml(&dir);
+    let store_path = dir.path().join(".svt/store");
+
+    svt_cmd()
+        .arg("--store")
+        .arg(&store_path)
+        .arg("import")
+        .arg(&yaml_path)
+        .assert()
+        .success();
+
+    svt_cmd()
+        .arg("--store")
+        .arg(&store_path)
+        .arg("import")
+        .arg(&yaml_path)
+        .assert()
+        .success();
+
+    let output = svt_cmd()
+        .arg("--store")
+        .arg(&store_path)
+        .arg("diff")
+        .arg("--from")
+        .arg("1")
+        .arg("--to")
+        .arg("2")
+        .arg("--format")
+        .arg("json")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json_str = String::from_utf8(output).unwrap();
+    let parsed: serde_json::Value =
+        serde_json::from_str(&json_str).expect("output should be valid JSON");
+    assert!(parsed.get("from_version").is_some());
+    assert!(parsed.get("to_version").is_some());
+    assert!(parsed.get("summary").is_some());
+}
+
+#[test]
 fn export_dot_produces_digraph() {
     let dir = TempDir::new().unwrap();
     let yaml_path = write_design_yaml(&dir);

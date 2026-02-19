@@ -33,6 +33,8 @@ enum Commands {
     Analyze(AnalyzeArgs),
     /// Export graph as Mermaid, JSON, or DOT.
     Export(ExportArgs),
+    /// Compare two snapshot versions and show what changed.
+    Diff(DiffArgs),
 }
 
 #[derive(clap::Args, Debug)]
@@ -85,6 +87,21 @@ struct ExportArgs {
     /// Output file path (default: stdout).
     #[arg(long, short)]
     output: Option<PathBuf>,
+}
+
+#[derive(clap::Args, Debug)]
+struct DiffArgs {
+    /// First snapshot version (base).
+    #[arg(long)]
+    from: u64,
+
+    /// Second snapshot version (target).
+    #[arg(long)]
+    to: u64,
+
+    /// Output format: human or json.
+    #[arg(long, default_value = "human")]
+    format: String,
 }
 
 fn open_or_create_store(path: &Path) -> Result<CozoStore> {
@@ -288,14 +305,38 @@ fn print_human_report(report: &svt_core::conformance::ConformanceReport) {
     );
 }
 
+/// Try to detect the current git HEAD commit in the given directory.
+fn detect_git_head(project_path: &Path) -> Option<String> {
+    std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(project_path)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| {
+            String::from_utf8(o.stdout)
+                .ok()
+                .map(|s| s.trim().to_string())
+        })
+        .filter(|s| !s.is_empty())
+}
+
 fn run_analyze(store_path: &Path, args: &AnalyzeArgs) -> Result<()> {
     let mut store = open_or_create_store(store_path)?;
 
-    let summary = svt_analyzer::analyze_project(&mut store, &args.path, args.commit_ref.as_deref())
+    let commit_ref = args
+        .commit_ref
+        .clone()
+        .or_else(|| detect_git_head(&args.path));
+
+    let summary = svt_analyzer::analyze_project(&mut store, &args.path, commit_ref.as_deref())
         .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     println!("Analyzed {}\n", args.path.display());
     println!("  Created analysis snapshot v{}", summary.version);
+    if let Some(ref cr) = commit_ref {
+        println!("    commit: {}", cr);
+    }
     println!(
         "    {} crates, {} TS packages, {} files analyzed",
         summary.crates_analyzed, summary.ts_packages_analyzed, summary.files_analyzed
@@ -356,6 +397,69 @@ fn run_export(store_path: &Path, args: &ExportArgs) -> Result<()> {
     Ok(())
 }
 
+fn run_diff(store_path: &Path, args: &DiffArgs) -> Result<()> {
+    use svt_core::diff;
+
+    let store = open_store(store_path)?;
+    let result =
+        diff::diff_snapshots(&store, args.from, args.to).map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    if args.format == "json" {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&result).map_err(|e| anyhow::anyhow!("{}", e))?
+        );
+    } else {
+        println!("Diff: v{} -> v{}\n", result.from_version, result.to_version);
+
+        if result.node_changes.is_empty() && result.edge_changes.is_empty() {
+            println!("  No changes.");
+        }
+
+        for change in &result.node_changes {
+            let tag = match change.change {
+                diff::ChangeKind::Added => "  + ",
+                diff::ChangeKind::Removed => "  - ",
+                diff::ChangeKind::Changed => "  ~ ",
+            };
+            print!(
+                "{}{} ({:?}/{})",
+                tag, change.canonical_path, change.kind, change.sub_kind
+            );
+            if !change.changed_fields.is_empty() {
+                print!(" [{}]", change.changed_fields.join(", "));
+            }
+            println!();
+        }
+
+        if !result.edge_changes.is_empty() {
+            println!();
+            for change in &result.edge_changes {
+                let tag = match change.change {
+                    diff::ChangeKind::Added => "  + ",
+                    diff::ChangeKind::Removed => "  - ",
+                    diff::ChangeKind::Changed => "  ~ ",
+                };
+                println!(
+                    "{}{} -> {} ({:?})",
+                    tag, change.source_path, change.target_path, change.edge_kind
+                );
+            }
+        }
+
+        println!(
+            "\n  {} added, {} removed, {} changed nodes; {} added, {} removed edges",
+            result.summary.nodes_added,
+            result.summary.nodes_removed,
+            result.summary.nodes_changed,
+            result.summary.edges_added,
+            result.summary.edges_removed,
+        );
+    }
+
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -364,5 +468,6 @@ fn main() -> Result<()> {
         Commands::Check(args) => run_check(&cli.store, args),
         Commands::Analyze(args) => run_analyze(&cli.store, args),
         Commands::Export(args) => run_export(&cli.store, args),
+        Commands::Diff(args) => run_diff(&cli.store, args),
     }
 }

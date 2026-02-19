@@ -16,8 +16,9 @@
 | **10** | Plugin Foundations | 2026-02-19 | 282 | `ConstraintEvaluator`, `ExportFormat`, `LanguageAnalyzer` traits; `ConstraintRegistry`, `ExportRegistry`, `AnalyzerRegistry` with `with_defaults()` + `.register()`; registry-based dispatch in CLI, server, conformance engine; `&dyn GraphStore` migration |
 | **11** | Canonical Path Alignment | 2026-02-19 | 293 | Workspace-aware canonical paths (`svt-core` → `/svt/core`), enum variant extraction, workspace root node, 0 not-evaluable constraints in full conformance mode |
 | **12** | DOT Export | 2026-02-19 | 302 | `DotExporter` implementing `ExportFormat` trait, `subgraph cluster_*` containment, labelled edges, registered in `ExportRegistry`, `svt export --format dot`, snapshot test |
+| **13** | Snapshot Diffing + Git Integration | 2026-02-19 | 315 | Core diff engine (node/edge matching by canonical path), `svt diff --from V1 --to V2` (human + JSON output), `GET /api/diff?from=V1&to=V2` endpoint, git HEAD auto-detection in `svt analyze` |
 
-**Current state:** 297 Rust tests + 5 vitest tests = 302 total. All passing. clippy/fmt/audit clean. CI pipeline operational.
+**Current state:** 310 Rust tests + 5 vitest tests = 315 total. All passing. clippy/fmt/audit clean. CI pipeline operational.
 
 ## What's Working Now
 
@@ -30,6 +31,8 @@ svt export --format mermaid              # Export as Mermaid flowchart
 svt export --format json                 # Export as interchange JSON
 svt export --format dot                  # Export as DOT (Graphviz)
 svt export --format mermaid -o arch.mmd  # Export to file
+svt diff --from 1 --to 2                 # Compare two snapshots (human output)
+svt diff --from 1 --to 2 --format json   # Compare two snapshots (JSON output)
 svt-server --design design/architecture.yaml --project .
                                          # Serve API + web UI at http://localhost:3000
 ```
@@ -58,8 +61,8 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 ### Additional Languages
 - Only Rust and TypeScript analyzers exist. Go, Python, and Java are mentioned as future goals (PRINCIPLES.md: Extensibility).
 
-### Git Integration
-- `analyze_project()` accepts an optional `commit_ref` but there is no automatic git-aware snapshot creation or change detection.
+### Git Integration — PARTIALLY RESOLVED (M13)
+- ~~`analyze_project()` accepts an optional `commit_ref` but there is no automatic git-aware snapshot creation or change detection.~~ `svt analyze` now auto-detects git HEAD when `--commit-ref` is not provided. Change detection between snapshots is available via `svt diff`. Remaining: web UI diff view overlay.
 
 ### Dynamic Plugin Loading
 - Plugin registries exist with `.register()` API but all plugins are compiled in. No external plugin discovery, no dynamic loading, no plugin manifest format.
@@ -93,16 +96,19 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 
 **Not yet done (deferred):** SVG rendering could be added via Graphviz CLI piping or an embedded renderer.
 
-### Milestone 13: Snapshot Diffing + Git Integration
+### Milestone 13: Snapshot Diffing + Git Integration — COMPLETE
 
 **Goal:** Enable comparing two analysis snapshots and integrate with git for automatic version tracking.
 
-**Scope:**
-- Core diff engine: compute added/removed/changed nodes and edges between two versions
-- `svt diff` CLI command comparing two snapshots
-- Git-aware analysis: auto-detect HEAD commit, store as snapshot metadata
-- API endpoint: `GET /api/diff?from=V1&to=V2`
-- Web UI diff view: highlight added/removed/changed nodes in graph
+**Delivered:**
+- Core diff engine: nodes matched by canonical path, edges by (source, target, kind) tuple
+- `SnapshotDiff` with `NodeChange`, `EdgeChange`, `DiffSummary` types (Serialize + Deserialize)
+- `svt diff --from V1 --to V2` with human-readable and JSON output
+- `GET /api/diff?from=V1&to=V2` server endpoint
+- Git HEAD auto-detection in `svt analyze` (shells out to `git rev-parse HEAD`)
+- 9 core diff tests + 2 CLI integration tests + 2 server tests
+
+**Not yet done (deferred):** Web UI diff view — highlight added/removed/changed nodes in graph overlay.
 
 ### Milestone 14: Web UI Polish
 
@@ -160,4 +166,5 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 | `2026-02-19-milestone-9-implementation.md` | M9 implementation plan (COMPLETE) |
 | `2026-02-19-milestone-10-design.md` | M10 design (COMPLETE) |
 | `2026-02-19-milestone-10-implementation.md` | M10 implementation plan (COMPLETE) |
+| `2026-02-19-milestone-13-implementation.md` | M13 implementation plan (COMPLETE) |
 | `2026-02-19-milestones-11-16-design.md` | M11–M16 design (roadmap for remaining work) |

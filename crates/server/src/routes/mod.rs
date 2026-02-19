@@ -1,6 +1,7 @@
 //! Route modules and router assembly.
 
 pub mod conformance;
+pub mod diff;
 pub mod edges;
 pub mod graph;
 pub mod health;
@@ -46,6 +47,7 @@ pub fn api_router(state: Arc<AppState>) -> Router {
             get(conformance::evaluate_design),
         )
         .route("/api/conformance", get(conformance::evaluate_conformance))
+        .route("/api/diff", get(diff::get_diff))
         .route("/api/search", get(search::search_nodes))
         .layer(CorsLayer::permissive())
         .with_state(state)

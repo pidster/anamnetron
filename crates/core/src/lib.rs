@@ -26,7 +26,11 @@ pub mod interchange_store;
 #[cfg(feature = "store")]
 pub mod conformance;
 
-/// Export graph data in various formats (Mermaid, JSON).
+/// Snapshot diffing: compute changes between two graph versions.
+#[cfg(feature = "store")]
+pub mod diff;
+
+/// Export graph data in various formats (Mermaid, JSON, DOT).
 #[cfg(feature = "store")]
 pub mod export;
 
