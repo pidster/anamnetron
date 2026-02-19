@@ -31,7 +31,7 @@ enum Commands {
     Check(CheckArgs),
     /// Analyze a Rust project and create an analysis snapshot.
     Analyze(AnalyzeArgs),
-    /// Export graph as Mermaid or JSON.
+    /// Export graph as Mermaid, JSON, or DOT.
     Export(ExportArgs),
 }
 
@@ -74,7 +74,7 @@ struct AnalyzeArgs {
 
 #[derive(clap::Args, Debug)]
 struct ExportArgs {
-    /// Output format: mermaid or json.
+    /// Output format: mermaid, json, or dot.
     #[arg(long)]
     format: String,
 

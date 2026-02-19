@@ -349,6 +349,32 @@ fn export_to_file_creates_output() {
 }
 
 #[test]
+fn export_dot_produces_digraph() {
+    let dir = TempDir::new().unwrap();
+    let yaml_path = write_design_yaml(&dir);
+    let store_path = dir.path().join(".svt/store");
+
+    svt_cmd()
+        .arg("--store")
+        .arg(&store_path)
+        .arg("import")
+        .arg(&yaml_path)
+        .assert()
+        .success();
+
+    svt_cmd()
+        .arg("--store")
+        .arg(&store_path)
+        .arg("export")
+        .arg("--format")
+        .arg("dot")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("digraph"))
+        .stdout(predicate::str::contains("subgraph cluster_"));
+}
+
+#[test]
 fn export_without_format_gives_error() {
     let dir = TempDir::new().unwrap();
     let store_path = dir.path().join(".svt/store");

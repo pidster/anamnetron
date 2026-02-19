@@ -1,0 +1,18 @@
+---
+source: crates/core/src/export/dot.rs
+assertion_line: 233
+expression: output
+---
+digraph architecture {
+    rankdir=TB;
+    node [shape=box, style=filled, fillcolor=lightblue];
+    subgraph cluster_app {
+        label="/app";
+        app_cli [label="/app/cli"];
+        subgraph cluster_app_core {
+            label="/app/core";
+            app_core_model [label="/app/core/model"];
+        }
+    }
+    app_cli -> app_core [label="depends"];
+}

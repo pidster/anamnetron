@@ -15,8 +15,9 @@
 | **9** | CI Pipeline | 2026-02-19 | 282 | GitHub Actions CI: Rust fmt/clippy/test/audit, WASM build, web tests, conformance gate with step summary |
 | **10** | Plugin Foundations | 2026-02-19 | 282 | `ConstraintEvaluator`, `ExportFormat`, `LanguageAnalyzer` traits; `ConstraintRegistry`, `ExportRegistry`, `AnalyzerRegistry` with `with_defaults()` + `.register()`; registry-based dispatch in CLI, server, conformance engine; `&dyn GraphStore` migration |
 | **11** | Canonical Path Alignment | 2026-02-19 | 293 | Workspace-aware canonical paths (`svt-core` → `/svt/core`), enum variant extraction, workspace root node, 0 not-evaluable constraints in full conformance mode |
+| **12** | DOT Export | 2026-02-19 | 302 | `DotExporter` implementing `ExportFormat` trait, `subgraph cluster_*` containment, labelled edges, registered in `ExportRegistry`, `svt export --format dot`, snapshot test |
 
-**Current state:** 288 Rust tests + 5 vitest tests = 293 total. All passing. clippy/fmt/audit clean. CI pipeline operational. Dog-food conformance: 12 passed, 0 failed, 0 warned, 0 not evaluable.
+**Current state:** 297 Rust tests + 5 vitest tests = 302 total. All passing. clippy/fmt/audit clean. CI pipeline operational.
 
 ## What's Working Now
 
@@ -27,6 +28,7 @@ svt analyze .                            # Analyze Rust + TypeScript project wit
 svt check --analysis                     # Compare design vs analysis
 svt export --format mermaid              # Export as Mermaid flowchart
 svt export --format json                 # Export as interchange JSON
+svt export --format dot                  # Export as DOT (Graphviz)
 svt export --format mermaid -o arch.mmd  # Export to file
 svt-server --design design/architecture.yaml --project .
                                          # Serve API + web UI at http://localhost:3000
@@ -48,7 +50,7 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 - The analyzer extracts crate/module/type/function structure but does not resolve cross-crate call graphs, method calls, or trait implementations. ~3,500 warnings are generated during dog-food analysis (mostly "method call resolution not yet supported"). This limits the accuracy of dependency-direction constraints.
 
 ### Export Formats
-- Only Mermaid and JSON are implemented. The design mentions SVG/PNG and DOT/Graphviz as goals (PRINCIPLES.md: Interoperability).
+- Mermaid, JSON, and DOT are implemented. SVG/PNG rendering could be added via Graphviz CLI piping or embedded renderer (PRINCIPLES.md: Interoperability).
 
 ### Web UI
 - No dark mode, no persistence of layout/filter state, no diff view for comparing snapshots, no URL routing/permalinks.
@@ -78,15 +80,18 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 
 **Not yet done (deferred):** `AnalyzerRegistry`-based dispatch — `analyze_project()` still hardcodes Rust/TS phases. Registry wiring deferred until additional language analyzers (M15) make it necessary.
 
-### Milestone 12: Additional Export Formats
+### Milestone 12: DOT Export — COMPLETE
 
-**Goal:** Add DOT/Graphviz and SVG export formats through the `ExportRegistry`.
+**Goal:** Add DOT (Graphviz) export format through the `ExportRegistry`.
 
-**Scope:**
-- DOT exporter implementing the `ExportFormat` trait (subgraph nesting for compound nodes, edge styling)
-- SVG exporter via DOT-to-SVG pipeline (using Graphviz CLI or embedded renderer)
-- Register in `ExportRegistry::with_defaults()`
-- CLI `svt export --format dot|svg` support (automatic through registry)
+**Delivered:**
+- `DotExporter` implementing `ExportFormat` trait with `subgraph cluster_*` containment
+- Labelled directed edges for non-containment relationships
+- Registered in `ExportRegistry::with_defaults()` — CLI picks it up automatically
+- 3 unit tests + 1 snapshot test + 1 CLI integration test
+- `svt export --format dot` works out of the box
+
+**Not yet done (deferred):** SVG rendering could be added via Graphviz CLI piping or an embedded renderer.
 
 ### Milestone 13: Snapshot Diffing + Git Integration
 

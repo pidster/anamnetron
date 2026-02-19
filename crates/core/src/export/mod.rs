@@ -1,5 +1,6 @@
 //! Export graph data in various formats.
 
+pub mod dot;
 pub mod mermaid;
 
 use crate::model::Version;
@@ -39,6 +40,19 @@ impl ExportFormat for JsonExporter {
     }
 }
 
+/// Built-in DOT (Graphviz) exporter.
+#[derive(Debug)]
+pub struct DotExporter;
+
+impl ExportFormat for DotExporter {
+    fn name(&self) -> &str {
+        "dot"
+    }
+    fn export(&self, store: &dyn GraphStore, version: Version) -> Result<String> {
+        dot::to_dot(store, version)
+    }
+}
+
 /// Registry of export formats, keyed by format name.
 pub struct ExportRegistry {
     formats: std::collections::HashMap<String, Box<dyn ExportFormat>>,
@@ -57,6 +71,7 @@ impl ExportRegistry {
         let mut registry = Self::new();
         registry.register(Box::new(MermaidExporter));
         registry.register(Box::new(JsonExporter));
+        registry.register(Box::new(DotExporter));
         registry
     }
 
@@ -92,6 +107,8 @@ mod tests {
         assert_eq!(mermaid.name(), "mermaid");
         let json = JsonExporter;
         assert_eq!(json.name(), "json");
+        let dot = DotExporter;
+        assert_eq!(dot.name(), "dot");
     }
 
     #[test]
@@ -99,9 +116,10 @@ mod tests {
         let registry = ExportRegistry::with_defaults();
         assert!(registry.get("mermaid").is_some());
         assert!(registry.get("json").is_some());
+        assert!(registry.get("dot").is_some());
         assert!(registry.get("unknown").is_none());
         let mut names = registry.names();
         names.sort();
-        assert_eq!(names, vec!["json", "mermaid"]);
+        assert_eq!(names, vec!["dot", "json", "mermaid"]);
     }
 }
