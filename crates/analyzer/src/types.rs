@@ -16,7 +16,7 @@ pub enum CrateType {
 /// Information about a single crate in the project.
 #[derive(Debug, Clone)]
 pub struct CrateInfo {
-    /// Crate name (e.g., "svt-core").
+    /// Crate name — always the Cargo package name (e.g., "svt-core").
     pub name: String,
     /// Library or binary.
     pub crate_type: CrateType,
@@ -35,6 +35,12 @@ pub struct ProjectLayout {
     pub workspace_root: PathBuf,
     /// All crates in the workspace.
     pub crates: Vec<CrateInfo>,
+    /// Detected workspace name from the common crate name prefix.
+    ///
+    /// For a workspace with crates `svt-core`, `svt-cli`, `svt-server`,
+    /// the workspace name is `"svt"`. `None` if no common prefix is detected
+    /// or the project is a single-crate project.
+    pub workspace_name: Option<String>,
 }
 
 /// Information about a TypeScript/JavaScript package.

@@ -185,6 +185,8 @@ fn visit_node(
                 "enum",
                 items,
             );
+            // Extract enum variants as child Unit nodes.
+            visit_enum_variants(node, source, file_path, module_context, items);
         }
         "trait_item" => {
             extract_named_item(
@@ -276,6 +278,48 @@ fn extract_named_item(
         source_ref,
         language: "rust".to_string(),
     });
+}
+
+/// Extract variants from an `enum_item` node.
+///
+/// Each variant is emitted as a `Unit` node with sub_kind `"variant"`,
+/// parented under the enum's qualified name. This enables `must_contain`
+/// constraints to detect specific enum variants (e.g., CLI subcommands).
+fn visit_enum_variants(
+    node: tree_sitter::Node<'_>,
+    source: &[u8],
+    file_path: &Path,
+    module_context: &[String],
+    items: &mut Vec<AnalysisItem>,
+) {
+    let Some(enum_name) = item_name(node, source) else {
+        return;
+    };
+
+    let enum_qn = format!("{}::{}", build_qualified_name(module_context), enum_name);
+
+    let Some(body) = node.child_by_field_name("body") else {
+        return;
+    };
+
+    for i in 0..body.named_child_count() {
+        let Some(child) = body.named_child(i) else {
+            continue;
+        };
+        if child.kind() == "enum_variant" {
+            if let Some(variant_name) = item_name(child, source) {
+                let line = child.start_position().row + 1;
+                items.push(AnalysisItem {
+                    qualified_name: format!("{enum_qn}::{variant_name}"),
+                    kind: NodeKind::Unit,
+                    sub_kind: "variant".to_string(),
+                    parent_qualified_name: Some(enum_qn.clone()),
+                    source_ref: format!("{}:{line}", file_path.display()),
+                    language: "rust".to_string(),
+                });
+            }
+        }
+    }
 }
 
 /// Handle a `mod_item` node. If it has a body (inline module), descend into it.
@@ -706,6 +750,47 @@ mod tests {
             .find(|i| i.qualified_name == "my_crate::Foo")
             .expect("should find Foo");
         assert_eq!(item.language, "rust");
+    }
+
+    #[test]
+    fn extracts_enum_variants() {
+        let result = parse_source(
+            "my_crate",
+            "pub enum Commands { Import, Check, Analyze, Export }",
+        );
+        let variants: Vec<_> = result
+            .items
+            .iter()
+            .filter(|i| i.sub_kind == "variant")
+            .collect();
+        assert_eq!(
+            variants.len(),
+            4,
+            "should extract 4 enum variants, got: {:?}",
+            variants
+        );
+        assert!(variants
+            .iter()
+            .any(|v| v.qualified_name == "my_crate::Commands::Check"));
+        assert!(variants
+            .iter()
+            .any(|v| v.qualified_name == "my_crate::Commands::Import"));
+    }
+
+    #[test]
+    fn enum_variant_parent_is_enum() {
+        let result = parse_source("my_crate", "pub enum Status { Active, Inactive }");
+        let variant = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name == "my_crate::Status::Active")
+            .expect("should find Active variant");
+        assert_eq!(
+            variant.parent_qualified_name,
+            Some("my_crate::Status".to_string())
+        );
+        assert_eq!(variant.kind, NodeKind::Unit);
+        assert_eq!(variant.sub_kind, "variant");
     }
 
     #[test]

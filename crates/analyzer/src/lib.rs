@@ -56,12 +56,29 @@ pub fn analyze_project(
     let layout = discover_project(project_root)?;
     let rust_analyzer = RustAnalyzer::new();
 
-    for crate_info in &layout.crates {
+    // Emit workspace root node if workspace name is detected.
+    if let Some(ref ws_name) = layout.workspace_name {
         all_items.push(AnalysisItem {
-            qualified_name: crate_info.name.replace('-', "_"),
+            qualified_name: ws_name.replace('-', "_"),
+            kind: NodeKind::System,
+            sub_kind: "workspace".to_string(),
+            parent_qualified_name: None,
+            source_ref: layout.workspace_root.display().to_string(),
+            language: "rust".to_string(),
+        });
+    }
+
+    for crate_info in &layout.crates {
+        let crate_qn = workspace_qualified_name(&crate_info.name, layout.workspace_name.as_deref());
+
+        all_items.push(AnalysisItem {
+            qualified_name: crate_qn.clone(),
             kind: NodeKind::Service,
             sub_kind: "crate".to_string(),
-            parent_qualified_name: None,
+            parent_qualified_name: layout
+                .workspace_name
+                .as_ref()
+                .map(|ws| ws.replace('-', "_")),
             source_ref: crate_info.entry_point.display().to_string(),
             language: "rust".to_string(),
         });
@@ -73,8 +90,7 @@ pub fn analyze_project(
             .collect();
         files_analyzed += file_refs.len();
 
-        let parse_result =
-            rust_analyzer.analyze_crate(&crate_info.name.replace('-', "_"), &file_refs);
+        let parse_result = rust_analyzer.analyze_crate(&crate_qn, &file_refs);
         all_items.extend(parse_result.items);
         all_relations.extend(parse_result.relations);
         all_warnings.extend(parse_result.warnings);
@@ -162,6 +178,20 @@ pub fn analyze_project(
         edges_created: edges.len(),
         warnings: all_warnings,
     })
+}
+
+/// Convert a package name to a qualified name, splitting workspace prefix into a parent segment.
+///
+/// With workspace `"svt"`, `"svt-core"` becomes `"svt::core"` (two segments).
+/// Without a workspace prefix, `"svt-core"` becomes `"svt_core"` (one segment).
+fn workspace_qualified_name(package_name: &str, workspace_name: Option<&str>) -> String {
+    if let Some(ws) = workspace_name {
+        let prefix = format!("{ws}-");
+        if let Some(suffix) = package_name.strip_prefix(&prefix) {
+            return format!("{}::{}", ws.replace('-', "_"), suffix.replace('-', "_"));
+        }
+    }
+    package_name.replace('-', "_")
 }
 
 /// Emit module items for directories and files in a TypeScript package.
@@ -277,6 +307,36 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use svt_core::store::CozoStore;
+
+    #[test]
+    fn workspace_qualified_name_splits_prefix() {
+        assert_eq!(
+            workspace_qualified_name("svt-core", Some("svt")),
+            "svt::core"
+        );
+        assert_eq!(
+            workspace_qualified_name("svt-analyzer", Some("svt")),
+            "svt::analyzer"
+        );
+        assert_eq!(workspace_qualified_name("svt-cli", Some("svt")), "svt::cli");
+    }
+
+    #[test]
+    fn workspace_qualified_name_no_prefix_falls_back() {
+        assert_eq!(workspace_qualified_name("svt-core", None), "svt_core");
+        assert_eq!(
+            workspace_qualified_name("single-crate", None),
+            "single_crate"
+        );
+    }
+
+    #[test]
+    fn workspace_qualified_name_non_matching_prefix() {
+        assert_eq!(
+            workspace_qualified_name("other-crate", Some("svt")),
+            "other_crate"
+        );
+    }
 
     #[test]
     fn analyze_project_creates_analysis_snapshot() {

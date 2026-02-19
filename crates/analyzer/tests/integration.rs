@@ -69,13 +69,13 @@ fn analysis_snapshot_is_queryable() {
     let mut store = CozoStore::new_in_memory().unwrap();
     let summary = analyze_project(&mut store, &project_root(), None).unwrap();
 
-    // Should be able to find svt-core by canonical path
+    // Should be able to find svt-core by canonical path (workspace-aware: /svt/core)
     let core_node = store
-        .get_node_by_path(summary.version, "/svt-core")
+        .get_node_by_path(summary.version, "/svt/core")
         .unwrap();
     assert!(
         core_node.is_some(),
-        "should find svt-core at canonical path /svt-core"
+        "should find svt-core at canonical path /svt/core"
     );
 
     let core = core_node.unwrap();
@@ -134,7 +134,7 @@ fn multiple_crates_all_represented() {
     let nodes = store.get_all_nodes(summary.version).unwrap();
     let crate_nodes: Vec<_> = nodes.iter().filter(|n| n.sub_kind == "crate").collect();
 
-    // Should find at least svt-core, svt-analyzer, svt-cli/svt, svt-server
+    // Should find at least svt-core, svt-analyzer, svt-cli, svt-server
     assert!(
         crate_nodes.len() >= 4,
         "should have at least 4 crate nodes, got {}",
@@ -145,9 +145,9 @@ fn multiple_crates_all_represented() {
         .iter()
         .map(|n| n.canonical_path.as_str())
         .collect();
-    assert!(paths.contains(&"/svt-core"), "should have /svt-core");
+    assert!(paths.contains(&"/svt/core"), "should have /svt/core");
     assert!(
-        paths.contains(&"/svt-analyzer"),
-        "should have /svt-analyzer"
+        paths.contains(&"/svt/analyzer"),
+        "should have /svt/analyzer"
     );
 }

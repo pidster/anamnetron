@@ -52,11 +52,7 @@ pub fn discover_project(project_root: &Path) -> Result<ProjectLayout, DiscoveryE
             let source_files = walk_rs_files(&crate_root.join("src"));
 
             crates.push(CrateInfo {
-                name: if crate_type == CrateType::Bin && target.name != package.name {
-                    target.name.clone()
-                } else {
-                    package.name.clone()
-                },
+                name: package.name.clone(),
                 crate_type,
                 root: crate_root,
                 entry_point,
@@ -65,10 +61,49 @@ pub fn discover_project(project_root: &Path) -> Result<ProjectLayout, DiscoveryE
         }
     }
 
+    let workspace_name = detect_workspace_name(&crates);
+
     Ok(ProjectLayout {
         workspace_root,
         crates,
+        workspace_name,
     })
+}
+
+/// Detect the workspace name from the common prefix of crate package names.
+///
+/// For crates `["svt-core", "svt-cli", "svt-server"]`, returns `Some("svt")`.
+/// Returns `None` if there are fewer than 2 crates or no common hyphen-separated prefix.
+fn detect_workspace_name(crates: &[CrateInfo]) -> Option<String> {
+    if crates.len() < 2 {
+        return None;
+    }
+
+    let names: Vec<&str> = crates.iter().map(|c| c.name.as_str()).collect();
+    let first = names[0];
+
+    // Find longest common prefix
+    let mut prefix_len = first.len();
+    for name in &names[1..] {
+        prefix_len = first
+            .bytes()
+            .zip(name.bytes())
+            .take(prefix_len)
+            .take_while(|(a, b)| a == b)
+            .count();
+    }
+
+    let prefix = &first[..prefix_len];
+
+    // Truncate to last hyphen boundary
+    if let Some(hyphen_pos) = prefix.rfind('-') {
+        let workspace = &prefix[..hyphen_pos];
+        if !workspace.is_empty() {
+            return Some(workspace.to_string());
+        }
+    }
+
+    None
 }
 
 /// Recursively walk a directory and collect all `.rs` files.
@@ -242,12 +277,41 @@ mod tests {
         let core = layout.crates.iter().find(|c| c.name == "svt-core").unwrap();
         assert_eq!(core.crate_type, CrateType::Lib);
 
-        // svt-cli has a binary target named "svt"
-        let cli_bin = layout
-            .crates
-            .iter()
-            .find(|c| c.name == "svt-cli" || c.name == "svt");
-        assert!(cli_bin.is_some(), "should find CLI binary crate");
+        // svt-cli always uses package name, even for binary targets
+        let cli_bin = layout.crates.iter().find(|c| c.name == "svt-cli");
+        assert!(cli_bin.is_some(), "should find CLI crate by package name");
+    }
+
+    #[test]
+    fn detects_workspace_name_from_common_prefix() {
+        let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let layout = discover_project(&project_root).unwrap();
+
+        assert_eq!(
+            layout.workspace_name,
+            Some("svt".to_string()),
+            "should detect 'svt' as workspace name from svt-core, svt-cli, etc."
+        );
+    }
+
+    #[test]
+    fn workspace_name_none_for_single_crate() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"single-crate\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/lib.rs"), "pub fn hello() {}\n").unwrap();
+
+        let layout = discover_project(dir.path()).unwrap();
+        assert_eq!(layout.workspace_name, None);
     }
 
     #[test]
