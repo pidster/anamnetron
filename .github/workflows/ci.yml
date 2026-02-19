@@ -62,3 +62,43 @@ jobs:
       - name: Web test
         run: npm test
         working-directory: web
+
+      - name: Conformance check
+        id: conformance
+        continue-on-error: true
+        run: |
+          cargo run --bin svt -- import design/architecture.yaml
+          cargo run --bin svt -- analyze .
+          cargo run --bin svt -- check --analysis --format json > conformance.json
+
+      - name: Conformance summary
+        if: always() && steps.conformance.outcome != 'skipped'
+        run: |
+          if [ -f conformance.json ]; then
+            TOTAL=$(jq '.constraint_results | length' conformance.json)
+            PASS=$(jq '.summary.passed' conformance.json)
+            FAIL=$(jq '.summary.failed' conformance.json)
+            WARN=$(jq '.summary.warned' conformance.json)
+            NOT_EVAL=$(jq '.summary.not_evaluable' conformance.json)
+
+            echo "## Conformance Report" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "| Status | Count |" >> "$GITHUB_STEP_SUMMARY"
+            echo "|--------|-------|" >> "$GITHUB_STEP_SUMMARY"
+            echo "| Pass | $PASS |" >> "$GITHUB_STEP_SUMMARY"
+            echo "| Fail | $FAIL |" >> "$GITHUB_STEP_SUMMARY"
+            echo "| Warn | $WARN |" >> "$GITHUB_STEP_SUMMARY"
+            echo "| Not Evaluable | $NOT_EVAL |" >> "$GITHUB_STEP_SUMMARY"
+            echo "| **Total** | **$TOTAL** |" >> "$GITHUB_STEP_SUMMARY"
+
+            if [ "$FAIL" -gt 0 ]; then
+              echo "" >> "$GITHUB_STEP_SUMMARY"
+              echo "### Failures" >> "$GITHUB_STEP_SUMMARY"
+              echo "" >> "$GITHUB_STEP_SUMMARY"
+              jq -r '.constraint_results[] | select(.status == "fail") | "- **\(.constraint_name)**: \(.message)"' conformance.json >> "$GITHUB_STEP_SUMMARY"
+            fi
+          else
+            echo "## Conformance Report" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Conformance check did not produce output." >> "$GITHUB_STEP_SUMMARY"
+          fi

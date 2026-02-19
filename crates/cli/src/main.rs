@@ -48,7 +48,8 @@ struct CheckArgs {
     design: Option<u64>,
 
     /// Analysis version to compare against (enables design vs analysis comparison).
-    #[arg(long)]
+    /// Use `--analysis` alone for the latest analysis, or `--analysis <N>` for a specific version.
+    #[arg(long, num_args = 0..=1, default_missing_value = "0")]
     analysis: Option<u64>,
 
     /// Minimum severity to cause a non-zero exit code.
@@ -164,7 +165,16 @@ fn run_check(store_path: &Path, args: &CheckArgs) -> Result<()> {
             .ok_or_else(|| anyhow::anyhow!("No design versions found in store"))?,
     };
 
-    let report = if let Some(analysis_version) = args.analysis {
+    let report = if let Some(analysis_version_arg) = args.analysis {
+        let analysis_version = if analysis_version_arg == 0 {
+            // 0 means "use latest analysis version"
+            store
+                .latest_version(SnapshotKind::Analysis)
+                .map_err(|e| anyhow::anyhow!("{}", e))?
+                .ok_or_else(|| anyhow::anyhow!("No analysis versions found in store"))?
+        } else {
+            analysis_version_arg
+        };
         conformance::evaluate(&store, design_version, analysis_version)
             .map_err(|e| anyhow::anyhow!("{}", e))?
     } else {
