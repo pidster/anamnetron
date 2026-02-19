@@ -13,8 +13,9 @@
 | **7** | TypeScript Analyzer | 2026-02-19 | 259 | tree-sitter-typescript analysis, Svelte script block extraction, TS package discovery, multi-language orchestrator integration, dog-food on `web/` |
 | **8** | WASM Bridge | 2026-02-19 | 282 | `svt-wasm` crate with wasm-bindgen, CozoDB in-memory for browser, 12 read-only query methods, TypeScript wrapper, web integration for zero-roundtrip detail lookups |
 | **9** | CI Pipeline | 2026-02-19 | 282 | GitHub Actions CI: Rust fmt/clippy/test/audit, WASM build, web tests, conformance gate with step summary |
+| **10** | Plugin Foundations | 2026-02-19 | 282 | `ConstraintEvaluator`, `ExportFormat`, `LanguageAnalyzer` traits; `ConstraintRegistry`, `ExportRegistry`, `AnalyzerRegistry` with `with_defaults()` + `.register()`; registry-based dispatch in CLI, server, conformance engine; `&dyn GraphStore` migration |
 
-**Current state:** 277 Rust tests + 5 vitest tests = 282 total. All passing. clippy/fmt/audit clean. CI pipeline operational.
+**Current state:** 277 Rust tests + 5 vitest tests = 282 total. All passing. clippy/fmt/audit clean. CI pipeline operational. Plugin registries wired end-to-end.
 
 ## What's Working Now
 
@@ -38,20 +39,7 @@ All 10 constraints in `design/architecture.yaml` are now fully evaluated — zer
 
 ### Infrastructure
 - ~~**CI integration** — GitHub Actions workflow, conformance as CI gate (PRINCIPLES.md: Quality)~~ — **Done (Milestone 9)**
-- **Plugin API** — Extensibility for language analyzers, constraint types, export formats (PRINCIPLES.md: Extensibility)
-
-## Suggested Next Milestones
-
-### Milestone 10: Plugin Foundations (in progress)
-
-**Goal:** Trait-based registries for constraint evaluators, export formats, and language analyzers.
-
-**Scope:**
-- `ConstraintEvaluator`, `ExportFormat`, and extended `LanguageAnalyzer` traits
-- `ConstraintRegistry`, `ExportRegistry`, `AnalyzerRegistry` structs with `with_defaults()` + `.register()`
-- Refactor existing built-ins into trait implementations
-- Replace hardcoded `match` dispatch with registry lookups in CLI, server, and conformance engine
-- `GraphStore` as `dyn` for trait object compatibility
+- ~~**Plugin API** — Extensibility for language analyzers, constraint types, export formats (PRINCIPLES.md: Extensibility)~~ — **Foundations done (Milestone 10)**; dynamic loading and external plugin discovery remain future work
 
 ## Plan Documents
 
@@ -74,4 +62,5 @@ All 10 constraints in `design/architecture.yaml` are now fully evaluated — zer
 | `2026-02-19-milestone-8-implementation.md` | M8 implementation plan (COMPLETE) |
 | `2026-02-19-milestone-9-design.md` | M9 design (COMPLETE) |
 | `2026-02-19-milestone-9-implementation.md` | M9 implementation plan (COMPLETE) |
-| `2026-02-19-milestone-10-design.md` | M10 design |
+| `2026-02-19-milestone-10-design.md` | M10 design (COMPLETE) |
+| `2026-02-19-milestone-10-implementation.md` | M10 implementation plan (COMPLETE) |
