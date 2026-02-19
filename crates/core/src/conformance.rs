@@ -189,9 +189,12 @@ pub fn evaluate_constraint_boundary(
 
     let mut scoped_ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
     let mut id_to_path: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+    let mut id_to_source_ref: std::collections::HashMap<&str, Option<&str>> =
+        std::collections::HashMap::new();
 
     for node in &all_nodes {
         id_to_path.insert(&node.id, &node.canonical_path);
+        id_to_source_ref.insert(&node.id, node.source_ref.as_deref());
         if canonical_path_matches(&node.canonical_path, &constraint.scope) {
             scoped_ids.insert(&node.id);
         }
@@ -217,7 +220,11 @@ pub fn evaluate_constraint_boundary(
                 ),
                 edge_id: Some(edge.id.clone()),
                 edge_kind: Some(edge.kind),
-                source_ref: None,
+                source_ref: id_to_source_ref
+                    .get(edge.source.as_str())
+                    .copied()
+                    .flatten()
+                    .map(|s| s.to_string()),
             });
         }
     }
@@ -272,21 +279,16 @@ pub fn evaluate_constraint_must_contain(
         .and_then(|v| v.as_str())
         .unwrap_or("");
 
-    let child_kind = constraint
+    let child_kind: Option<NodeKind> = constraint
         .params
         .as_ref()
         .and_then(|p| p.get("child_kind"))
-        .and_then(|v| v.as_str());
+        .and_then(|v| v.as_str())
+        .and_then(|s| serde_json::from_str(&format!("\"{}\"", s)).ok());
 
     let has_match = children.iter().any(|child| {
         let name_matches = child.name == child_pattern;
-        let kind_matches = child_kind
-            .map(|k| {
-                let kind_str = serde_json::to_string(&child.kind).unwrap_or_default();
-                // Compare without quotes: serde produces "\"unit\""
-                kind_str.trim_matches('"') == k
-            })
-            .unwrap_or(true);
+        let kind_matches = child_kind.map(|k| child.kind == k).unwrap_or(true);
         name_matches && kind_matches
     });
 

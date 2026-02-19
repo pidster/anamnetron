@@ -25,17 +25,14 @@ pub fn to_mermaid(store: &impl GraphStore, version: Version) -> Result<String> {
     // Build parent map from Contains edges
     let mut parent_map: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
     for edge in &edges {
-        if edge.kind == EdgeKind::Contains {
-            if let (Some(&_src_path), Some(&target_path)) = (
-                id_to_path.get(edge.source.as_str()),
-                id_to_path.get(edge.target.as_str()),
-            ) {
-                let _ = target_path; // used via insert below
-                parent_map.insert(
-                    id_to_path[edge.target.as_str()],
-                    id_to_path[edge.source.as_str()],
-                );
-            }
+        if edge.kind == EdgeKind::Contains
+            && id_to_path.contains_key(edge.source.as_str())
+            && id_to_path.contains_key(edge.target.as_str())
+        {
+            parent_map.insert(
+                id_to_path[edge.target.as_str()],
+                id_to_path[edge.source.as_str()],
+            );
         }
     }
 
