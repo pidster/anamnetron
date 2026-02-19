@@ -36,20 +36,30 @@ All 10 constraints in `design/architecture.yaml` are now fully evaluated — zer
 ## Not Yet Built (from design/architecture.yaml & PRINCIPLES.md)
 
 ### Infrastructure
+- **CI integration** — GitHub Actions workflow, conformance as CI gate (PRINCIPLES.md: Quality) — **Milestone 9 (in progress)**
 - **Plugin API** — Extensibility for language analyzers, constraint types, export formats (PRINCIPLES.md: Extensibility)
-- **CI integration** — GitHub Actions workflow, conformance as CI gate (PRINCIPLES.md: Quality)
 
 ## Suggested Next Milestones
 
-### Milestone 9: CI + Plugin Foundations
+### Milestone 9: CI Pipeline (in progress)
 
-**Goal:** GitHub Actions CI pipeline and initial plugin API surface.
+**Goal:** GitHub Actions CI workflow with full-stack checks and conformance dog-food gate.
 
 **Scope:**
-- GitHub Actions workflow (build, test, lint, fmt, audit, cross-platform)
-- Conformance check as CI gate
+- GitHub Actions workflow on ubuntu-latest (build, test, clippy, fmt, audit)
+- WASM build verification via wasm-pack
+- Web frontend checks (npm ci, vitest)
+- Conformance check as visible but non-blocking gate
+- Audit ignore config for known CozoDB transitive dependency warnings
+
+### Milestone 10: Plugin Foundations
+
+**Goal:** Extensibility infrastructure for language analyzers and constraint types.
+
+**Scope:**
 - Plugin trait definitions for analyzers and constraint types
-- Plugin discovery and loading
+- Plugin registry and discovery mechanism
+- Plugin API surface design
 
 ## Plan Documents
 
@@ -70,3 +80,4 @@ All 10 constraints in `design/architecture.yaml` are now fully evaluated — zer
 | `2026-02-19-milestone-7-implementation.md` | M7 implementation plan (COMPLETE) |
 | `2026-02-19-milestone-8-design.md` | M8 design (COMPLETE) |
 | `2026-02-19-milestone-8-implementation.md` | M8 implementation plan (COMPLETE) |
+| `2026-02-19-milestone-9-design.md` | M9 design |
