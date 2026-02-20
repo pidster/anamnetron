@@ -3,13 +3,41 @@
 mod cozo;
 mod error;
 
-pub use cozo::CozoStore;
+pub use cozo::{CozoStore, CURRENT_SCHEMA_VERSION};
 pub use error::StoreError;
 
 use crate::model::*;
 
 /// Result type for graph store operations.
 pub type Result<T> = std::result::Result<T, StoreError>;
+
+/// Summary information about the graph store.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct StoreInfo {
+    /// Current schema version of the store.
+    pub schema_version: u32,
+    /// Number of snapshots in the store.
+    pub snapshot_count: usize,
+    /// Per-snapshot summaries.
+    pub snapshots: Vec<SnapshotSummary>,
+}
+
+/// Summary of a single snapshot within the store.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SnapshotSummary {
+    /// Snapshot version number.
+    pub version: Version,
+    /// Snapshot kind (design, analysis).
+    pub kind: SnapshotKind,
+    /// Git commit ref, if available.
+    pub commit_ref: Option<String>,
+    /// Number of nodes in this snapshot.
+    pub node_count: usize,
+    /// Number of edges in this snapshot.
+    pub edge_count: usize,
+    /// When the snapshot was created (RFC 3339).
+    pub created_at: String,
+}
 
 /// Abstract interface for the graph store.
 ///
@@ -108,4 +136,8 @@ pub trait GraphStore {
     /// (cycle detection and referential integrity checks). Not in the original
     /// plan but chosen over working through per-node edge queries.
     fn get_all_edges(&self, version: Version, kind: Option<EdgeKind>) -> Result<Vec<Edge>>;
+
+    /// Get summary information about the store: schema version, snapshot count,
+    /// and per-snapshot node/edge counts.
+    fn store_info(&self) -> Result<StoreInfo>;
 }

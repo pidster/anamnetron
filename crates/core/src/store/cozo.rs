@@ -8,6 +8,12 @@ use std::path::Path;
 use super::{GraphStore, Result, StoreError};
 use crate::model::*;
 
+/// Current schema version supported by this binary.
+///
+/// Increment this whenever the schema changes. Each increment requires a
+/// corresponding migration step in [`CozoStore::migrate`].
+pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+
 /// CozoDB-backed graph store.
 ///
 /// Supports both in-memory (for tests) and persistent (SQLite-backed) modes.
@@ -28,6 +34,7 @@ impl CozoStore {
             .map_err(|e| StoreError::Internal(e.to_string()))?;
         let store = Self { db };
         store.init_schema()?;
+        store.migrate()?;
         Ok(store)
     }
 
@@ -41,12 +48,14 @@ impl CozoStore {
         .map_err(|e| StoreError::Internal(e.to_string()))?;
         let store = Self { db };
         store.init_schema()?;
+        store.migrate()?;
         Ok(store)
     }
 
     /// Initialise the database schema. Idempotent -- safe to call on an existing database.
     fn init_schema(&self) -> Result<()> {
         let queries = [
+            "{ :create metadata { key: String => value: String } }",
             "{ :create snapshots { version: Int => kind: String, commit_ref: String?, created_at: String, metadata: Json? } }",
             "{ :create nodes { id: String, version: Int => canonical_path: String, qualified_name: String?, kind: String, sub_kind: String, name: String, language: String?, provenance: String, source_ref: String?, metadata: Json? } }",
             "{ :create edges { id: String, version: Int => source: String, target: String, kind: String, provenance: String, metadata: Json? } }",
@@ -68,11 +77,92 @@ impl CozoStore {
         Ok(())
     }
 
+    /// Get the current schema version from the metadata relation.
+    ///
+    /// Returns `Ok(0)` if the metadata relation or key is missing (pre-migration store).
+    pub fn schema_version(&self) -> Result<u32> {
+        let result = self.run_query_immutable(
+            "?[value] := *metadata{key, value}, key == 'schema_version'",
+            Default::default(),
+        );
+
+        match result {
+            Ok(rows) => match rows.rows.first() {
+                Some(row) => {
+                    let s = req_str(&row[0])?;
+                    s.parse::<u32>().map_err(|_| {
+                        StoreError::CorruptStore(format!("invalid schema_version value: {s}"))
+                    })
+                }
+                None => Ok(0),
+            },
+            Err(_) => Ok(0), // metadata relation doesn't exist yet
+        }
+    }
+
+    /// Set the schema version in the metadata relation.
+    fn set_schema_version(&self, version: u32) -> Result<()> {
+        let mut params = BTreeMap::new();
+        params.insert("key".to_string(), DataValue::Str("schema_version".into()));
+        params.insert(
+            "value".to_string(),
+            DataValue::Str(version.to_string().into()),
+        );
+        self.run_query(
+            "?[key, value] <- [[$key, $value]]
+             :put metadata { key => value }",
+            params,
+        )?;
+        Ok(())
+    }
+
+    /// Run forward-only schema migrations.
+    ///
+    /// If the store's schema version is newer than what this binary supports,
+    /// returns [`StoreError::SchemaMismatch`]. Otherwise, runs any pending
+    /// migrations sequentially from the current version to [`CURRENT_SCHEMA_VERSION`].
+    fn migrate(&self) -> Result<()> {
+        let current = self.schema_version()?;
+
+        if current > CURRENT_SCHEMA_VERSION {
+            return Err(StoreError::SchemaMismatch {
+                expected: CURRENT_SCHEMA_VERSION,
+                found: current,
+            });
+        }
+
+        if current < CURRENT_SCHEMA_VERSION {
+            // v0 → v1: metadata relation already created by init_schema, just set version
+            if current < 1 {
+                self.set_schema_version(1)?;
+            }
+
+            // Future migrations go here:
+            // if current < 2 { ... self.set_schema_version(2)?; }
+        }
+
+        Ok(())
+    }
+
     /// Run a CozoScript query and return the result.
     fn run_query(&self, query: &str, params: BTreeMap<String, DataValue>) -> Result<NamedRows> {
         self.db
             .run_script(query, params, ScriptMutability::Mutable)
             .map_err(|e| StoreError::Internal(e.to_string()))
+    }
+
+    /// Count the number of nodes in a given version.
+    fn count_nodes(&self, version: Version) -> Result<usize> {
+        let params = BTreeMap::from([("version".to_string(), DataValue::from(version as i64))]);
+        let result = self.run_query_immutable("?[id] := *nodes{id, version: $version}", params)?;
+        Ok(result.rows.len())
+    }
+
+    /// Count the number of edges in a given version.
+    fn count_edges(&self, version: Version) -> Result<usize> {
+        let params = BTreeMap::from([("version".to_string(), DataValue::from(version as i64))]);
+        let result = self.run_query_immutable("?[id] := *edges{id, version: $version}", params)?;
+        Ok(result.rows.len())
     }
 
     /// Run a read-only CozoScript query.
@@ -815,5 +905,32 @@ impl GraphStore for CozoStore {
 
         let result = self.run_query_immutable(query, params)?;
         result.rows.iter().map(|row| row_to_edge(row)).collect()
+    }
+
+    fn store_info(&self) -> Result<super::StoreInfo> {
+        let schema_version = self.schema_version()?;
+        let snapshots = self.list_snapshots()?;
+
+        let summaries: Vec<super::SnapshotSummary> = snapshots
+            .iter()
+            .map(|s| {
+                let node_count = self.count_nodes(s.version)?;
+                let edge_count = self.count_edges(s.version)?;
+                Ok(super::SnapshotSummary {
+                    version: s.version,
+                    kind: s.kind,
+                    commit_ref: s.commit_ref.clone(),
+                    node_count,
+                    edge_count,
+                    created_at: s.created_at.clone(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(super::StoreInfo {
+            schema_version,
+            snapshot_count: summaries.len(),
+            snapshots: summaries,
+        })
     }
 }

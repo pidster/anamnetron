@@ -30,6 +30,19 @@ pub enum StoreError {
         node_id: String,
     },
 
+    /// Schema version mismatch (store is newer than this binary).
+    #[error("schema version mismatch: store has version {found}, but this binary supports up to version {expected}")]
+    SchemaMismatch {
+        /// The maximum schema version this binary supports.
+        expected: u32,
+        /// The schema version found in the store.
+        found: u32,
+    },
+
+    /// The store is corrupt or contains invalid data.
+    #[error("corrupt store: {0}")]
+    CorruptStore(String),
+
     /// An internal store error.
     #[error("store error: {0}")]
     Internal(String),

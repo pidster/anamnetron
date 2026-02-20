@@ -26,3 +26,4 @@ js-sys = { version = "0.3", optional = true }
 [dev-dependencies]
 proptest = "1"
 insta = { version = "1", features = ["yaml"] }
+tempfile = "3.25.0"
