@@ -434,8 +434,15 @@ fn visit_impl_item(
 
     // Find the body of the impl block and extract function items from it.
     if let Some(body) = node.child_by_field_name("body") {
-        // Methods inside impl blocks are extracted with the current module context
-        // (not scoped under the type name — that would create a false hierarchy).
+        // Extract the type being impl'd to enable self.method() resolution.
+        let resolved_impl_type =
+            type_node
+                .and_then(|tn| tn.utf8_text(source).ok())
+                .map(|type_name| {
+                    let module_qn = build_qualified_name(module_context);
+                    format!("{module_qn}::{type_name}")
+                });
+
         visit_children(
             body,
             source,
@@ -445,7 +452,7 @@ fn visit_impl_item(
             relations,
             warnings,
             unresolved_method_calls,
-            None,
+            resolved_impl_type.as_deref(),
         );
     }
 }
@@ -494,16 +501,16 @@ fn visit_use_declaration(
 /// Recursively walk a subtree looking for `call_expression` nodes
 /// and emit `Calls` relations for syntactically resolvable calls.
 ///
-/// Method calls (field expressions like `x.foo()`) cannot be resolved
-/// by tree-sitter alone (no type information), so they are counted and
-/// reported as a single aggregated warning per file.
+/// When `impl_type` is `Some`, `self.method()` calls are resolved to
+/// `ImplType::method`. Other method calls (non-self receivers) remain
+/// unresolved and are counted for the aggregated warning.
 fn visit_call_expressions(
     node: tree_sitter::Node<'_>,
     source: &[u8],
     module_context: &[String],
     relations: &mut Vec<AnalysisRelation>,
     unresolved_method_calls: &mut usize,
-    _impl_type: Option<&str>,
+    impl_type: Option<&str>,
 ) {
     for i in 0..node.named_child_count() {
         let Some(child) = node.named_child(i) else {
@@ -529,8 +536,34 @@ fn visit_call_expressions(
                         }
                     }
                     "field_expression" => {
-                        // Method call (e.g., `x.foo()`) — cannot resolve the receiver type.
-                        *unresolved_method_calls += 1;
+                        // Method call (e.g., `self.foo()` or `x.foo()`)
+                        let mut resolved = false;
+                        if let Some(type_qn) = impl_type {
+                            if let (Some(receiver), Some(method)) = (
+                                function.child_by_field_name("value"),
+                                function.child_by_field_name("field"),
+                            ) {
+                                if let (Ok(receiver_text), Ok(method_name)) =
+                                    (receiver.utf8_text(source), method.utf8_text(source))
+                                {
+                                    if receiver_text == "self" {
+                                        relations.push(AnalysisRelation {
+                                            source_qualified_name: build_qualified_name(
+                                                module_context,
+                                            ),
+                                            target_qualified_name: format!(
+                                                "{type_qn}::{method_name}"
+                                            ),
+                                            kind: EdgeKind::Calls,
+                                        });
+                                        resolved = true;
+                                    }
+                                }
+                            }
+                        }
+                        if !resolved {
+                            *unresolved_method_calls += 1;
+                        }
                     }
                     _ => {
                         // Other call forms (closures, etc.) — skip silently.
@@ -546,7 +579,7 @@ fn visit_call_expressions(
             module_context,
             relations,
             unresolved_method_calls,
-            _impl_type,
+            impl_type,
         );
     }
 }
@@ -1077,6 +1110,69 @@ mod tests {
         assert!(
             method_calls.is_empty(),
             "method call should not generate a Calls relation"
+        );
+    }
+
+    #[test]
+    fn self_method_call_generates_calls_relation() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+        pub struct Foo;
+        impl Foo {
+            pub fn bar(&self) {
+                self.baz();
+            }
+            pub fn baz(&self) {}
+        }
+    "#,
+        );
+        let calls: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Calls)
+            .collect();
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.target_qualified_name == "my_crate::Foo::baz"),
+            "self.baz() inside impl Foo should resolve to my_crate::Foo::baz, got: {:?}",
+            calls
+        );
+    }
+
+    #[test]
+    fn non_self_method_call_remains_unresolved() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+        pub struct Foo;
+        impl Foo {
+            pub fn bar(&self) {
+                let x = String::new();
+                x.push_str("hello");
+            }
+        }
+    "#,
+        );
+        let calls: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Calls && r.target_qualified_name.contains("push_str"))
+            .collect();
+        assert!(
+            calls.is_empty(),
+            "non-self method call should not generate a Calls relation, got: {:?}",
+            calls
+        );
+        let method_warnings: Vec<_> = result
+            .warnings
+            .iter()
+            .filter(|w| w.message.contains("could not be resolved"))
+            .collect();
+        assert!(
+            !method_warnings.is_empty(),
+            "non-self method call should still produce unresolved warning"
         );
     }
 }
