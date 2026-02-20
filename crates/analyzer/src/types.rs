@@ -56,6 +56,45 @@ pub struct TsPackageInfo {
     pub source_files: Vec<PathBuf>,
 }
 
+/// Information about a Go module discovered in the project.
+#[derive(Debug, Clone)]
+pub struct GoPackageInfo {
+    /// Module path from go.mod (e.g., "github.com/user/repo").
+    pub module_path: String,
+    /// Short name derived from the module path (last segment).
+    pub name: String,
+    /// Root directory of the module (where go.mod lives).
+    pub root: PathBuf,
+    /// All .go source files (excluding _test.go and vendor/).
+    pub source_files: Vec<PathBuf>,
+    /// Go package directories discovered (relative to root).
+    pub packages: Vec<GoPackage>,
+}
+
+/// A single Go package (directory with .go files).
+#[derive(Debug, Clone)]
+pub struct GoPackage {
+    /// Package import path relative to module (e.g., "cmd/server").
+    pub import_path: String,
+    /// Directory containing the package's .go files.
+    pub dir: PathBuf,
+    /// .go source files in this package directory.
+    pub source_files: Vec<PathBuf>,
+}
+
+/// Information about a Python package discovered in the project.
+#[derive(Debug, Clone)]
+pub struct PythonPackageInfo {
+    /// Package name (from pyproject.toml name field, setup.py, or directory name).
+    pub name: String,
+    /// Root directory of the package (where pyproject.toml/setup.py lives).
+    pub root: PathBuf,
+    /// Source root directory (root/src/<name>/ or root/<name>/ or root/).
+    pub source_root: PathBuf,
+    /// All .py source files under the source root.
+    pub source_files: Vec<PathBuf>,
+}
+
 /// A code element extracted by tree-sitter (before canonical path mapping).
 #[derive(Debug, Clone)]
 pub struct AnalysisItem {
