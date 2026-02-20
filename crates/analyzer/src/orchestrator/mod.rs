@@ -4,6 +4,7 @@
 //! analysis pipeline. The [`OrchestratorRegistry`] collects all orchestrators
 //! and drives the pipeline loop in [`crate::analyze_project`].
 
+pub mod descriptor;
 pub mod go;
 pub mod python;
 pub mod rust;
