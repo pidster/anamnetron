@@ -21,8 +21,9 @@
 | **15** | Additional Language Analyzers (Go + Python) | 2026-02-19 | 359 | tree-sitter-go/python analyzers, Go module + Python package discovery, `go.mod`/`pyproject.toml`/`setup.py` support, 6-phase analysis pipeline, 14 new Go/Python analyzer tests, 7 new discovery tests |
 | **16** | Web UI Diff View + SVG/PNG Export | 2026-02-20 | 371 | Diff overlay on Cytoscape graph (added/removed/changed CSS classes), compare-to dropdown, diff summary banner, URL hash diff param; `SvgExporter`/`PngExporter` via Graphviz CLI piping, PNG binary handling in CLI |
 | **17** | Dynamic Plugin Loading | 2026-02-20 | 388 | `SvtPlugin` trait + `declare_plugin!` macro in svt-core, `PluginLoader` with `libloading` in svt-cli, `--plugin` flag + `svt plugin list` command, plugin contributions wired into check/export, 3-tier discovery (CLI/project/user) |
+| **18** | Plugin Analyzer Support | 2026-02-20 | 404 | `LanguageDescriptor` + `LanguageParser` trait in svt-core, `DescriptorOrchestrator` in svt-analyzer, Go/Python/TypeScript refactored to descriptor+parser pattern, `SvtPlugin::language_parsers()` method, plugin parsers wired into CLI analysis pipeline |
 
-**Current state:** 366 Rust tests + 22 vitest tests = 388 total. All passing. clippy/fmt/audit clean. CI pipeline operational.
+**Current state:** 382 Rust tests + 22 vitest tests = 404 total. All passing. clippy/fmt/audit clean. CI pipeline operational.
 
 ## What's Working Now
 
@@ -74,6 +75,9 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 
 ### Dynamic Plugin Loading — RESOLVED (M17)
 - ~~Plugin registries exist with `.register()` API but all plugins are compiled in. No external plugin discovery, no dynamic loading, no plugin manifest format.~~ Resolved: `SvtPlugin` trait + `declare_plugin!` macro, `PluginLoader` with `libloading`, `--plugin` flag, `svt plugin list`, 3-tier discovery (CLI/project-local/user-global). Plugin manifest format (`svt-plugin.toml`) and install/remove commands remain as future work.
+
+### Plugin Analyzer Support — RESOLVED (M18)
+- ~~`LanguageOrchestrator` lives in svt-analyzer; plugins depend on svt-core only. External plugins cannot contribute language analyzers.~~ Resolved: `LanguageDescriptor` struct + `LanguageParser` trait in svt-core (WASM-compatible), `DescriptorOrchestrator` adapter in svt-analyzer, `SvtPlugin::language_parsers()` method. Go, Python, TypeScript refactored to descriptor+parser pattern. Plugin language contributions wired into CLI analysis pipeline via `analyze_project_with_registry()`.
 
 ## Suggested Next Milestones
 
@@ -196,15 +200,34 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 - 15 plugin unit tests (7 in svt-core, 8 in svt-cli) + 2 CLI integration tests
 - **Result: 366 Rust tests + 22 vitest tests = 388 total**
 
-**Not yet done (deferred):** Plugin manifest format (`svt-plugin.toml`), `svt plugin install|remove` commands, plugin sandboxing, `LanguageOrchestrator` support in plugin API (blocked by inward dependency rule — orchestrator lives in svt-analyzer).
+**Not yet done (deferred):** Plugin manifest format (`svt-plugin.toml`), `svt plugin install|remove` commands, plugin sandboxing. ~~`LanguageOrchestrator` support in plugin API~~ — resolved in M18.
 
-## Roadmap (Post-M17)
+### Milestone 18: Plugin Analyzer Support — COMPLETE
+
+**Goal:** Allow external plugins to contribute language analyzers via the `SvtPlugin` trait.
+
+**Delivered:**
+- `LanguageDescriptor` struct in svt-core: language_id, manifest_files, source_extensions, source_dirs, exclude_dirs (WASM-compatible, no platform dependencies)
+- `LanguageParser` trait in svt-core: `parse()`, `emit_structural_items()`, `post_process()` with default impls for optional hooks
+- `ParseResult` type in svt-core: items, relations, warnings — shared between core and analyzer
+- `SvtPlugin::language_parsers()` method returning `Vec<(LanguageDescriptor, Box<dyn LanguageParser>)>` (empty default)
+- `DescriptorOrchestrator` in svt-analyzer: generic adapter wrapping any descriptor+parser pair into a `LanguageOrchestrator`
+- Go, Python, TypeScript orchestrators refactored to descriptor+parser pattern (factory functions delegating to `DescriptorOrchestrator`)
+- `RustAnalyzer` implements `LanguageParser` trait (Rust keeps custom orchestrator for workspace root emission)
+- `analyze_project_with_registry()` in svt-analyzer accepts custom `OrchestratorRegistry`
+- `PluginLoader::register_language_parsers()` wires plugin contributions into analysis pipeline
+- `svt plugin list` shows language parsers with manifest files and source extensions
+- Re-exported analysis types (`AnalysisItem`, `AnalysisRelation`, `AnalysisWarning`) from svt-core through svt-analyzer (zero-cost, same types)
+- 10 new DescriptorOrchestrator tests, existing 370+ tests all pass
+- **Result: 382 Rust tests + 22 vitest tests = 404 total**
+- **Dog-food: 878 nodes, 907 edges, conformance 12/12 passed**
+
+## Roadmap (Post-M18)
 
 Priority-ordered next milestones:
 
 | # | Milestone | Description | Key Challenge |
 |---|-----------|-------------|---------------|
-| **M18** | Plugin Analyzer Support | Expose `LanguageOrchestrator` in the plugin API so external plugins can contribute language analyzers | Inward dependency rule: `LanguageOrchestrator` lives in svt-analyzer, plugins depend on svt-core. Need to either extract an analyzer trait to svt-core or introduce a thin interface crate. |
 | **M19** | Store Persistence | On-disk CozoDB backend so analysis results survive across CLI sessions | CozoDB supports RocksDB-backed storage; need to add store path configuration, migration, and open/create lifecycle to `GraphStore` |
 | **M20** | Incremental Analysis | Diff changed files and update only affected subgraphs instead of full re-analysis | Requires file-level change detection (git diff or mtime), dependency graph for invalidation, partial store updates |
 | **M21** | Analysis Depth | Resolve non-self method calls (`x.foo()`), cross-crate dependency edges | Needs type inference or heuristic resolution; significantly harder than self-method resolution |
@@ -245,3 +268,5 @@ Priority-ordered next milestones:
 | `2026-02-20-analysis-depth-implementation.md` | Analysis depth: Rust self.method() resolution implementation plan |
 | `2026-02-20-dynamic-plugin-loading-design.md` | M17 design (dynamic plugin loading) |
 | `2026-02-20-dynamic-plugin-loading-implementation.md` | M17 implementation plan (COMPLETE) |
+| `2026-02-20-plugin-analyzer-support-design.md` | M18 design (plugin analyzer support) |
+| `2026-02-20-plugin-analyzer-support-implementation.md` | M18 implementation plan (COMPLETE) |
