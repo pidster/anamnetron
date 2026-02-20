@@ -9,7 +9,7 @@ mod state;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{bail, Context};
+use anyhow::Context;
 use clap::Parser;
 use tokio::net::TcpListener;
 use tracing::info;
@@ -34,6 +34,11 @@ struct Args {
     #[arg(long)]
     design: Option<PathBuf>,
 
+    /// Path to a persistent store (SQLite-backed CozoDB).
+    /// If omitted, an in-memory store is used and data is lost on restart.
+    #[arg(long)]
+    store: Option<PathBuf>,
+
     /// Port to listen on.
     #[arg(long, default_value = "3000")]
     port: u16,
@@ -54,15 +59,29 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
 
-    if args.project.is_none() && args.design.is_none() {
-        bail!("at least one of --project or --design is required");
+    // Create persistent or in-memory store
+    let mut store = if let Some(store_path) = &args.store {
+        if let Some(parent) = store_path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating store directory {}", parent.display()))?;
+        }
+        let s = CozoStore::new_persistent(store_path)?;
+        info!(path = %store_path.display(), "using persistent store");
+        s
+    } else {
+        CozoStore::new_in_memory()?
+    };
+
+    // Read existing versions from persistent store
+    let mut design_version = store.latest_version(SnapshotKind::Design)?;
+    let mut analysis_version = store.latest_version(SnapshotKind::Analysis)?;
+
+    // If no store and no flags, require at least one input source
+    if args.store.is_none() && args.project.is_none() && args.design.is_none() {
+        anyhow::bail!("at least one of --store, --project, or --design is required");
     }
 
-    let mut store = CozoStore::new_in_memory()?;
-    let mut design_version = None;
-    let mut analysis_version = None;
-
-    // Import design if provided
+    // Import design if provided (layers on top of existing data)
     if let Some(design_path) = &args.design {
         let content = std::fs::read_to_string(design_path)
             .with_context(|| format!("failed to read {}", design_path.display()))?;
@@ -73,7 +92,7 @@ async fn main() -> anyhow::Result<()> {
         info!(version, path = %design_path.display(), "imported design");
     }
 
-    // Analyze project if provided
+    // Analyze project if provided (layers on top of existing data)
     if let Some(project_path) = &args.project {
         let summary = analyze_project(&mut store, project_path, None)
             .with_context(|| format!("failed to analyze {}", project_path.display()))?;
@@ -85,11 +104,14 @@ async fn main() -> anyhow::Result<()> {
             edges = summary.edges_created,
             "analyzed project"
         );
+    }
 
-        // If no design was loaded, check for design version from a previous import
-        if design_version.is_none() {
-            design_version = store.latest_version(SnapshotKind::Design)?;
-        }
+    if design_version.is_some() || analysis_version.is_some() {
+        info!(
+            design = ?design_version,
+            analysis = ?analysis_version,
+            "serving versions"
+        );
     }
 
     let state = Arc::new(AppState {
