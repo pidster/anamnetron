@@ -2,7 +2,6 @@
 
 #![warn(missing_docs)]
 
-#[allow(dead_code)] // Wired up in Task 3.
 pub(crate) mod plugin;
 
 use std::path::{Path, PathBuf};
@@ -22,6 +21,10 @@ struct Cli {
     #[arg(long, default_value = ".svt/store")]
     store: PathBuf,
 
+    /// Load external plugin(s) from shared library paths.
+    #[arg(long = "plugin", global = true)]
+    plugins: Vec<PathBuf>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -38,6 +41,8 @@ enum Commands {
     Export(ExportArgs),
     /// Compare two snapshot versions and show what changed.
     Diff(DiffArgs),
+    /// Manage and list loaded plugins.
+    Plugin(PluginArgs),
 }
 
 #[derive(clap::Args, Debug)]
@@ -107,6 +112,20 @@ struct DiffArgs {
     format: String,
 }
 
+/// Arguments for the `svt plugin` subcommand.
+#[derive(clap::Args, Debug)]
+struct PluginArgs {
+    #[command(subcommand)]
+    command: PluginCommands,
+}
+
+/// Subcommands under `svt plugin`.
+#[derive(Subcommand, Debug)]
+enum PluginCommands {
+    /// List all loaded plugins and their contributions.
+    List,
+}
+
 fn open_or_create_store(path: &Path) -> Result<CozoStore> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -171,12 +190,14 @@ fn run_import(store_path: &Path, args: &ImportArgs) -> Result<()> {
     Ok(())
 }
 
-fn run_check(store_path: &Path, args: &CheckArgs) -> Result<()> {
+fn run_check(store_path: &Path, args: &CheckArgs, loader: &plugin::PluginLoader) -> Result<()> {
     use svt_core::conformance::{self, ConstraintRegistry, ConstraintStatus};
     use svt_core::model::{Severity, SnapshotKind};
 
     let store = open_store(store_path)?;
-    let registry = ConstraintRegistry::with_defaults();
+    let mut registry = ConstraintRegistry::with_defaults();
+    let mut export_registry = svt_core::export::ExportRegistry::new();
+    loader.register_all(&mut registry, &mut export_registry);
 
     let design_version = match args.design {
         Some(v) => v,
@@ -366,12 +387,14 @@ fn run_analyze(store_path: &Path, args: &AnalyzeArgs) -> Result<()> {
     Ok(())
 }
 
-fn run_export(store_path: &Path, args: &ExportArgs) -> Result<()> {
+fn run_export(store_path: &Path, args: &ExportArgs, loader: &plugin::PluginLoader) -> Result<()> {
     use svt_core::export::ExportRegistry;
     use svt_core::model::SnapshotKind;
 
     let store = open_store(store_path)?;
-    let registry = ExportRegistry::with_defaults();
+    let mut registry = ExportRegistry::with_defaults();
+    let mut constraint_registry = svt_core::conformance::ConstraintRegistry::new();
+    loader.register_all(&mut constraint_registry, &mut registry);
 
     let version = match args.version {
         Some(v) => v,
@@ -480,14 +503,89 @@ fn run_diff(store_path: &Path, args: &DiffArgs) -> Result<()> {
     Ok(())
 }
 
+/// Build a [`PluginLoader`](plugin::PluginLoader) from CLI flags and convention directories.
+///
+/// Plugins are loaded from three sources in order:
+/// 1. Paths explicitly passed via `--plugin` flags.
+/// 2. The project-local plugin directory (`.svt/plugins/`).
+/// 3. The user-global plugin directory (`~/.svt/plugins/`).
+///
+/// Load failures are printed as warnings to stderr but do not abort execution.
+fn build_plugin_loader(plugin_paths: &[PathBuf]) -> plugin::PluginLoader {
+    let mut loader = plugin::PluginLoader::new();
+
+    // 1. CLI-specified plugins
+    for path in plugin_paths {
+        if let Err(e) = loader.load(path) {
+            eprintln!("  WARN  failed to load plugin {}: {e}", path.display());
+        }
+    }
+
+    // 2. Project-local plugins (.svt/plugins/)
+    let local_dir = PathBuf::from(".svt/plugins");
+    for e in loader.scan_directory(&local_dir) {
+        eprintln!("  WARN  {e}");
+    }
+
+    // 3. User-global plugins (~/.svt/plugins/)
+    if let Some(home) = home_dir() {
+        let global_dir = home.join(".svt").join("plugins");
+        for e in loader.scan_directory(&global_dir) {
+            eprintln!("  WARN  {e}");
+        }
+    }
+
+    loader
+}
+
+/// Get the user's home directory from the `HOME` environment variable.
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(PathBuf::from)
+}
+
+/// List all loaded plugins and their contributions to stdout.
+fn run_plugin_list(loader: &plugin::PluginLoader) -> Result<()> {
+    let plugins = loader.plugins();
+    if plugins.is_empty() {
+        println!("No plugins loaded.");
+        return Ok(());
+    }
+
+    for p in plugins {
+        println!("{} v{} (API v{})", p.name(), p.version(), p.api_version());
+        let evaluators = p.constraint_evaluators();
+        if !evaluators.is_empty() {
+            println!("  Constraint evaluators:");
+            for eval in &evaluators {
+                println!("    - {}", eval.kind());
+            }
+        }
+        let formats = p.export_formats();
+        if !formats.is_empty() {
+            println!("  Export formats:");
+            for fmt in &formats {
+                println!("    - {}", fmt.name());
+            }
+        }
+        if evaluators.is_empty() && formats.is_empty() {
+            println!("  (no contributions)");
+        }
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let loader = build_plugin_loader(&cli.plugins);
 
     match &cli.command {
         Commands::Import(args) => run_import(&cli.store, args),
-        Commands::Check(args) => run_check(&cli.store, args),
+        Commands::Check(args) => run_check(&cli.store, args, &loader),
         Commands::Analyze(args) => run_analyze(&cli.store, args),
-        Commands::Export(args) => run_export(&cli.store, args),
+        Commands::Export(args) => run_export(&cli.store, args, &loader),
         Commands::Diff(args) => run_diff(&cli.store, args),
+        Commands::Plugin(args) => match &args.command {
+            PluginCommands::List => run_plugin_list(&loader),
+        },
     }
 }
