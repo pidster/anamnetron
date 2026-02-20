@@ -22,8 +22,9 @@
 | **16** | Web UI Diff View + SVG/PNG Export | 2026-02-20 | 371 | Diff overlay on Cytoscape graph (added/removed/changed CSS classes), compare-to dropdown, diff summary banner, URL hash diff param; `SvgExporter`/`PngExporter` via Graphviz CLI piping, PNG binary handling in CLI |
 | **17** | Dynamic Plugin Loading | 2026-02-20 | 388 | `SvtPlugin` trait + `declare_plugin!` macro in svt-core, `PluginLoader` with `libloading` in svt-cli, `--plugin` flag + `svt plugin list` command, plugin contributions wired into check/export, 3-tier discovery (CLI/project/user) |
 | **18** | Plugin Analyzer Support | 2026-02-20 | 404 | `LanguageDescriptor` + `LanguageParser` trait in svt-core, `DescriptorOrchestrator` in svt-analyzer, Go/Python/TypeScript refactored to descriptor+parser pattern, `SvtPlugin::language_parsers()` method, plugin parsers wired into CLI analysis pipeline |
+| **19** | Store Persistence & Management | 2026-02-20 | 420 | Schema version + migration framework, `store_info()` with per-snapshot counts, `svt store info\|compact\|reset` CLI commands, `--store` flag for server persistent storage, `GET /api/store/info` endpoint |
 
-**Current state:** 382 Rust tests + 22 vitest tests = 404 total. All passing. clippy/fmt/audit clean. CI pipeline operational.
+**Current state:** 398 Rust tests + 22 vitest tests = 420 total. All passing. clippy/fmt/audit clean. CI pipeline operational.
 
 ## What's Working Now
 
@@ -40,10 +41,17 @@ svt export --format png -o arch.png      # Export as PNG (requires Graphviz)
 svt export --format mermaid -o arch.mmd  # Export to file
 svt diff --from 1 --to 2                 # Compare two snapshots (human output)
 svt diff --from 1 --to 2 --format json   # Compare two snapshots (JSON output)
+svt store info                           # Show store schema version, snapshots, node/edge counts
+svt store compact                        # Remove old versions (keep latest design + analysis)
+svt store compact --keep 1 --keep 3      # Keep specific versions
+svt store reset --force                  # Delete and recreate the store
 svt plugin list                          # List loaded plugins and their contributions
 svt --plugin path/to/lib.dylib check     # Load a plugin and run conformance checks
 svt-server --design design/architecture.yaml --project .
                                          # Serve API + web UI at http://localhost:3000
+svt-server --store .svt/store            # Serve with persistent storage (data survives restart)
+svt-server --store .svt/store --design design/architecture.yaml
+                                         # Persistent store + fresh design import at startup
 ```
 
 The web UI renders the architecture graph with compound nodes, click-to-inspect node details, search, layout switching (force-directed / hierarchical), conformance overlay, and diff view overlay for comparing snapshots. With WASM loaded, node detail lookups and search run entirely in the browser — zero API round-trips after initial snapshot load.
@@ -78,6 +86,9 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 
 ### Plugin Analyzer Support — RESOLVED (M18)
 - ~~`LanguageOrchestrator` lives in svt-analyzer; plugins depend on svt-core only. External plugins cannot contribute language analyzers.~~ Resolved: `LanguageDescriptor` struct + `LanguageParser` trait in svt-core (WASM-compatible), `DescriptorOrchestrator` adapter in svt-analyzer, `SvtPlugin::language_parsers()` method. Go, Python, TypeScript refactored to descriptor+parser pattern. Plugin language contributions wired into CLI analysis pipeline via `analyze_project_with_registry()`.
+
+### Store Persistence — RESOLVED (M19)
+- ~~The server always uses `CozoStore::new_in_memory()`, losing all data on restart. No schema migration system, no store management CLI commands, no way to inspect or compact the store.~~ Resolved: Schema version + migration framework (`CURRENT_SCHEMA_VERSION`, `schema_version()`, `migrate()`), `store_info()` with per-snapshot node/edge counts, `svt store info|compact|reset` CLI commands, `--store` flag for server persistent CozoDB storage, `GET /api/store/info` endpoint.
 
 ## Suggested Next Milestones
 
@@ -222,13 +233,30 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 - **Result: 382 Rust tests + 22 vitest tests = 404 total**
 - **Dog-food: 878 nodes, 907 edges, conformance 12/12 passed**
 
-## Roadmap (Post-M18)
+### Milestone 19: Store Persistence & Management — COMPLETE
+
+**Goal:** Add persistent storage to the server, schema migrations, store management CLI, and store info API.
+
+**Delivered:**
+- Schema version + migration framework: `CURRENT_SCHEMA_VERSION`, `metadata` relation, `schema_version()`, `set_schema_version()`, `migrate()` with forward-only versioning
+- `SchemaMismatch` and `CorruptStore` error variants in `StoreError`
+- `store_info()` method on `GraphStore` trait with `StoreInfo` and `SnapshotSummary` types (per-snapshot node/edge counts)
+- `svt store info` — formatted table with version, kind, nodes, edges, commit, timestamp
+- `svt store compact [--keep <versions>]` — default keeps latest design + latest analysis
+- `svt store reset [--force]` — delete and recreate store
+- Server `--store <PATH>` flag for persistent SQLite-backed CozoDB storage
+- Server startup relaxed: `--store` alone is valid if store has existing data
+- `GET /api/store/info` endpoint returning JSON store metadata
+- 16 new tests (5 schema migration, 3 store_info, 6 CLI store commands, 2 server store endpoint)
+- **Result: 398 Rust tests + 22 vitest tests = 420 total**
+- **Dog-food: 852 nodes, 863 edges, conformance 12/12 passed**
+
+## Roadmap (Post-M19)
 
 Priority-ordered next milestones:
 
 | # | Milestone | Description | Key Challenge |
 |---|-----------|-------------|---------------|
-| **M19** | Store Persistence | On-disk CozoDB backend so analysis results survive across CLI sessions | CozoDB supports RocksDB-backed storage; need to add store path configuration, migration, and open/create lifecycle to `GraphStore` |
 | **M20** | Incremental Analysis | Diff changed files and update only affected subgraphs instead of full re-analysis | Requires file-level change detection (git diff or mtime), dependency graph for invalidation, partial store updates |
 | **M21** | Analysis Depth | Resolve non-self method calls (`x.foo()`), cross-crate dependency edges | Needs type inference or heuristic resolution; significantly harder than self-method resolution |
 | **M22** | Plugin Ecosystem | Plugin manifest (`svt-plugin.toml`), `svt plugin install\|remove`, plugin author documentation | Discovery conventions, version compatibility, documentation site |
