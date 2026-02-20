@@ -9,6 +9,7 @@
 pub mod discovery;
 pub mod languages;
 pub mod mapping;
+pub mod orchestrator;
 pub mod types;
 
 use std::collections::HashSet;
