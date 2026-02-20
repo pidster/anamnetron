@@ -1,9 +1,8 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "env": {
-      "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
   },
-  "teammateMode": "tmux",
   "permissions": {
     "allow": [
       "Bash(cargo build:*)",
@@ -40,5 +39,9 @@
         ]
       }
     ]
+  },
+  "teammateMode": "tmux",
+  "enabledPlugins": {
+    "frontend-design@claude-plugins-official": true
   }
 }
