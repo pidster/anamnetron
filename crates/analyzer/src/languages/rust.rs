@@ -6,6 +6,7 @@
 
 use std::path::Path;
 
+use svt_core::analysis::LanguageParser as CoreLanguageParser;
 use svt_core::model::{EdgeKind, NodeKind};
 
 use crate::types::{AnalysisItem, AnalysisRelation, AnalysisWarning};
@@ -33,6 +34,12 @@ impl RustAnalyzer {
 impl Default for RustAnalyzer {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl CoreLanguageParser for RustAnalyzer {
+    fn parse(&self, unit_name: &str, files: &[&Path]) -> ParseResult {
+        self.analyze_crate(unit_name, files)
     }
 }
 
