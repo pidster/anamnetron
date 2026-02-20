@@ -344,7 +344,7 @@ fn detect_git_head(project_path: &Path) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-fn run_analyze(store_path: &Path, args: &AnalyzeArgs) -> Result<()> {
+fn run_analyze(store_path: &Path, args: &AnalyzeArgs, loader: &plugin::PluginLoader) -> Result<()> {
     let mut store = open_or_create_store(store_path)?;
 
     let commit_ref = args
@@ -352,8 +352,16 @@ fn run_analyze(store_path: &Path, args: &AnalyzeArgs) -> Result<()> {
         .clone()
         .or_else(|| detect_git_head(&args.path));
 
-    let summary = svt_analyzer::analyze_project(&mut store, &args.path, commit_ref.as_deref())
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let mut registry = svt_analyzer::orchestrator::OrchestratorRegistry::with_defaults();
+    loader.register_language_parsers(&mut registry);
+
+    let summary = svt_analyzer::analyze_project_with_registry(
+        &mut store,
+        &args.path,
+        commit_ref.as_deref(),
+        registry,
+    )
+    .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     println!("Analyzed {}\n", args.path.display());
     println!("  Created analysis snapshot v{}", summary.version);
@@ -565,7 +573,19 @@ fn run_plugin_list(loader: &plugin::PluginLoader) -> Result<()> {
                 println!("    - {}", fmt.name());
             }
         }
-        if evaluators.is_empty() && formats.is_empty() {
+        let parsers = p.language_parsers();
+        if !parsers.is_empty() {
+            println!("  Language parsers:");
+            for (desc, _) in &parsers {
+                println!(
+                    "    - {} (manifests: {}, extensions: {})",
+                    desc.language_id,
+                    desc.manifest_files.join(", "),
+                    desc.source_extensions.join(", "),
+                );
+            }
+        }
+        if evaluators.is_empty() && formats.is_empty() && parsers.is_empty() {
             println!("  (no contributions)");
         }
     }
@@ -579,7 +599,7 @@ fn main() -> Result<()> {
     match &cli.command {
         Commands::Import(args) => run_import(&cli.store, args),
         Commands::Check(args) => run_check(&cli.store, args, &loader),
-        Commands::Analyze(args) => run_analyze(&cli.store, args),
+        Commands::Analyze(args) => run_analyze(&cli.store, args, &loader),
         Commands::Export(args) => run_export(&cli.store, args, &loader),
         Commands::Diff(args) => run_diff(&cli.store, args),
         Commands::Plugin(args) => match &args.command {

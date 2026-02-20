@@ -39,16 +39,31 @@ pub enum AnalyzerError {
 
 /// Analyze a project and populate an analysis snapshot in the store.
 ///
-/// Uses [`OrchestratorRegistry`] to iterate over all registered language
-/// orchestrators, running a uniform discover-analyse-postprocess pipeline
-/// for each language. Results are mapped to graph nodes and edges, then
-/// batch-inserted into the store.
-///
-/// Returns a summary of what was analyzed and any warnings encountered.
+/// Convenience wrapper around [`analyze_project_with_registry`] that uses
+/// the default orchestrator registry (built-in languages only).
 pub fn analyze_project(
     store: &mut impl GraphStore,
     project_root: &Path,
     commit_ref: Option<&str>,
+) -> Result<AnalysisSummary, AnalyzerError> {
+    let registry = OrchestratorRegistry::with_defaults();
+    analyze_project_with_registry(store, project_root, commit_ref, registry)
+}
+
+/// Analyze a project using a custom [`OrchestratorRegistry`].
+///
+/// This is the main entry point for the analysis pipeline. It iterates over
+/// all registered language orchestrators, running a uniform
+/// discover-analyse-postprocess pipeline for each language. Results are mapped
+/// to graph nodes and edges, then batch-inserted into the store.
+///
+/// Use this when you need to register additional orchestrators (e.g., from
+/// plugins) beyond the built-in defaults.
+pub fn analyze_project_with_registry(
+    store: &mut impl GraphStore,
+    project_root: &Path,
+    commit_ref: Option<&str>,
+    registry: OrchestratorRegistry,
 ) -> Result<AnalysisSummary, AnalyzerError> {
     if !project_root.is_dir() {
         return Err(AnalyzerError::Discovery(
@@ -58,8 +73,6 @@ pub fn analyze_project(
             )),
         ));
     }
-
-    let registry = OrchestratorRegistry::with_defaults();
 
     let mut all_items: Vec<AnalysisItem> = Vec::new();
     let mut all_relations = Vec::new();
