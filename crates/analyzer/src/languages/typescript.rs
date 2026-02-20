@@ -4,8 +4,10 @@
 //! type aliases) and import relationships from TypeScript source files.
 //! Also handles Svelte files by extracting their `<script>` blocks first.
 
-use std::path::Path;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
+use svt_core::analysis::{LanguageDescriptor, LanguageParser as CoreLanguageParser};
 use svt_core::model::{EdgeKind, NodeKind};
 
 use crate::languages::svelte;
@@ -30,6 +32,83 @@ impl TypeScriptAnalyzer {
 impl Default for TypeScriptAnalyzer {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl TypeScriptAnalyzer {
+    /// Language descriptor for TypeScript/Svelte packages.
+    #[must_use]
+    pub fn descriptor() -> LanguageDescriptor {
+        LanguageDescriptor {
+            language_id: "typescript".to_string(),
+            manifest_files: vec!["package.json".to_string()],
+            source_extensions: vec![".ts".to_string(), ".tsx".to_string(), ".svelte".to_string()],
+            skip_directories: vec![
+                "node_modules".to_string(),
+                "dist".to_string(),
+                "build".to_string(),
+                ".svt".to_string(),
+                "target".to_string(),
+                ".git".to_string(),
+            ],
+            top_level_kind: NodeKind::Service,
+            top_level_sub_kind: "package".to_string(),
+        }
+    }
+
+    /// Create a boxed language parser for TypeScript.
+    #[must_use]
+    pub fn parser() -> Box<dyn CoreLanguageParser> {
+        Box::new(TypeScriptAnalyzer::new())
+    }
+}
+
+impl CoreLanguageParser for TypeScriptAnalyzer {
+    fn parse(&self, unit_name: &str, files: &[&Path]) -> ParseResult {
+        self.analyze_crate(unit_name, files)
+    }
+
+    fn emit_structural_items(
+        &self,
+        source_root: &Path,
+        unit_name: &str,
+        source_files: &[PathBuf],
+    ) -> Vec<AnalysisItem> {
+        emit_ts_module_items(source_root, unit_name, source_files)
+    }
+
+    fn post_process(&self, source_root: &Path, unit_name: &str, result: &mut ParseResult) {
+        // Reparent items to their file-level module qualified names.
+        for item in &mut result.items {
+            if let Some(file_module_qn) =
+                file_to_module_qn(source_root, &item.source_ref, unit_name)
+            {
+                let item_name = item
+                    .qualified_name
+                    .rsplit("::")
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
+                item.qualified_name = format!("{file_module_qn}::{item_name}");
+                item.parent_qualified_name = Some(file_module_qn);
+            }
+        }
+
+        // Resolve relative import paths to qualified names.
+        result.relations.retain_mut(|rel| {
+            if rel.target_qualified_name.starts_with("./")
+                || rel.target_qualified_name.starts_with("../")
+            {
+                if let Some(resolved) = resolve_ts_import(&rel.target_qualified_name, unit_name) {
+                    rel.target_qualified_name = resolved;
+                    true
+                } else {
+                    false
+                }
+            } else {
+                true
+            }
+        });
     }
 }
 
@@ -235,6 +314,116 @@ fn extract_import(
             kind: EdgeKind::Depends,
         });
     }
+}
+
+/// Emit module items for directories and files in a TypeScript package.
+pub(crate) fn emit_ts_module_items(
+    source_root: &Path,
+    package_name: &str,
+    source_files: &[PathBuf],
+) -> Vec<AnalysisItem> {
+    let mut items = Vec::new();
+    let mut emitted_modules: HashSet<String> = HashSet::new();
+
+    for file in source_files {
+        let rel = match file.strip_prefix(source_root) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+
+        // Emit directory modules.
+        let mut current_qn = package_name.to_string();
+        for component in rel.parent().iter().flat_map(|p| p.components()) {
+            if let std::path::Component::Normal(name) = component {
+                let name_str = name.to_str().unwrap_or("");
+                let parent_qn = current_qn.clone();
+                current_qn = format!("{current_qn}::{name_str}");
+                if emitted_modules.insert(current_qn.clone()) {
+                    items.push(AnalysisItem {
+                        qualified_name: current_qn.clone(),
+                        kind: NodeKind::Component,
+                        sub_kind: "module".to_string(),
+                        parent_qualified_name: Some(parent_qn),
+                        source_ref: file.parent().unwrap_or(source_root).display().to_string(),
+                        language: "typescript".to_string(),
+                    });
+                }
+            }
+        }
+
+        // Emit file-level item.
+        let file_stem = rel.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        let ext = rel.extension().and_then(|e| e.to_str()).unwrap_or("");
+
+        // Skip index/main files — they represent their parent directory.
+        if file_stem == "index" || file_stem == "main" {
+            continue;
+        }
+
+        let file_qn = format!("{current_qn}::{file_stem}");
+        let (kind, sub_kind, lang) = if ext == "svelte" {
+            (NodeKind::Unit, "component", "svelte")
+        } else {
+            (NodeKind::Component, "module", "typescript")
+        };
+
+        if emitted_modules.insert(file_qn.clone()) {
+            items.push(AnalysisItem {
+                qualified_name: file_qn,
+                kind,
+                sub_kind: sub_kind.to_string(),
+                parent_qualified_name: Some(current_qn),
+                source_ref: file.display().to_string(),
+                language: lang.to_string(),
+            });
+        }
+    }
+
+    items
+}
+
+/// Map a file path (from source_ref) to its module qualified name.
+fn file_to_module_qn(source_root: &Path, source_ref: &str, package_name: &str) -> Option<String> {
+    let file_path_str = source_ref
+        .rsplit_once(':')
+        .map(|(p, _)| p)
+        .unwrap_or(source_ref);
+    let file_path = Path::new(file_path_str);
+    let rel = file_path.strip_prefix(source_root).ok()?;
+
+    let stem = rel.file_stem().and_then(|s| s.to_str())?;
+    let mut qn = package_name.to_string();
+
+    for component in rel.parent().iter().flat_map(|p| p.components()) {
+        if let std::path::Component::Normal(name) = component {
+            if let Some(name_str) = name.to_str() {
+                qn = format!("{qn}::{name_str}");
+            }
+        }
+    }
+
+    if stem != "index" && stem != "main" {
+        qn = format!("{qn}::{stem}");
+    }
+
+    Some(qn)
+}
+
+/// Resolve a relative TypeScript import path to a qualified name.
+fn resolve_ts_import(import_path: &str, package_name: &str) -> Option<String> {
+    let clean = import_path
+        .trim_start_matches("./")
+        .trim_start_matches("../")
+        .trim_end_matches(".ts")
+        .trim_end_matches(".tsx")
+        .trim_end_matches(".svelte")
+        .trim_end_matches(".js");
+
+    if clean.is_empty() {
+        return None;
+    }
+
+    Some(format!("{package_name}::{}", clean.replace('/', "::")))
 }
 
 #[cfg(test)]

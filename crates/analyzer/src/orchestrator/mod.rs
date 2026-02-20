@@ -103,7 +103,7 @@ impl OrchestratorRegistry {
     pub fn with_defaults() -> Self {
         let mut registry = Self::new();
         registry.register(Box::new(rust::RustOrchestrator::new()));
-        registry.register(Box::new(typescript::TypeScriptOrchestrator::new()));
+        registry.register(Box::new(typescript::orchestrator()));
         registry.register(Box::new(go::orchestrator()));
         registry.register(Box::new(python::orchestrator()));
         registry
