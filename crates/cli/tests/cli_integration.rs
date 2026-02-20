@@ -471,3 +471,169 @@ fn export_without_format_gives_error() {
         .assert()
         .failure();
 }
+
+// -- svt store subcommand tests --
+
+#[test]
+fn store_info_on_nonexistent_store_gives_clear_error() {
+    let dir = TempDir::new().unwrap();
+    let store_path = dir.path().join(".svt/store");
+
+    svt_cmd()
+        .arg("--store")
+        .arg(&store_path)
+        .arg("store")
+        .arg("info")
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("not found").or(predicate::str::contains("Store not found")),
+        );
+}
+
+#[test]
+fn store_info_after_import_shows_snapshot() {
+    let dir = TempDir::new().unwrap();
+    let yaml_path = write_design_yaml(&dir);
+    let store_path = dir.path().join(".svt/store");
+
+    svt_cmd()
+        .arg("--store")
+        .arg(&store_path)
+        .arg("import")
+        .arg(&yaml_path)
+        .assert()
+        .success();
+
+    svt_cmd()
+        .arg("--store")
+        .arg(&store_path)
+        .arg("store")
+        .arg("info")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Schema version: 1"))
+        .stdout(predicate::str::contains("Snapshots: 1"))
+        .stdout(predicate::str::contains("design"));
+}
+
+#[test]
+fn store_compact_keeps_latest_by_default() {
+    let dir = TempDir::new().unwrap();
+    let yaml_path = write_design_yaml(&dir);
+    let store_path = dir.path().join(".svt/store");
+
+    // Import twice to create two versions
+    svt_cmd()
+        .arg("--store")
+        .arg(&store_path)
+        .arg("import")
+        .arg(&yaml_path)
+        .assert()
+        .success();
+    svt_cmd()
+        .arg("--store")
+        .arg(&store_path)
+        .arg("import")
+        .arg(&yaml_path)
+        .assert()
+        .success();
+
+    // Compact — should keep latest design
+    svt_cmd()
+        .arg("--store")
+        .arg(&store_path)
+        .arg("store")
+        .arg("compact")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("kept 1"))
+        .stdout(predicate::str::contains("removed 1"));
+}
+
+#[test]
+fn store_compact_with_explicit_keep() {
+    let dir = TempDir::new().unwrap();
+    let yaml_path = write_design_yaml(&dir);
+    let store_path = dir.path().join(".svt/store");
+
+    // Import three times
+    for _ in 0..3 {
+        svt_cmd()
+            .arg("--store")
+            .arg(&store_path)
+            .arg("import")
+            .arg(&yaml_path)
+            .assert()
+            .success();
+    }
+
+    // Keep only versions 1 and 3
+    svt_cmd()
+        .arg("--store")
+        .arg(&store_path)
+        .arg("store")
+        .arg("compact")
+        .arg("--keep")
+        .arg("1")
+        .arg("--keep")
+        .arg("3")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("kept 2"))
+        .stdout(predicate::str::contains("removed 1"));
+}
+
+#[test]
+fn store_reset_with_force_deletes_and_recreates() {
+    let dir = TempDir::new().unwrap();
+    let yaml_path = write_design_yaml(&dir);
+    let store_path = dir.path().join(".svt/store");
+
+    // Import to create store with data
+    svt_cmd()
+        .arg("--store")
+        .arg(&store_path)
+        .arg("import")
+        .arg(&yaml_path)
+        .assert()
+        .success();
+
+    // Reset with --force
+    svt_cmd()
+        .arg("--store")
+        .arg(&store_path)
+        .arg("store")
+        .arg("reset")
+        .arg("--force")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Store reset"));
+
+    // Verify store is empty (info shows 0 snapshots)
+    svt_cmd()
+        .arg("--store")
+        .arg(&store_path)
+        .arg("store")
+        .arg("info")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Snapshots: 0"));
+}
+
+#[test]
+fn store_compact_on_nonexistent_store_gives_clear_error() {
+    let dir = TempDir::new().unwrap();
+    let store_path = dir.path().join(".svt/store");
+
+    svt_cmd()
+        .arg("--store")
+        .arg(&store_path)
+        .arg("store")
+        .arg("compact")
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("not found").or(predicate::str::contains("Store not found")),
+        );
+}

@@ -43,6 +43,8 @@ enum Commands {
     Diff(DiffArgs),
     /// Manage and list loaded plugins.
     Plugin(PluginArgs),
+    /// Manage the graph store (info, compact, reset).
+    Store(StoreArgs),
 }
 
 #[derive(clap::Args, Debug)]
@@ -124,6 +126,41 @@ struct PluginArgs {
 enum PluginCommands {
     /// List all loaded plugins and their contributions.
     List,
+}
+
+/// Arguments for the `svt store` subcommand.
+#[derive(clap::Args, Debug)]
+struct StoreArgs {
+    #[command(subcommand)]
+    command: StoreCommands,
+}
+
+/// Subcommands under `svt store`.
+#[derive(Subcommand, Debug)]
+enum StoreCommands {
+    /// Show store information: schema version, snapshots, node/edge counts.
+    Info,
+    /// Remove old snapshot versions to reclaim space.
+    Compact(CompactArgs),
+    /// Delete the store and recreate it empty.
+    Reset(ResetArgs),
+}
+
+/// Arguments for `svt store compact`.
+#[derive(clap::Args, Debug)]
+struct CompactArgs {
+    /// Explicit list of version numbers to keep.
+    /// Default: keep the latest design and latest analysis snapshots.
+    #[arg(long)]
+    keep: Vec<u64>,
+}
+
+/// Arguments for `svt store reset`.
+#[derive(clap::Args, Debug)]
+struct ResetArgs {
+    /// Skip the confirmation prompt.
+    #[arg(long)]
+    force: bool,
 }
 
 fn open_or_create_store(path: &Path) -> Result<CozoStore> {
@@ -592,6 +629,120 @@ fn run_plugin_list(loader: &plugin::PluginLoader) -> Result<()> {
     Ok(())
 }
 
+fn run_store_info(store_path: &Path) -> Result<()> {
+    let store = open_store(store_path)?;
+    let info = store.store_info().map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    println!("Store: {}", store_path.display());
+    println!("  Schema version: {}", info.schema_version);
+    println!("  Snapshots: {}", info.snapshot_count);
+
+    if !info.snapshots.is_empty() {
+        println!();
+        println!(
+            "  {:>7}  {:>10}  {:>5}  {:>5}  {:>12}  CREATED",
+            "VERSION", "KIND", "NODES", "EDGES", "COMMIT"
+        );
+        for snap in &info.snapshots {
+            let commit = snap
+                .commit_ref
+                .as_deref()
+                .map(|c| if c.len() > 12 { &c[..12] } else { c })
+                .unwrap_or("-");
+            println!(
+                "  {:>7}  {:>10}  {:>5}  {:>5}  {:>12}  {}",
+                snap.version,
+                format!("{:?}", snap.kind).to_lowercase(),
+                snap.node_count,
+                snap.edge_count,
+                commit,
+                snap.created_at,
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn run_store_compact(store_path: &Path, args: &CompactArgs) -> Result<()> {
+    use svt_core::model::SnapshotKind;
+
+    let mut store = open_store(store_path)?;
+
+    let keep_versions = if args.keep.is_empty() {
+        // Default: keep latest design + latest analysis
+        let mut versions = Vec::new();
+        if let Some(v) = store
+            .latest_version(SnapshotKind::Design)
+            .map_err(|e| anyhow::anyhow!("{}", e))?
+        {
+            versions.push(v);
+        }
+        if let Some(v) = store
+            .latest_version(SnapshotKind::Analysis)
+            .map_err(|e| anyhow::anyhow!("{}", e))?
+        {
+            versions.push(v);
+        }
+        versions
+    } else {
+        args.keep.clone()
+    };
+
+    let before = store
+        .list_snapshots()
+        .map_err(|e| anyhow::anyhow!("{}", e))?
+        .len();
+
+    store
+        .compact(&keep_versions)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    let after = store
+        .list_snapshots()
+        .map_err(|e| anyhow::anyhow!("{}", e))?
+        .len();
+
+    let removed = before.saturating_sub(after);
+    println!(
+        "Compacted store: kept {} versions, removed {}",
+        after, removed
+    );
+
+    Ok(())
+}
+
+fn run_store_reset(store_path: &Path, args: &ResetArgs) -> Result<()> {
+    if !store_path.exists() {
+        bail!(
+            "Store not found at {}. Nothing to reset.",
+            store_path.display()
+        );
+    }
+
+    if !args.force {
+        eprint!(
+            "This will delete all data in {}. Continue? [y/N] ",
+            store_path.display()
+        );
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    std::fs::remove_file(store_path)
+        .with_context(|| format!("deleting store at {}", store_path.display()))?;
+
+    // Recreate empty store
+    open_or_create_store(store_path)?;
+    println!("Store reset: {}", store_path.display());
+
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let loader = build_plugin_loader(&cli.plugins);
@@ -604,6 +755,11 @@ fn main() -> Result<()> {
         Commands::Diff(args) => run_diff(&cli.store, args),
         Commands::Plugin(args) => match &args.command {
             PluginCommands::List => run_plugin_list(&loader),
+        },
+        Commands::Store(args) => match &args.command {
+            StoreCommands::Info => run_store_info(&cli.store),
+            StoreCommands::Compact(compact_args) => run_store_compact(&cli.store, compact_args),
+            StoreCommands::Reset(reset_args) => run_store_reset(&cli.store, reset_args),
         },
     }
 }
