@@ -140,4 +140,16 @@ pub trait GraphStore {
     /// Get summary information about the store: schema version, snapshot count,
     /// and per-snapshot node/edge counts.
     fn store_info(&self) -> Result<StoreInfo>;
+
+    /// Store file manifest entries for a version (used for incremental analysis).
+    fn add_file_manifest(&mut self, version: Version, entries: &[FileManifestEntry]) -> Result<()>;
+
+    /// Retrieve file manifest entries for a version.
+    fn get_file_manifest(&self, version: Version) -> Result<Vec<FileManifestEntry>>;
+
+    /// Copy all nodes from one version to another. Returns the number of nodes copied.
+    fn copy_nodes(&mut self, from_version: Version, to_version: Version) -> Result<usize>;
+
+    /// Copy all edges from one version to another. Returns the number of edges copied.
+    fn copy_edges(&mut self, from_version: Version, to_version: Version) -> Result<usize>;
 }

@@ -60,6 +60,7 @@ impl CozoStore {
             "{ :create nodes { id: String, version: Int => canonical_path: String, qualified_name: String?, kind: String, sub_kind: String, name: String, language: String?, provenance: String, source_ref: String?, metadata: Json? } }",
             "{ :create edges { id: String, version: Int => source: String, target: String, kind: String, provenance: String, metadata: Json? } }",
             "{ :create constraints { id: String, version: Int => kind: String, name: String, scope: String, target: String?, params: Json?, message: String, severity: String } }",
+            "{ :create file_manifest { path: String, version: Int => hash: String, unit_name: String, language: String } }",
         ];
 
         for query in queries {
@@ -875,6 +876,15 @@ impl GraphStore for CozoStore {
              keep_set[v] := v in $keep
              ?[id, version] := to_remove[id, version]
              :rm constraints {id, version}",
+            params.clone(),
+        )?;
+
+        // Delete file_manifest entries not in keep list
+        self.run_query(
+            "to_remove[path, version] := *file_manifest{path, version}, not keep_set[version]
+             keep_set[v] := v in $keep
+             ?[path, version] := to_remove[path, version]
+             :rm file_manifest {path, version}",
             params,
         )?;
 
@@ -905,6 +915,107 @@ impl GraphStore for CozoStore {
 
         let result = self.run_query_immutable(query, params)?;
         result.rows.iter().map(|row| row_to_edge(row)).collect()
+    }
+
+    fn add_file_manifest(&mut self, version: Version, entries: &[FileManifestEntry]) -> Result<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+
+        let mut rows: Vec<DataValue> = Vec::with_capacity(entries.len());
+        for entry in entries {
+            rows.push(DataValue::List(vec![
+                DataValue::Str(entry.path.clone().into()),
+                DataValue::from(version as i64),
+                DataValue::Str(entry.hash.clone().into()),
+                DataValue::Str(entry.unit_name.clone().into()),
+                DataValue::Str(entry.language.clone().into()),
+            ]));
+        }
+
+        let mut params = BTreeMap::new();
+        params.insert("rows".to_string(), DataValue::List(rows));
+
+        self.run_query(
+            "?[path, version, hash, unit_name, language] <- $rows
+             :put file_manifest { path, version => hash, unit_name, language }",
+            params,
+        )?;
+
+        Ok(())
+    }
+
+    fn get_file_manifest(&self, version: Version) -> Result<Vec<FileManifestEntry>> {
+        let params = BTreeMap::from([("version".to_string(), DataValue::from(version as i64))]);
+        let result = self.run_query_immutable(
+            "?[path, hash, unit_name, language] := *file_manifest{path, version: $version, hash, unit_name, language}",
+            params,
+        )?;
+
+        result
+            .rows
+            .iter()
+            .map(|row| {
+                Ok(FileManifestEntry {
+                    path: req_str(&row[0])?,
+                    hash: req_str(&row[1])?,
+                    unit_name: req_str(&row[2])?,
+                    language: req_str(&row[3])?,
+                })
+            })
+            .collect()
+    }
+
+    fn copy_nodes(&mut self, from_version: Version, to_version: Version) -> Result<usize> {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "from_version".to_string(),
+            DataValue::from(from_version as i64),
+        );
+        params.insert("to_version".to_string(), DataValue::from(to_version as i64));
+
+        // First count how many nodes we'll copy
+        let count = self.count_nodes(from_version)?;
+
+        if count == 0 {
+            return Ok(0);
+        }
+
+        self.run_query(
+            "?[id, version, canonical_path, qualified_name, kind, sub_kind, name, language, provenance, source_ref, metadata] :=
+                *nodes{id, version: $from_version, canonical_path, qualified_name, kind, sub_kind, name, language, provenance, source_ref, metadata},
+                version = $to_version
+             :put nodes { id, version => canonical_path, qualified_name, kind, sub_kind, name, language, provenance, source_ref, metadata }",
+            params,
+        )?;
+
+        Ok(count)
+    }
+
+    fn copy_edges(&mut self, from_version: Version, to_version: Version) -> Result<usize> {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "from_version".to_string(),
+            DataValue::from(from_version as i64),
+        );
+        params.insert("to_version".to_string(), DataValue::from(to_version as i64));
+
+        // First count how many edges we'll copy
+        let count = self.count_edges(from_version)?;
+
+        if count == 0 {
+            return Ok(0);
+        }
+
+        self.run_query(
+            "?[id, version, source, target, kind, provenance, metadata] :=
+                *edges{id, version: $from_version, source, target, kind, provenance, metadata},
+                version = $to_version
+             :put edges { id, version => source, target, kind, provenance, metadata }",
+            params,
+        )?;
+
+        Ok(count)
     }
 
     fn store_info(&self) -> Result<super::StoreInfo> {

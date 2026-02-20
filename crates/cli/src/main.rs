@@ -82,6 +82,10 @@ struct AnalyzeArgs {
     /// Optional git commit ref to tag the snapshot.
     #[arg(long)]
     commit_ref: Option<String>,
+
+    /// Enable incremental analysis: only re-analyze units with changed files.
+    #[arg(long)]
+    incremental: bool,
 }
 
 #[derive(clap::Args, Debug)]
@@ -392,13 +396,28 @@ fn run_analyze(store_path: &Path, args: &AnalyzeArgs, loader: &plugin::PluginLoa
     let mut registry = svt_analyzer::orchestrator::OrchestratorRegistry::with_defaults();
     loader.register_language_parsers(&mut registry);
 
-    let summary = svt_analyzer::analyze_project_with_registry(
-        &mut store,
-        &args.path,
-        commit_ref.as_deref(),
-        registry,
-    )
-    .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let summary = if args.incremental {
+        use svt_core::model::SnapshotKind;
+        let previous = store
+            .latest_version(SnapshotKind::Analysis)
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        svt_analyzer::analyze_project_incremental_with_registry(
+            &mut store,
+            &args.path,
+            commit_ref.as_deref(),
+            previous,
+            registry,
+        )
+        .map_err(|e| anyhow::anyhow!("{}", e))?
+    } else {
+        svt_analyzer::analyze_project_with_registry(
+            &mut store,
+            &args.path,
+            commit_ref.as_deref(),
+            registry,
+        )
+        .map_err(|e| anyhow::anyhow!("{}", e))?
+    };
 
     println!("Analyzed {}\n", args.path.display());
     println!("  Created analysis snapshot v{}", summary.version);
@@ -417,6 +436,16 @@ fn run_analyze(store_path: &Path, args: &AnalyzeArgs, loader: &plugin::PluginLoa
         "    {} nodes, {} edges",
         summary.nodes_created, summary.edges_created
     );
+
+    if summary.incremental {
+        println!(
+            "    incremental: {} units skipped, {} re-analyzed, {} nodes copied, {} edges copied",
+            summary.units_skipped,
+            summary.units_reanalyzed,
+            summary.nodes_copied,
+            summary.edges_copied,
+        );
+    }
 
     if !summary.warnings.is_empty() {
         eprintln!("\n  {} warnings:", summary.warnings.len());

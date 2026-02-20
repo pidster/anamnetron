@@ -118,4 +118,14 @@ pub struct AnalysisSummary {
     pub edges_created: usize,
     /// Warnings produced during analysis.
     pub warnings: Vec<AnalysisWarning>,
+    /// Whether this was an incremental analysis run.
+    pub incremental: bool,
+    /// Number of language units skipped (unchanged).
+    pub units_skipped: usize,
+    /// Number of language units re-analyzed (changed).
+    pub units_reanalyzed: usize,
+    /// Number of nodes copied from the previous version.
+    pub nodes_copied: usize,
+    /// Number of edges copied from the previous version.
+    pub edges_copied: usize,
 }

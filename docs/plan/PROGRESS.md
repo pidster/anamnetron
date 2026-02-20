@@ -23,8 +23,9 @@
 | **17** | Dynamic Plugin Loading | 2026-02-20 | 388 | `SvtPlugin` trait + `declare_plugin!` macro in svt-core, `PluginLoader` with `libloading` in svt-cli, `--plugin` flag + `svt plugin list` command, plugin contributions wired into check/export, 3-tier discovery (CLI/project/user) |
 | **18** | Plugin Analyzer Support | 2026-02-20 | 404 | `LanguageDescriptor` + `LanguageParser` trait in svt-core, `DescriptorOrchestrator` in svt-analyzer, Go/Python/TypeScript refactored to descriptor+parser pattern, `SvtPlugin::language_parsers()` method, plugin parsers wired into CLI analysis pipeline |
 | **19** | Store Persistence & Management | 2026-02-20 | 420 | Schema version + migration framework, `store_info()` with per-snapshot counts, `svt store info\|compact\|reset` CLI commands, `--store` flag for server persistent storage, `GET /api/store/info` endpoint |
+| **20** | Incremental Analysis | 2026-02-20 | 453 | BLAKE3 file hashing, `file_manifest` relation, `copy_nodes`/`copy_edges` store methods, unit-level skip with copy-then-upsert, `svt analyze --incremental`, proptest for manifest diffing |
 
-**Current state:** 398 Rust tests + 22 vitest tests = 420 total. All passing. clippy/fmt/audit clean. CI pipeline operational.
+**Current state:** 431 Rust tests + 22 vitest tests = 453 total. All passing. clippy/fmt/audit clean. CI pipeline operational.
 
 ## What's Working Now
 
@@ -32,6 +33,7 @@
 svt import design/architecture.yaml     # Load a design model
 svt check                                # Conformance check (design-only)
 svt analyze .                            # Analyze Rust + TypeScript + Go + Python project
+svt analyze . --incremental              # Incremental analysis (skip unchanged units)
 svt check --analysis                     # Compare design vs analysis
 svt export --format mermaid              # Export as Mermaid flowchart
 svt export --format json                 # Export as interchange JSON
@@ -89,6 +91,9 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 
 ### Store Persistence — RESOLVED (M19)
 - ~~The server always uses `CozoStore::new_in_memory()`, losing all data on restart. No schema migration system, no store management CLI commands, no way to inspect or compact the store.~~ Resolved: Schema version + migration framework (`CURRENT_SCHEMA_VERSION`, `schema_version()`, `migrate()`), `store_info()` with per-snapshot node/edge counts, `svt store info|compact|reset` CLI commands, `--store` flag for server persistent CozoDB storage, `GET /api/store/info` endpoint.
+
+### Incremental Analysis — RESOLVED (M20)
+- ~~Each `svt analyze` run re-parses every source file. For large codebases this is wasteful when only a few files changed.~~ Resolved: BLAKE3 content hashing for file change detection, `file_manifest` CozoDB relation storing per-file hashes grouped by language unit, `copy_nodes`/`copy_edges` store methods for carrying forward unchanged data, unit-level skip with copy-then-upsert strategy, `svt analyze --incremental` CLI flag with auto-detection of latest analysis version as previous.
 
 ## Suggested Next Milestones
 
@@ -251,13 +256,32 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 - **Result: 398 Rust tests + 22 vitest tests = 420 total**
 - **Dog-food: 852 nodes, 863 edges, conformance 12/12 passed**
 
-## Roadmap (Post-M19)
+### Milestone 20: Incremental Analysis — COMPLETE
+
+**Goal:** Skip re-analysis of unchanged language units by tracking file content hashes per snapshot.
+
+**Delivered:**
+- `FileManifestEntry` type in svt-core model (path, hash, unit_name, language)
+- `file_manifest` CozoDB relation in `init_schema()` with `(path, version)` key
+- `add_file_manifest()`, `get_file_manifest()`, `copy_nodes()`, `copy_edges()` on `GraphStore` trait
+- `compact()` updated to clean up file_manifest entries
+- BLAKE3 content hashing in `crates/analyzer/src/hashing.rs` (`hash_file`, `build_manifest`, `changed_units`)
+- `analyze_project_incremental()` and `analyze_project_incremental_with_registry()` pipeline
+- Unit-level skip with copy-then-upsert: copy ALL nodes/edges from previous, then upsert changed units on top
+- `AnalysisSummary` extended with `incremental`, `units_skipped`, `units_reanalyzed`, `nodes_copied`, `edges_copied`
+- `svt analyze --incremental` CLI flag with auto-detection of latest analysis version
+- Falls back to full analysis when no previous version or manifest exists (stores manifest for next run)
+- 33 new tests: 10 file_manifest store tests, 13 hashing unit/proptests, 3 incremental pipeline tests, 3 CLI tests, 4 integration tests
+- **Result: 431 Rust tests + 22 vitest tests = 453 total**
+
+**Known limitation (v1):** If a language unit is entirely removed between runs, its ghost nodes remain (copied from previous, never overwritten). Periodic full analysis cleans this up.
+
+## Roadmap (Post-M20)
 
 Priority-ordered next milestones:
 
 | # | Milestone | Description | Key Challenge |
 |---|-----------|-------------|---------------|
-| **M20** | Incremental Analysis | Diff changed files and update only affected subgraphs instead of full re-analysis | Requires file-level change detection (git diff or mtime), dependency graph for invalidation, partial store updates |
 | **M21** | Analysis Depth | Resolve non-self method calls (`x.foo()`), cross-crate dependency edges | Needs type inference or heuristic resolution; significantly harder than self-method resolution |
 | **M22** | Plugin Ecosystem | Plugin manifest (`svt-plugin.toml`), `svt plugin install\|remove`, plugin author documentation | Discovery conventions, version compatibility, documentation site |
 | **M23** | Web UI Enhancements | Error boundaries with retry, arrow-key graph traversal, filtering sidebar (by kind/metadata) | UX design, Cytoscape keyboard integration |

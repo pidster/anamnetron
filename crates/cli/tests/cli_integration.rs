@@ -622,6 +622,102 @@ fn store_reset_with_force_deletes_and_recreates() {
 }
 
 #[test]
+fn analyze_incremental_flag_accepted() {
+    let dir = TempDir::new().unwrap();
+    let store_path = dir.path().join(".svt/store");
+
+    let project_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+
+    // First run with --incremental (stores manifest for future runs)
+    svt_cmd()
+        .arg("--store")
+        .arg(&store_path)
+        .arg("analyze")
+        .arg(&project_root)
+        .arg("--incremental")
+        .assert()
+        .success();
+
+    // Second run: incremental with previous manifest available
+    svt_cmd()
+        .arg("--store")
+        .arg(&store_path)
+        .arg("analyze")
+        .arg(&project_root)
+        .arg("--incremental")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("incremental"))
+        .stdout(predicate::str::contains("units skipped"));
+}
+
+#[test]
+fn analyze_incremental_without_previous_works() {
+    let dir = TempDir::new().unwrap();
+    let store_path = dir.path().join(".svt/store");
+
+    let project_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+
+    // --incremental on first run with no previous version should still work (falls back to full)
+    svt_cmd()
+        .arg("--store")
+        .arg(&store_path)
+        .arg("analyze")
+        .arg(&project_root)
+        .arg("--incremental")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("nodes"))
+        .stdout(predicate::str::contains("edges"));
+}
+
+#[test]
+fn analyze_incremental_second_run_skips_unchanged() {
+    let dir = TempDir::new().unwrap();
+    let store_path = dir.path().join(".svt/store");
+
+    let project_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+
+    // First run with --incremental (falls back to full, stores manifest)
+    svt_cmd()
+        .arg("--store")
+        .arg(&store_path)
+        .arg("analyze")
+        .arg(&project_root)
+        .arg("--incremental")
+        .assert()
+        .success();
+
+    // Second run: should detect nothing changed and skip all units
+    svt_cmd()
+        .arg("--store")
+        .arg(&store_path)
+        .arg("analyze")
+        .arg(&project_root)
+        .arg("--incremental")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("incremental"))
+        .stdout(predicate::str::contains("nodes copied"))
+        .stdout(predicate::str::contains("edges copied"));
+}
+
+#[test]
 fn store_compact_on_nonexistent_store_gives_clear_error() {
     let dir = TempDir::new().unwrap();
     let store_path = dir.path().join(".svt/store");

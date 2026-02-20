@@ -11,6 +11,7 @@
 #![warn(missing_docs)]
 
 pub mod discovery;
+pub mod hashing;
 pub mod languages;
 pub mod mapping;
 pub mod orchestrator;
@@ -19,7 +20,7 @@ pub mod types;
 use std::collections::HashMap;
 use std::path::Path;
 
-use svt_core::model::SnapshotKind;
+use svt_core::model::{SnapshotKind, Version};
 use svt_core::store::GraphStore;
 
 use crate::mapping::map_to_graph;
@@ -137,6 +138,187 @@ pub fn analyze_project_with_registry(
         nodes_created: nodes.len(),
         edges_created: edges.len(),
         warnings: all_warnings,
+        incremental: false,
+        units_skipped: 0,
+        units_reanalyzed: 0,
+        nodes_copied: 0,
+        edges_copied: 0,
+    })
+}
+
+/// Analyze a project incrementally, reusing results from a previous version.
+///
+/// Convenience wrapper around [`analyze_project_incremental_with_registry`]
+/// that uses the default orchestrator registry.
+pub fn analyze_project_incremental(
+    store: &mut impl GraphStore,
+    project_root: &Path,
+    commit_ref: Option<&str>,
+    previous_version: Option<Version>,
+) -> Result<AnalysisSummary, AnalyzerError> {
+    let registry = OrchestratorRegistry::with_defaults();
+    analyze_project_incremental_with_registry(
+        store,
+        project_root,
+        commit_ref,
+        previous_version,
+        registry,
+    )
+}
+
+/// Analyze a project incrementally using a custom [`OrchestratorRegistry`].
+///
+/// When `previous_version` is `Some` and that version has a file manifest,
+/// only language units with changed files are re-analyzed. Unchanged units
+/// have their nodes and edges copied from the previous version.
+///
+/// Falls back to full analysis when there is no previous version or no
+/// file manifest, but still stores a manifest for future incremental runs.
+pub fn analyze_project_incremental_with_registry(
+    store: &mut impl GraphStore,
+    project_root: &Path,
+    commit_ref: Option<&str>,
+    previous_version: Option<Version>,
+    registry: OrchestratorRegistry,
+) -> Result<AnalysisSummary, AnalyzerError> {
+    if !project_root.is_dir() {
+        return Err(AnalyzerError::Discovery(
+            crate::discovery::DiscoveryError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("project root does not exist: {}", project_root.display()),
+            )),
+        ));
+    }
+
+    // Phase 1: Discover all units across all orchestrators.
+    let mut discovered: Vec<(
+        &dyn crate::orchestrator::LanguageOrchestrator,
+        Vec<crate::orchestrator::LanguageUnit>,
+    )> = Vec::new();
+    for orchestrator in registry.orchestrators() {
+        let units = orchestrator.discover(project_root);
+        discovered.push((orchestrator.as_ref(), units));
+    }
+
+    // Collect (language_id, &unit) pairs for manifest building.
+    let all_units: Vec<(&str, &crate::orchestrator::LanguageUnit)> = discovered
+        .iter()
+        .flat_map(|(orch, units)| units.iter().map(move |u| (orch.language_id(), u)))
+        .collect();
+
+    // Phase 2: Build current file manifest.
+    let (current_manifest, hash_warnings) =
+        crate::hashing::build_manifest(project_root, &all_units);
+
+    // Phase 3: Determine which units need re-analysis.
+    let previous_manifest = match previous_version {
+        Some(pv) => store.get_file_manifest(pv)?,
+        None => Vec::new(),
+    };
+
+    let can_do_incremental = previous_version.is_some() && !previous_manifest.is_empty();
+    let changed_unit_names = if can_do_incremental {
+        crate::hashing::changed_units(&current_manifest, &previous_manifest)
+    } else {
+        // All units are "changed" for full analysis
+        all_units
+            .iter()
+            .map(|(_, u)| u.name.clone())
+            .collect::<std::collections::HashSet<String>>()
+    };
+
+    // Phase 4: Create new snapshot version.
+    let version = store.create_snapshot(SnapshotKind::Analysis, commit_ref)?;
+
+    // Phase 5: Copy all nodes and edges from previous version (if incremental).
+    let mut nodes_copied = 0;
+    let mut edges_copied = 0;
+    if can_do_incremental {
+        if let Some(pv) = previous_version {
+            nodes_copied = store.copy_nodes(pv, version)?;
+            edges_copied = store.copy_edges(pv, version)?;
+        }
+    }
+
+    // Phase 6: Run analysis pipeline (only changed units get full analysis).
+    let mut all_items: Vec<AnalysisItem> = Vec::new();
+    let mut all_relations = Vec::new();
+    let mut all_warnings = Vec::new();
+    let mut files_analyzed = 0;
+    let mut units_per_language: HashMap<String, usize> = HashMap::new();
+    let mut units_skipped = 0;
+    let mut units_reanalyzed = 0;
+
+    all_warnings.extend(
+        hash_warnings
+            .into_iter()
+            .map(|msg| crate::types::AnalysisWarning {
+                source_ref: String::new(),
+                message: msg,
+            }),
+    );
+
+    for (orchestrator, units) in &discovered {
+        // Project-level extra items (always emitted).
+        all_items.extend(orchestrator.extra_items(project_root));
+
+        for unit in units {
+            // Always emit the top-level item and structural items.
+            all_items.push(AnalysisItem {
+                qualified_name: unit.name.clone(),
+                kind: unit.top_level_kind,
+                sub_kind: unit.top_level_sub_kind.clone(),
+                parent_qualified_name: unit.parent_qualified_name.clone(),
+                source_ref: unit.source_ref.clone(),
+                language: unit.language.clone(),
+            });
+            all_items.extend(orchestrator.emit_structural_items(unit));
+
+            if changed_unit_names.contains(&unit.name) {
+                // Changed unit: full analysis.
+                files_analyzed += unit.source_files.len();
+                let mut result = orchestrator.analyze(unit);
+                orchestrator.post_process(unit, &mut result);
+                all_items.extend(result.items);
+                all_relations.extend(result.relations);
+                all_warnings.extend(result.warnings);
+                units_reanalyzed += 1;
+            } else {
+                // Unchanged unit: skip analysis (nodes/edges already copied).
+                units_skipped += 1;
+            }
+        }
+
+        *units_per_language
+            .entry(orchestrator.language_id().to_string())
+            .or_insert(0) += units.len();
+    }
+
+    // Phase 7: Map to graph and upsert (overwrites copied data for changed units).
+    let (nodes, edges, mapping_warnings) = map_to_graph(&all_items, &all_relations);
+    all_warnings.extend(mapping_warnings);
+
+    store.add_nodes_batch(version, &nodes)?;
+    store.add_edges_batch(version, &edges)?;
+
+    // Phase 8: Store file manifest for future incremental runs.
+    store.add_file_manifest(version, &current_manifest)?;
+
+    Ok(AnalysisSummary {
+        version,
+        crates_analyzed: *units_per_language.get("rust").unwrap_or(&0),
+        ts_packages_analyzed: *units_per_language.get("typescript").unwrap_or(&0),
+        go_packages_analyzed: *units_per_language.get("go").unwrap_or(&0),
+        python_packages_analyzed: *units_per_language.get("python").unwrap_or(&0),
+        files_analyzed,
+        nodes_created: nodes.len(),
+        edges_created: edges.len(),
+        warnings: all_warnings,
+        incremental: can_do_incremental,
+        units_skipped,
+        units_reanalyzed,
+        nodes_copied,
+        edges_copied,
     })
 }
 
@@ -177,5 +359,86 @@ mod tests {
         let summary = analyze_project(&mut store, &project_root, Some("abc123")).unwrap();
 
         assert!(summary.version > 0);
+    }
+
+    #[test]
+    fn incremental_analysis_falls_back_when_no_previous() {
+        let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+
+        let mut store = CozoStore::new_in_memory().unwrap();
+        let summary = analyze_project_incremental(&mut store, &project_root, None, None).unwrap();
+
+        // Should do full analysis (no previous version)
+        assert!(!summary.incremental);
+        assert!(summary.nodes_created > 0);
+        assert_eq!(summary.nodes_copied, 0);
+        assert_eq!(summary.units_skipped, 0);
+    }
+
+    #[test]
+    fn incremental_analysis_stores_file_manifest() {
+        let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+
+        let mut store = CozoStore::new_in_memory().unwrap();
+        let summary = analyze_project_incremental(&mut store, &project_root, None, None).unwrap();
+
+        let manifest = store.get_file_manifest(summary.version).unwrap();
+        assert!(
+            !manifest.is_empty(),
+            "manifest should be stored after analysis"
+        );
+        assert!(
+            manifest.iter().any(|e| e.language == "rust"),
+            "manifest should contain rust entries"
+        );
+    }
+
+    #[test]
+    fn incremental_analysis_skips_unchanged_units() {
+        let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+
+        let mut store = CozoStore::new_in_memory().unwrap();
+
+        // First run: full analysis (stores manifest)
+        let first = analyze_project_incremental(&mut store, &project_root, None, None).unwrap();
+        assert!(!first.incremental);
+
+        // Second run: incremental (no files changed)
+        let second =
+            analyze_project_incremental(&mut store, &project_root, None, Some(first.version))
+                .unwrap();
+
+        assert!(second.incremental, "second run should be incremental");
+        assert!(
+            second.units_skipped > 0,
+            "some units should be skipped (nothing changed)"
+        );
+        assert!(
+            second.nodes_copied > 0,
+            "nodes should be copied from previous"
+        );
+        assert!(
+            second.edges_copied > 0,
+            "edges should be copied from previous"
+        );
+        assert!(
+            second.nodes_created > 0,
+            "structural nodes should still be created"
+        );
     }
 }

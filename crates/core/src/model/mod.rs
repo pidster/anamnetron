@@ -172,6 +172,19 @@ pub struct Snapshot {
     pub metadata: Option<serde_json::Value>,
 }
 
+/// An entry in the file manifest tracking content hashes for incremental analysis.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FileManifestEntry {
+    /// File path relative to the project root.
+    pub path: String,
+    /// BLAKE3 content hash (64-char hex string).
+    pub hash: String,
+    /// Name of the language unit this file belongs to.
+    pub unit_name: String,
+    /// Language identifier (e.g., "rust", "typescript").
+    pub language: String,
+}
+
 /// Filter criteria for node queries.
 #[derive(Debug, Clone, Default)]
 pub struct NodeFilter {

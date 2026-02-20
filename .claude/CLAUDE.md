@@ -66,12 +66,11 @@ cargo audit              # Dependency audit
 - Minimize dependencies — each dependency must be justified
 - No `unsafe` without documented justification and review
 
-## Roadmap Priority (Post-M19)
+## Roadmap Priority (Post-M20)
 
 Next milestones in priority order:
 
-1. **Incremental Analysis** — Diff changed files, update only affected subgraphs instead of full re-analysis
-2. **Analysis Depth** — Resolve non-self method calls (`x.foo()`), cross-crate calls
-3. **Plugin Ecosystem** — Manifest format (`svt-plugin.toml`), `svt plugin install|remove`, plugin author docs
-4. **Web UI Enhancements** — Error boundaries, arrow-key graph traversal, filtering sidebar
-5. **Additional Languages** — Java analyzer (tree-sitter-java), others as needed
+1. **Analysis Depth** — Resolve non-self method calls (`x.foo()`), cross-crate calls
+2. **Plugin Ecosystem** — Manifest format (`svt-plugin.toml`), `svt plugin install|remove`, plugin author docs
+3. **Web UI Enhancements** — Error boundaries, arrow-key graph traversal, filtering sidebar
+4. **Additional Languages** — Java analyzer (tree-sitter-java), others as needed
