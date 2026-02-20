@@ -103,8 +103,8 @@ fn parse_file(
     let source_bytes = source.as_bytes();
     let root = tree.root_node();
 
-    // The initial module context is just the crate name (top-level items belong to the crate).
     let module_context = vec![crate_name.to_string()];
+    let mut unresolved_method_calls: usize = 0;
 
     visit_children(
         root,
@@ -114,10 +114,21 @@ fn parse_file(
         items,
         relations,
         warnings,
+        &mut unresolved_method_calls,
     );
+
+    if unresolved_method_calls > 0 {
+        warnings.push(AnalysisWarning {
+            source_ref: file_path.display().to_string(),
+            message: format!(
+                "{unresolved_method_calls} method call(s) could not be resolved without type information"
+            ),
+        });
+    }
 }
 
 /// Visit all named children of a node, extracting structural items and relationships.
+#[allow(clippy::too_many_arguments)]
 fn visit_children(
     node: tree_sitter::Node<'_>,
     source: &[u8],
@@ -126,6 +137,7 @@ fn visit_children(
     items: &mut Vec<AnalysisItem>,
     relations: &mut Vec<AnalysisRelation>,
     warnings: &mut Vec<AnalysisWarning>,
+    unresolved_method_calls: &mut usize,
 ) {
     for i in 0..node.named_child_count() {
         if let Some(child) = node.named_child(i) {
@@ -137,12 +149,14 @@ fn visit_children(
                 items,
                 relations,
                 warnings,
+                unresolved_method_calls,
             );
         }
     }
 }
 
 /// Visit a single tree-sitter node and extract structural items and relationships.
+#[allow(clippy::too_many_arguments)]
 fn visit_node(
     node: tree_sitter::Node<'_>,
     source: &[u8],
@@ -151,6 +165,7 @@ fn visit_node(
     items: &mut Vec<AnalysisItem>,
     relations: &mut Vec<AnalysisRelation>,
     warnings: &mut Vec<AnalysisWarning>,
+    unresolved_method_calls: &mut usize,
 ) {
     match node.kind() {
         "mod_item" => {
@@ -162,6 +177,7 @@ fn visit_node(
                 items,
                 relations,
                 warnings,
+                unresolved_method_calls,
             );
         }
         "struct_item" => {
@@ -214,10 +230,9 @@ fn visit_node(
                 visit_call_expressions(
                     body,
                     source,
-                    file_path,
                     module_context,
                     relations,
-                    warnings,
+                    unresolved_method_calls,
                 );
             }
         }
@@ -230,6 +245,7 @@ fn visit_node(
                 items,
                 relations,
                 warnings,
+                unresolved_method_calls,
             );
         }
         "use_declaration" => {
@@ -246,6 +262,7 @@ fn visit_node(
                 items,
                 relations,
                 warnings,
+                unresolved_method_calls,
             );
         }
     }
@@ -324,6 +341,7 @@ fn visit_enum_variants(
 
 /// Handle a `mod_item` node. If it has a body (inline module), descend into it.
 /// Otherwise, it's a declaration-only module (`mod foo;`).
+#[allow(clippy::too_many_arguments)]
 fn visit_mod_item(
     node: tree_sitter::Node<'_>,
     source: &[u8],
@@ -332,6 +350,7 @@ fn visit_mod_item(
     items: &mut Vec<AnalysisItem>,
     relations: &mut Vec<AnalysisRelation>,
     warnings: &mut Vec<AnalysisWarning>,
+    unresolved_method_calls: &mut usize,
 ) {
     let Some(name) = item_name(node, source) else {
         return;
@@ -363,12 +382,14 @@ fn visit_mod_item(
             items,
             relations,
             warnings,
+            unresolved_method_calls,
         );
     }
 }
 
 /// Handle an `impl_item` node. Extract methods as functions scoped under the
 /// type being implemented, and emit `Implements` relations for trait impls.
+#[allow(clippy::too_many_arguments)]
 fn visit_impl_item(
     node: tree_sitter::Node<'_>,
     source: &[u8],
@@ -377,6 +398,7 @@ fn visit_impl_item(
     items: &mut Vec<AnalysisItem>,
     relations: &mut Vec<AnalysisRelation>,
     warnings: &mut Vec<AnalysisWarning>,
+    unresolved_method_calls: &mut usize,
 ) {
     // Check for `impl Trait for Type` — emit an Implements relation.
     let trait_node = node.child_by_field_name("trait");
@@ -411,6 +433,7 @@ fn visit_impl_item(
             items,
             relations,
             warnings,
+            unresolved_method_calls,
         );
     }
 }
@@ -460,14 +483,14 @@ fn visit_use_declaration(
 /// and emit `Calls` relations for syntactically resolvable calls.
 ///
 /// Method calls (field expressions like `x.foo()`) cannot be resolved
-/// by tree-sitter alone (no type information), so they emit a warning instead.
+/// by tree-sitter alone (no type information), so they are counted and
+/// reported as a single aggregated warning per file.
 fn visit_call_expressions(
     node: tree_sitter::Node<'_>,
     source: &[u8],
-    file_path: &Path,
     module_context: &[String],
     relations: &mut Vec<AnalysisRelation>,
-    warnings: &mut Vec<AnalysisWarning>,
+    unresolved_method_calls: &mut usize,
 ) {
     for i in 0..node.named_child_count() {
         let Some(child) = node.named_child(i) else {
@@ -477,7 +500,6 @@ fn visit_call_expressions(
         if child.kind() == "call_expression" {
             if let Some(function) = child.child_by_field_name("function") {
                 let source_qn = build_qualified_name(module_context);
-                let line = child.start_position().row + 1;
 
                 match function.kind() {
                     "identifier" | "scoped_identifier" => {
@@ -495,15 +517,7 @@ fn visit_call_expressions(
                     }
                     "field_expression" => {
                         // Method call (e.g., `x.foo()`) — cannot resolve the receiver type.
-                        if let Ok(callee_text) = function.utf8_text(source) {
-                            warnings.push(AnalysisWarning {
-                                source_ref: format!("{}:{line}", file_path.display()),
-                                message: format!(
-                                    "method call `{callee_text}(...)` cannot be resolved \
-                                     without type information"
-                                ),
-                            });
-                        }
+                        *unresolved_method_calls += 1;
                     }
                     _ => {
                         // Other call forms (closures, etc.) — skip silently.
@@ -516,10 +530,9 @@ fn visit_call_expressions(
         visit_call_expressions(
             child,
             source,
-            file_path,
             module_context,
             relations,
-            warnings,
+            unresolved_method_calls,
         );
     }
 }
@@ -1013,15 +1026,19 @@ mod tests {
             }
         "#,
         );
-        // Method calls can't be resolved by tree-sitter — should produce a warning.
         let method_warnings: Vec<_> = result
             .warnings
             .iter()
-            .filter(|w| w.message.contains("cannot be resolved"))
+            .filter(|w| w.message.contains("could not be resolved"))
             .collect();
         assert!(
             !method_warnings.is_empty(),
-            "method call should produce a warning about unresolvable receiver"
+            "method call should produce an aggregated warning"
+        );
+        assert_eq!(
+            method_warnings.len(),
+            1,
+            "should produce exactly one aggregated warning per file"
         );
     }
 

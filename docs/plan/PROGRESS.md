@@ -20,7 +20,7 @@
 | **14** | Web UI Polish | 2026-02-19 | 329 | Dark/light theme toggle, hash-based URL routing (`#v=1&node=id&layout=dagre`), localStorage persistence, keyboard navigation (Escape/f), loading spinner, empty state, `getDiff` API client + diff types |
 | **15** | Additional Language Analyzers (Go + Python) | 2026-02-19 | 359 | tree-sitter-go/python analyzers, Go module + Python package discovery, `go.mod`/`pyproject.toml`/`setup.py` support, 6-phase analysis pipeline, 14 new Go/Python analyzer tests, 7 new discovery tests |
 
-**Current state:** 340 Rust tests + 19 vitest tests = 359 total. All passing. clippy/fmt/audit clean. CI pipeline operational.
+**Current state:** 347 Rust tests + 19 vitest tests = 366 total. All passing. clippy/fmt/audit clean. CI pipeline operational.
 
 ## What's Working Now
 
@@ -45,14 +45,14 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 
 ## Known Gaps
 
-### Analyzer Wiring
-- `AnalyzerRegistry` exists (M10) but `analyze_project()` still hardcodes the Rust and TypeScript phases directly rather than dispatching through the registry. The `LanguageAnalyzer` trait needs `can_analyze()` and `discover()` methods before registry-based dispatch is viable.
+### Analyzer Wiring — RESOLVED
+- ~~`AnalyzerRegistry` exists (M10) but `analyze_project()` still hardcodes the Rust and TypeScript phases directly rather than dispatching through the registry.~~ Resolved by introducing `LanguageOrchestrator` trait with `OrchestratorRegistry`-based dispatch. `analyze_project()` now iterates over registered orchestrators with a uniform discover-analyse-postprocess pipeline. Four orchestrators implemented: Rust, TypeScript, Go, Python.
 
 ### Canonical Path Alignment — RESOLVED (M11)
 - ~~4 dog-food constraints were "not evaluable" in conformance mode.~~ Fixed by workspace-aware canonical path mapping (`svt-core` → `svt::core` → `/svt/core`) and enum variant extraction. All 12 constraints now pass.
 
-### Analysis Depth
-- The analyzer extracts crate/module/type/function structure but does not resolve cross-crate call graphs, method calls, or trait implementations. ~3,500 warnings are generated during dog-food analysis (mostly "method call resolution not yet supported"). This limits the accuracy of dependency-direction constraints.
+### Analysis Depth — PARTIALLY RESOLVED
+- The analyzer extracts crate/module/type/function structure but does not resolve cross-crate call graphs, method calls, or trait implementations. ~~~3,500 warnings are generated during dog-food analysis (mostly "method call resolution not yet supported").~~ Warnings are now aggregated to one summary per file (e.g., "42 method call(s) could not be resolved without type information"), reducing noise from ~3,500 individual warnings to ~30 file-level summaries. This limits the accuracy of dependency-direction constraints.
 
 ### Export Formats
 - Mermaid, JSON, and DOT are implemented. SVG/PNG rendering could be added via Graphviz CLI piping or embedded renderer (PRINCIPLES.md: Interoperability).
@@ -83,7 +83,7 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 - Binary target naming fix (always use package name, not target name)
 - **Result: 12 passed, 0 failed, 0 warned, 0 not evaluable**
 
-**Not yet done (deferred):** `AnalyzerRegistry`-based dispatch — `analyze_project()` still hardcodes Rust/TS phases. Registry wiring deferred until additional language analyzers (M15) make it necessary.
+**Not yet done (deferred):** ~~`AnalyzerRegistry`-based dispatch~~ — Resolved in post-M15 gap cleanup via `LanguageOrchestrator` trait and `OrchestratorRegistry`.
 
 ### Milestone 12: DOT Export — COMPLETE
 
@@ -142,7 +142,19 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 - 14 new analyzer unit tests (7 Go + 7 Python), 7 new discovery tests
 - CLI output updated to show Go module and Python package counts
 
-**Not yet done (deferred):** Registry-based dispatch — `analyze_project()` still hardcodes per-language phases. Java and other languages not yet supported.
+**Not yet done (deferred):** Java and other languages not yet supported.
+
+### Known Gaps Cleanup (Post-M15)
+
+**Goal:** Clean up three known gaps before proceeding to the next milestone.
+
+**Delivered:**
+- `LanguageOrchestrator` trait with `OrchestratorRegistry` — uniform discover-analyse-postprocess pipeline replacing hardcoded per-language phases in `analyze_project()`
+- Four orchestrators: `RustOrchestrator`, `TypeScriptOrchestrator`, `GoOrchestrator`, `PythonOrchestrator`
+- TypeScript orchestrator handles complex post-processing (item reparenting, import resolution) via `emit_structural_items()` and `post_process()` overrides
+- Rust orchestrator handles workspace root emission via `extra_items()` override
+- Method-call warning aggregation: one summary per file instead of ~3,500 individual warnings
+- Project root validation in `analyze_project()` for better error reporting
 
 ### Milestone 16: Dynamic Plugin Loading
 
