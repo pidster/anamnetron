@@ -338,8 +338,12 @@ fn run_analyze(store_path: &Path, args: &AnalyzeArgs) -> Result<()> {
         println!("    commit: {}", cr);
     }
     println!(
-        "    {} crates, {} TS packages, {} files analyzed",
-        summary.crates_analyzed, summary.ts_packages_analyzed, summary.files_analyzed
+        "    {} crates, {} TS packages, {} Go modules, {} Python packages, {} files analyzed",
+        summary.crates_analyzed,
+        summary.ts_packages_analyzed,
+        summary.go_packages_analyzed,
+        summary.python_packages_analyzed,
+        summary.files_analyzed
     );
     println!(
         "    {} nodes, {} edges",

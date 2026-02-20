@@ -141,6 +141,10 @@ pub struct AnalysisSummary {
     pub crates_analyzed: usize,
     /// Number of TypeScript packages analyzed.
     pub ts_packages_analyzed: usize,
+    /// Number of Go modules analyzed.
+    pub go_packages_analyzed: usize,
+    /// Number of Python packages analyzed.
+    pub python_packages_analyzed: usize,
     /// Number of source files parsed.
     pub files_analyzed: usize,
     /// Number of nodes created in the store.

@@ -52,9 +52,11 @@ fn dogfood_analyze_produces_meaningful_results() {
     );
 
     println!(
-        "Dog-food analysis: {} crates, {} TS packages, {} files, {} nodes, {} edges, {} warnings",
+        "Dog-food analysis: {} crates, {} TS packages, {} Go modules, {} Python packages, {} files, {} nodes, {} edges, {} warnings",
         summary.crates_analyzed,
         summary.ts_packages_analyzed,
+        summary.go_packages_analyzed,
+        summary.python_packages_analyzed,
         summary.files_analyzed,
         summary.nodes_created,
         summary.edges_created,

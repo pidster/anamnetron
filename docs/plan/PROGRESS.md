@@ -18,15 +18,16 @@
 | **12** | DOT Export | 2026-02-19 | 302 | `DotExporter` implementing `ExportFormat` trait, `subgraph cluster_*` containment, labelled edges, registered in `ExportRegistry`, `svt export --format dot`, snapshot test |
 | **13** | Snapshot Diffing + Git Integration | 2026-02-19 | 315 | Core diff engine (node/edge matching by canonical path), `svt diff --from V1 --to V2` (human + JSON output), `GET /api/diff?from=V1&to=V2` endpoint, git HEAD auto-detection in `svt analyze` |
 | **14** | Web UI Polish | 2026-02-19 | 329 | Dark/light theme toggle, hash-based URL routing (`#v=1&node=id&layout=dagre`), localStorage persistence, keyboard navigation (Escape/f), loading spinner, empty state, `getDiff` API client + diff types |
+| **15** | Additional Language Analyzers (Go + Python) | 2026-02-19 | 359 | tree-sitter-go/python analyzers, Go module + Python package discovery, `go.mod`/`pyproject.toml`/`setup.py` support, 6-phase analysis pipeline, 14 new Go/Python analyzer tests, 7 new discovery tests |
 
-**Current state:** 310 Rust tests + 19 vitest tests = 329 total. All passing. clippy/fmt/audit clean. CI pipeline operational.
+**Current state:** 340 Rust tests + 19 vitest tests = 359 total. All passing. clippy/fmt/audit clean. CI pipeline operational.
 
 ## What's Working Now
 
 ```
 svt import design/architecture.yaml     # Load a design model
 svt check                                # Conformance check (design-only)
-svt analyze .                            # Analyze Rust + TypeScript project with tree-sitter
+svt analyze .                            # Analyze Rust + TypeScript + Go + Python project
 svt check --analysis                     # Compare design vs analysis
 svt export --format mermaid              # Export as Mermaid flowchart
 svt export --format json                 # Export as interchange JSON
@@ -59,8 +60,8 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 ### Web UI — PARTIALLY RESOLVED (M14)
 - ~~No dark mode, no persistence of layout/filter state, no URL routing/permalinks.~~ Dark/light theme toggle, hash-based URL routing, localStorage persistence, and keyboard shortcuts added. Remaining: diff view overlay for comparing snapshots in the graph.
 
-### Additional Languages
-- Only Rust and TypeScript analyzers exist. Go, Python, and Java are mentioned as future goals (PRINCIPLES.md: Extensibility).
+### Additional Languages — PARTIALLY RESOLVED (M15)
+- ~~Only Rust and TypeScript analyzers exist.~~ Go and Python analyzers added in M15 with tree-sitter grammars. Java and other languages remain as future goals (PRINCIPLES.md: Extensibility).
 
 ### Git Integration — PARTIALLY RESOLVED (M13)
 - ~~`analyze_project()` accepts an optional `commit_ref` but there is no automatic git-aware snapshot creation or change detection.~~ `svt analyze` now auto-detects git HEAD when `--commit-ref` is not provided. Change detection between snapshots is available via `svt diff`. Remaining: web UI diff view overlay.
@@ -127,15 +128,21 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 
 **Not yet done (deferred):** Error boundary components with retry, diff view overlay in graph, arrow-key graph traversal.
 
-### Milestone 15: Additional Language Analyzers
+### Milestone 15: Additional Language Analyzers — COMPLETE
 
 **Goal:** Add Go and Python analyzers through the `AnalyzerRegistry`.
 
-**Scope:**
-- Go analyzer: tree-sitter-go, package/type/function extraction, `go.mod` discovery
-- Python analyzer: tree-sitter-python, package/module/class/function extraction, `pyproject.toml`/`setup.py` discovery
-- Register in `AnalyzerRegistry::with_defaults()`
-- Dog-food tests for each new analyzer on sample projects
+**Delivered:**
+- `GoAnalyzer` with tree-sitter-go: function, method (with receiver type), struct, interface, type alias, import extraction
+- `PythonAnalyzer` with tree-sitter-python: class, function, method, decorated definition, import/import-from extraction
+- Go module discovery via `go.mod` with package directory walking (excludes `vendor/`, `_test.go`)
+- Python package discovery via `pyproject.toml` [project] name and `setup.py` name= fallback (excludes venv, .venv, __pycache__)
+- Both registered in `AnalyzerRegistry::with_defaults()`
+- 6-phase analysis pipeline: Rust → TypeScript → Go → Python → Mapping → Insertion
+- 14 new analyzer unit tests (7 Go + 7 Python), 7 new discovery tests
+- CLI output updated to show Go module and Python package counts
+
+**Not yet done (deferred):** Registry-based dispatch — `analyze_project()` still hardcodes per-language phases. Java and other languages not yet supported.
 
 ### Milestone 16: Dynamic Plugin Loading
 
@@ -173,4 +180,5 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 | `2026-02-19-milestone-10-implementation.md` | M10 implementation plan (COMPLETE) |
 | `2026-02-19-milestone-13-implementation.md` | M13 implementation plan (COMPLETE) |
 | `2026-02-19-milestone-14-implementation.md` | M14 implementation plan (COMPLETE) |
+| `2026-02-20-milestone-15-implementation.md` | M15 implementation plan (COMPLETE) |
 | `2026-02-19-milestones-11-16-design.md` | M11–M16 design (roadmap for remaining work) |

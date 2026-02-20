@@ -17,7 +17,11 @@ use std::path::{Path, PathBuf};
 use svt_core::model::{NodeKind, SnapshotKind};
 use svt_core::store::GraphStore;
 
-use crate::discovery::{discover_project, discover_ts_packages};
+use crate::discovery::{
+    discover_go_packages, discover_project, discover_python_packages, discover_ts_packages,
+};
+use crate::languages::go::GoAnalyzer;
+use crate::languages::python::PythonAnalyzer;
 use crate::languages::rust::RustAnalyzer;
 use crate::languages::typescript::TypeScriptAnalyzer;
 use crate::languages::LanguageAnalyzer;
@@ -37,9 +41,10 @@ pub enum AnalyzerError {
 
 /// Analyze a project and populate an analysis snapshot in the store.
 ///
-/// Discovers Rust crates via `cargo metadata` and TypeScript packages via
-/// `package.json`, parses source files with tree-sitter, maps qualified names
-/// to canonical paths, and batch-inserts into the store.
+/// Discovers Rust crates via `cargo metadata`, TypeScript packages via
+/// `package.json`, Go modules via `go.mod`, and Python packages via
+/// `pyproject.toml`/`setup.py`. Parses source files with tree-sitter,
+/// maps qualified names to canonical paths, and batch-inserts into the store.
 ///
 /// Returns a summary of what was analyzed and any warnings encountered.
 pub fn analyze_project(
@@ -160,11 +165,63 @@ pub fn analyze_project(
         ts_packages_analyzed += 1;
     }
 
-    // Phase 3: Map to graph nodes and edges
+    // Phase 3: Go analysis
+    let go_packages = discover_go_packages(project_root).unwrap_or_default();
+    let go_analyzer = GoAnalyzer::new();
+    let mut go_packages_analyzed = 0;
+
+    for go_pkg in &go_packages {
+        // Emit module-level item
+        all_items.push(AnalysisItem {
+            qualified_name: go_pkg.name.clone(),
+            kind: NodeKind::Service,
+            sub_kind: "module".to_string(),
+            parent_qualified_name: None,
+            source_ref: go_pkg.root.join("go.mod").display().to_string(),
+            language: "go".to_string(),
+        });
+
+        let file_refs: Vec<&Path> = go_pkg.source_files.iter().map(|p| p.as_path()).collect();
+        files_analyzed += file_refs.len();
+
+        let parse_result = go_analyzer.analyze_crate(&go_pkg.name, &file_refs);
+        all_items.extend(parse_result.items);
+        all_relations.extend(parse_result.relations);
+        all_warnings.extend(parse_result.warnings);
+        go_packages_analyzed += 1;
+    }
+
+    // Phase 4: Python analysis
+    let python_packages = discover_python_packages(project_root).unwrap_or_default();
+    let python_analyzer = PythonAnalyzer::new();
+    let mut python_packages_analyzed = 0;
+
+    for py_pkg in &python_packages {
+        // Emit package-level item
+        all_items.push(AnalysisItem {
+            qualified_name: py_pkg.name.clone(),
+            kind: NodeKind::Service,
+            sub_kind: "package".to_string(),
+            parent_qualified_name: None,
+            source_ref: py_pkg.root.display().to_string(),
+            language: "python".to_string(),
+        });
+
+        let file_refs: Vec<&Path> = py_pkg.source_files.iter().map(|p| p.as_path()).collect();
+        files_analyzed += file_refs.len();
+
+        let parse_result = python_analyzer.analyze_crate(&py_pkg.name, &file_refs);
+        all_items.extend(parse_result.items);
+        all_relations.extend(parse_result.relations);
+        all_warnings.extend(parse_result.warnings);
+        python_packages_analyzed += 1;
+    }
+
+    // Phase 5: Map to graph nodes and edges
     let (nodes, edges, mapping_warnings) = map_to_graph(&all_items, &all_relations);
     all_warnings.extend(mapping_warnings);
 
-    // Phase 4: Create snapshot and insert
+    // Phase 6: Create snapshot and insert
     let version = store.create_snapshot(SnapshotKind::Analysis, commit_ref)?;
     store.add_nodes_batch(version, &nodes)?;
     store.add_edges_batch(version, &edges)?;
@@ -173,6 +230,8 @@ pub fn analyze_project(
         version,
         crates_analyzed: layout.crates.len(),
         ts_packages_analyzed,
+        go_packages_analyzed,
+        python_packages_analyzed,
         files_analyzed,
         nodes_created: nodes.len(),
         edges_created: edges.len(),
