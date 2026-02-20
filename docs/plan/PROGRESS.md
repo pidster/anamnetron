@@ -198,6 +198,20 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 
 **Not yet done (deferred):** Plugin manifest format (`svt-plugin.toml`), `svt plugin install|remove` commands, plugin sandboxing, `LanguageOrchestrator` support in plugin API (blocked by inward dependency rule — orchestrator lives in svt-analyzer).
 
+## Roadmap (Post-M17)
+
+Priority-ordered next milestones:
+
+| # | Milestone | Description | Key Challenge |
+|---|-----------|-------------|---------------|
+| **M18** | Plugin Analyzer Support | Expose `LanguageOrchestrator` in the plugin API so external plugins can contribute language analyzers | Inward dependency rule: `LanguageOrchestrator` lives in svt-analyzer, plugins depend on svt-core. Need to either extract an analyzer trait to svt-core or introduce a thin interface crate. |
+| **M19** | Store Persistence | On-disk CozoDB backend so analysis results survive across CLI sessions | CozoDB supports RocksDB-backed storage; need to add store path configuration, migration, and open/create lifecycle to `GraphStore` |
+| **M20** | Incremental Analysis | Diff changed files and update only affected subgraphs instead of full re-analysis | Requires file-level change detection (git diff or mtime), dependency graph for invalidation, partial store updates |
+| **M21** | Analysis Depth | Resolve non-self method calls (`x.foo()`), cross-crate dependency edges | Needs type inference or heuristic resolution; significantly harder than self-method resolution |
+| **M22** | Plugin Ecosystem | Plugin manifest (`svt-plugin.toml`), `svt plugin install\|remove`, plugin author documentation | Discovery conventions, version compatibility, documentation site |
+| **M23** | Web UI Enhancements | Error boundaries with retry, arrow-key graph traversal, filtering sidebar (by kind/metadata) | UX design, Cytoscape keyboard integration |
+| **M24** | Additional Languages | Java analyzer (tree-sitter-java), others as community demand dictates | tree-sitter-java grammar, Maven/Gradle project discovery |
+
 ## Plan Documents
 
 | Document | Content |

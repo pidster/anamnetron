@@ -65,3 +65,15 @@ cargo audit              # Dependency audit
 - Use `thiserror` for library error types, `anyhow` for application error types
 - Minimize dependencies — each dependency must be justified
 - No `unsafe` without documented justification and review
+
+## Roadmap Priority (Post-M17)
+
+Next milestones in priority order:
+
+1. **Plugin Analyzer Support** — Expose `LanguageOrchestrator` in the plugin API (currently blocked by inward dependency rule: orchestrator lives in svt-analyzer)
+2. **Store Persistence** — On-disk CozoDB so analysis results survive across sessions
+3. **Incremental Analysis** — Diff changed files, update only affected subgraphs instead of full re-analysis
+4. **Analysis Depth** — Resolve non-self method calls (`x.foo()`), cross-crate calls
+5. **Plugin Ecosystem** — Manifest format (`svt-plugin.toml`), `svt plugin install|remove`, plugin author docs
+6. **Web UI Enhancements** — Error boundaries, arrow-key graph traversal, filtering sidebar
+7. **Additional Languages** — Java analyzer (tree-sitter-java), others as needed
