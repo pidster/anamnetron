@@ -118,6 +118,12 @@ macro_rules! declare_plugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::conformance::{
+        ConstraintEvaluator, ConstraintRegistry, ConstraintResult, ConstraintStatus,
+    };
+    use crate::export::{ExportFormat, ExportRegistry};
+    use crate::model::{Constraint, Severity, Version};
+    use crate::store::{GraphStore, Result as StoreResult};
 
     /// A mock plugin for testing the SvtPlugin trait.
     struct MockPlugin;
@@ -160,6 +166,111 @@ mod tests {
     #[test]
     fn api_version_constant_is_one() {
         assert_eq!(SVT_PLUGIN_API_VERSION, 1);
+    }
+
+    /// A mock constraint evaluator that always passes.
+    #[derive(Debug)]
+    struct MockEvaluator;
+
+    impl ConstraintEvaluator for MockEvaluator {
+        fn kind(&self) -> &str {
+            "mock_constraint"
+        }
+
+        fn evaluate(
+            &self,
+            _store: &dyn GraphStore,
+            constraint: &Constraint,
+            _version: Version,
+        ) -> StoreResult<ConstraintResult> {
+            Ok(ConstraintResult {
+                constraint_name: constraint.name.clone(),
+                constraint_kind: "mock_constraint".to_string(),
+                status: ConstraintStatus::Pass,
+                severity: Severity::Info,
+                message: "Mock always passes".to_string(),
+                violations: vec![],
+            })
+        }
+    }
+
+    /// A mock export format for testing.
+    #[derive(Debug)]
+    struct MockFormat;
+
+    impl ExportFormat for MockFormat {
+        fn name(&self) -> &str {
+            "mock"
+        }
+
+        fn export(&self, _store: &dyn GraphStore, _version: Version) -> StoreResult<String> {
+            Ok("mock export output".to_string())
+        }
+    }
+
+    /// A plugin that provides real contributions (constraint evaluator + export format).
+    struct ContributingPlugin;
+
+    impl SvtPlugin for ContributingPlugin {
+        fn name(&self) -> &str {
+            "contributing-plugin"
+        }
+
+        fn version(&self) -> &str {
+            "0.2.0"
+        }
+
+        fn api_version(&self) -> u32 {
+            SVT_PLUGIN_API_VERSION
+        }
+
+        fn constraint_evaluators(&self) -> Vec<Box<dyn ConstraintEvaluator>> {
+            vec![Box::new(MockEvaluator)]
+        }
+
+        fn export_formats(&self) -> Vec<Box<dyn ExportFormat>> {
+            vec![Box::new(MockFormat)]
+        }
+    }
+
+    #[test]
+    fn contributing_plugin_provides_evaluator() {
+        let plugin = ContributingPlugin;
+        let evaluators = plugin.constraint_evaluators();
+        assert_eq!(evaluators.len(), 1, "should provide exactly one evaluator");
+        assert_eq!(evaluators[0].kind(), "mock_constraint");
+    }
+
+    #[test]
+    fn contributing_plugin_provides_format() {
+        let plugin = ContributingPlugin;
+        let formats = plugin.export_formats();
+        assert_eq!(formats.len(), 1, "should provide exactly one format");
+        assert_eq!(formats[0].name(), "mock");
+    }
+
+    #[test]
+    fn plugin_contributions_register_into_registries() {
+        let plugin = ContributingPlugin;
+
+        let mut constraints = ConstraintRegistry::new();
+        let mut exports = ExportRegistry::new();
+
+        for evaluator in plugin.constraint_evaluators() {
+            constraints.register(evaluator);
+        }
+        for format in plugin.export_formats() {
+            exports.register(format);
+        }
+
+        assert!(
+            constraints.get("mock_constraint").is_some(),
+            "mock_constraint should be registered in the constraint registry"
+        );
+        assert!(
+            exports.get("mock").is_some(),
+            "mock format should be registered in the export registry"
+        );
     }
 
     #[test]
