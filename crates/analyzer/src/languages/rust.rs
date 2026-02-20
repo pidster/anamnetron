@@ -221,15 +221,32 @@ fn visit_node(
             );
         }
         "function_item" => {
-            extract_named_item(
-                node,
-                source,
-                file_path,
-                module_context,
-                NodeKind::Unit,
-                "function",
-                items,
-            );
+            if let Some(type_qn) = impl_type {
+                // Method inside an impl block — parent under the type.
+                if let Some(name) = item_name(node, source) {
+                    let qualified_name = format!("{type_qn}::{name}");
+                    let line = node.start_position().row + 1;
+                    let source_ref = format!("{}:{line}", file_path.display());
+                    items.push(AnalysisItem {
+                        qualified_name,
+                        kind: NodeKind::Unit,
+                        sub_kind: "function".to_string(),
+                        parent_qualified_name: Some(type_qn.to_string()),
+                        source_ref,
+                        language: "rust".to_string(),
+                    });
+                }
+            } else {
+                extract_named_item(
+                    node,
+                    source,
+                    file_path,
+                    module_context,
+                    NodeKind::Unit,
+                    "function",
+                    items,
+                );
+            }
             // Descend into the function body to find call expressions.
             if let Some(body) = node.child_by_field_name("body") {
                 visit_call_expressions(
@@ -870,9 +887,40 @@ mod tests {
             .filter(|i| i.sub_kind == "function")
             .collect();
         assert!(
-            methods.iter().any(|m| m.qualified_name == "my_crate::bar"),
-            "should extract impl method, got: {:?}",
             methods
+                .iter()
+                .any(|m| m.qualified_name == "my_crate::Foo::bar"),
+            "should extract impl method scoped under type, got: {:?}",
+            methods
+        );
+    }
+
+    #[test]
+    fn impl_method_parented_under_type() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub struct Foo;
+            impl Foo {
+                pub fn bar(&self) {}
+                pub fn baz(&self) {}
+            }
+        "#,
+        );
+        let bar = result
+            .items
+            .iter()
+            .find(|i| i.sub_kind == "function" && i.qualified_name.ends_with("bar"));
+        assert!(bar.is_some(), "should find method bar");
+        let bar = bar.unwrap();
+        assert_eq!(
+            bar.qualified_name, "my_crate::Foo::bar",
+            "method should be scoped under its type"
+        );
+        assert_eq!(
+            bar.parent_qualified_name,
+            Some("my_crate::Foo".to_string()),
+            "method parent should be the impl type"
         );
     }
 
