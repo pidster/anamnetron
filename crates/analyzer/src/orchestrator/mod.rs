@@ -105,7 +105,7 @@ impl OrchestratorRegistry {
         registry.register(Box::new(rust::RustOrchestrator::new()));
         registry.register(Box::new(typescript::TypeScriptOrchestrator::new()));
         registry.register(Box::new(go::orchestrator()));
-        registry.register(Box::new(python::PythonOrchestrator::new()));
+        registry.register(Box::new(python::orchestrator()));
         registry
     }
 
