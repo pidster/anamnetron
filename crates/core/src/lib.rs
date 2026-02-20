@@ -34,6 +34,10 @@ pub mod diff;
 #[cfg(feature = "store")]
 pub mod export;
 
+/// Plugin API: trait, error types, and the `declare_plugin!` macro.
+#[cfg(feature = "store")]
+pub mod plugin;
+
 /// Conformance and validation rules.
 #[cfg(feature = "store")]
 pub mod validation;
