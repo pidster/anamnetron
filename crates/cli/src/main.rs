@@ -2,6 +2,9 @@
 
 #![warn(missing_docs)]
 
+#[allow(dead_code)] // Wired up in Task 3.
+pub(crate) mod plugin;
+
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
