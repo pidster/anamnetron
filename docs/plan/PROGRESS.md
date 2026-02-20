@@ -20,8 +20,9 @@
 | **14** | Web UI Polish | 2026-02-19 | 329 | Dark/light theme toggle, hash-based URL routing (`#v=1&node=id&layout=dagre`), localStorage persistence, keyboard navigation (Escape/f), loading spinner, empty state, `getDiff` API client + diff types |
 | **15** | Additional Language Analyzers (Go + Python) | 2026-02-19 | 359 | tree-sitter-go/python analyzers, Go module + Python package discovery, `go.mod`/`pyproject.toml`/`setup.py` support, 6-phase analysis pipeline, 14 new Go/Python analyzer tests, 7 new discovery tests |
 | **16** | Web UI Diff View + SVG/PNG Export | 2026-02-20 | 371 | Diff overlay on Cytoscape graph (added/removed/changed CSS classes), compare-to dropdown, diff summary banner, URL hash diff param; `SvgExporter`/`PngExporter` via Graphviz CLI piping, PNG binary handling in CLI |
+| **17** | Dynamic Plugin Loading | 2026-02-20 | 388 | `SvtPlugin` trait + `declare_plugin!` macro in svt-core, `PluginLoader` with `libloading` in svt-cli, `--plugin` flag + `svt plugin list` command, plugin contributions wired into check/export, 3-tier discovery (CLI/project/user) |
 
-**Current state:** 352 Rust tests + 22 vitest tests = 374 total. All passing. clippy/fmt/audit clean. CI pipeline operational.
+**Current state:** 366 Rust tests + 22 vitest tests = 388 total. All passing. clippy/fmt/audit clean. CI pipeline operational.
 
 ## What's Working Now
 
@@ -38,6 +39,8 @@ svt export --format png -o arch.png      # Export as PNG (requires Graphviz)
 svt export --format mermaid -o arch.mmd  # Export to file
 svt diff --from 1 --to 2                 # Compare two snapshots (human output)
 svt diff --from 1 --to 2 --format json   # Compare two snapshots (JSON output)
+svt plugin list                          # List loaded plugins and their contributions
+svt --plugin path/to/lib.dylib check     # Load a plugin and run conformance checks
 svt-server --design design/architecture.yaml --project .
                                          # Serve API + web UI at http://localhost:3000
 ```
@@ -69,8 +72,8 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 ### Git Integration — RESOLVED (M13 + M16)
 - ~~`analyze_project()` accepts an optional `commit_ref` but there is no automatic git-aware snapshot creation or change detection.~~ `svt analyze` now auto-detects git HEAD when `--commit-ref` is not provided. Change detection between snapshots is available via `svt diff`. Web UI diff view overlay added in M16.
 
-### Dynamic Plugin Loading
-- Plugin registries exist with `.register()` API but all plugins are compiled in. No external plugin discovery, no dynamic loading, no plugin manifest format.
+### Dynamic Plugin Loading — RESOLVED (M17)
+- ~~Plugin registries exist with `.register()` API but all plugins are compiled in. No external plugin discovery, no dynamic loading, no plugin manifest format.~~ Resolved: `SvtPlugin` trait + `declare_plugin!` macro, `PluginLoader` with `libloading`, `--plugin` flag, `svt plugin list`, 3-tier discovery (CLI/project-local/user-global). Plugin manifest format (`svt-plugin.toml`) and install/remove commands remain as future work.
 
 ## Suggested Next Milestones
 
@@ -175,16 +178,25 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 - 2 new Rust export tests + 3 new vitest router tests
 - **Result: 349 Rust tests + 22 vitest tests = 371 total**
 
-### Milestone 17: Dynamic Plugin Loading
+### Milestone 17: Dynamic Plugin Loading — COMPLETE
 
 **Goal:** Support external plugins loaded at runtime from the filesystem.
 
-**Scope:**
-- Plugin manifest format (`svt-plugin.toml` or similar)
-- Filesystem discovery conventions (`~/.svt/plugins/`, project-local `.svt/plugins/`)
-- Dynamic loading via `libloading` for Rust dylib plugins
-- CLI `svt plugin list|install|remove` commands
-- Security considerations: plugin sandboxing, version compatibility
+**Delivered:**
+- `SvtPlugin` trait in svt-core: `name()`, `version()`, `api_version()`, `constraint_evaluators()`, `export_formats()`
+- `SVT_PLUGIN_API_VERSION` constant (v1) for host/plugin compatibility checking
+- `declare_plugin!` macro generating `extern "C" fn svt_plugin_create()` entry point
+- `PluginError` enum (`LoadFailed`, `SymbolNotFound`, `ApiVersionMismatch`) with `thiserror`
+- `PluginLoader` in svt-cli using `libloading` for dynamic loading (WASM-safe: `libloading` not in svt-core)
+- Null-pointer defensive check before `Box::from_raw` in plugin entry point
+- 3-tier plugin discovery: `--plugin` CLI flag, `.svt/plugins/`, `~/.svt/plugins/`
+- `svt plugin list` subcommand showing loaded plugins and their contributions
+- Plugin contributions wired into `svt check` and `svt export` via `register_all()`
+- Load failures are non-fatal warnings (stderr), never abort execution
+- 15 plugin unit tests (7 in svt-core, 8 in svt-cli) + 2 CLI integration tests
+- **Result: 366 Rust tests + 22 vitest tests = 388 total**
+
+**Not yet done (deferred):** Plugin manifest format (`svt-plugin.toml`), `svt plugin install|remove` commands, plugin sandboxing, `LanguageOrchestrator` support in plugin API (blocked by inward dependency rule — orchestrator lives in svt-analyzer).
 
 ## Plan Documents
 
@@ -217,3 +229,5 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 | `2026-02-19-milestones-11-16-design.md` | M11–M16 design (roadmap for remaining work) |
 | `2026-02-20-analysis-depth-design.md` | Analysis depth: Rust self.method() resolution design |
 | `2026-02-20-analysis-depth-implementation.md` | Analysis depth: Rust self.method() resolution implementation plan |
+| `2026-02-20-dynamic-plugin-loading-design.md` | M17 design (dynamic plugin loading) |
+| `2026-02-20-dynamic-plugin-loading-implementation.md` | M17 implementation plan (COMPLETE) |
