@@ -5,6 +5,7 @@
 
 use std::path::Path;
 
+use svt_core::analysis::{LanguageDescriptor, LanguageParser as CoreLanguageParser};
 use svt_core::model::{EdgeKind, NodeKind};
 
 use crate::types::{AnalysisItem, AnalysisRelation, AnalysisWarning};
@@ -28,6 +29,40 @@ impl PythonAnalyzer {
 impl Default for PythonAnalyzer {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl PythonAnalyzer {
+    /// Language descriptor for Python packages.
+    #[must_use]
+    pub fn descriptor() -> LanguageDescriptor {
+        LanguageDescriptor {
+            language_id: "python".to_string(),
+            manifest_files: vec!["pyproject.toml".to_string(), "setup.py".to_string()],
+            source_extensions: vec![".py".to_string()],
+            skip_directories: vec![
+                "venv".to_string(),
+                ".venv".to_string(),
+                "__pycache__".to_string(),
+                "node_modules".to_string(),
+                "target".to_string(),
+                ".git".to_string(),
+            ],
+            top_level_kind: NodeKind::Service,
+            top_level_sub_kind: "package".to_string(),
+        }
+    }
+
+    /// Create a boxed language parser for Python.
+    #[must_use]
+    pub fn parser() -> Box<dyn CoreLanguageParser> {
+        Box::new(PythonAnalyzer::new())
+    }
+}
+
+impl CoreLanguageParser for PythonAnalyzer {
+    fn parse(&self, unit_name: &str, files: &[&Path]) -> ParseResult {
+        self.analyze_crate(unit_name, files)
     }
 }
 

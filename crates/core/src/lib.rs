@@ -14,6 +14,9 @@ pub mod interchange;
 /// Graph data model and schema definitions.
 pub mod model;
 
+/// Analysis pipeline types: items, relations, warnings, parse results.
+pub mod analysis;
+
 /// CozoDB graph store operations.
 #[cfg(feature = "store")]
 pub mod store;

@@ -7,6 +7,8 @@
 
 use std::path::Path;
 
+use svt_analyzer::orchestrator::descriptor::DescriptorOrchestrator;
+use svt_analyzer::orchestrator::OrchestratorRegistry;
 use svt_core::conformance::ConstraintRegistry;
 use svt_core::export::ExportRegistry;
 use svt_core::plugin::{PluginError, SvtPlugin, SVT_PLUGIN_API_VERSION};
@@ -159,6 +161,18 @@ impl PluginLoader {
         for plugin in &self.plugins {
             for format in plugin.export_formats() {
                 exports.register(format);
+            }
+        }
+    }
+
+    /// Register all loaded plugins' language parsers into the given orchestrator registry.
+    ///
+    /// Each plugin's [`SvtPlugin::language_parsers`] returns `(LanguageDescriptor, Box<dyn LanguageParser>)`
+    /// pairs. Each pair is wrapped in a [`DescriptorOrchestrator`] and registered.
+    pub fn register_language_parsers(&self, registry: &mut OrchestratorRegistry) {
+        for plugin in &self.plugins {
+            for (descriptor, parser) in plugin.language_parsers() {
+                registry.register(Box::new(DescriptorOrchestrator::new(descriptor, parser)));
             }
         }
     }

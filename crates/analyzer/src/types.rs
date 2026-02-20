@@ -2,8 +2,6 @@
 
 use std::path::PathBuf;
 
-use svt_core::model::{EdgeKind, NodeKind};
-
 /// Type of crate (library or binary).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CrateType {
@@ -95,42 +93,9 @@ pub struct PythonPackageInfo {
     pub source_files: Vec<PathBuf>,
 }
 
-/// A code element extracted by tree-sitter (before canonical path mapping).
-#[derive(Debug, Clone)]
-pub struct AnalysisItem {
-    /// Language-specific qualified name (e.g., "svt_core::model::Node").
-    pub qualified_name: String,
-    /// Abstraction level.
-    pub kind: NodeKind,
-    /// Language-specific type (e.g., "crate", "module", "struct", "function").
-    pub sub_kind: String,
-    /// Qualified name of the containment parent, if any.
-    pub parent_qualified_name: Option<String>,
-    /// Source file and line reference (e.g., "crates/core/src/model/mod.rs:42").
-    pub source_ref: String,
-    /// Source language.
-    pub language: String,
-}
-
-/// A relationship between code elements (before canonical path mapping).
-#[derive(Debug, Clone)]
-pub struct AnalysisRelation {
-    /// Qualified name of the source element.
-    pub source_qualified_name: String,
-    /// Qualified name of the target element.
-    pub target_qualified_name: String,
-    /// Relationship type.
-    pub kind: EdgeKind,
-}
-
-/// A warning produced during analysis (non-fatal).
-#[derive(Debug, Clone)]
-pub struct AnalysisWarning {
-    /// Source file and line where the issue was found.
-    pub source_ref: String,
-    /// Human-readable warning message.
-    pub message: String,
-}
+// Re-export analysis pipeline types from svt-core.
+// These were moved to core so plugin authors can use them.
+pub use svt_core::analysis::{AnalysisItem, AnalysisRelation, AnalysisWarning};
 
 /// Summary of an analysis run.
 #[derive(Debug, Clone)]

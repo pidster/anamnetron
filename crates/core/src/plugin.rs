@@ -4,6 +4,7 @@
 //! The [`declare_plugin!`] macro generates the required `extern "C"` entry point
 //! for dynamic loading.
 
+use crate::analysis::{LanguageDescriptor, LanguageParser};
 use crate::conformance::ConstraintEvaluator;
 use crate::export::ExportFormat;
 
@@ -43,8 +44,8 @@ pub enum PluginError {
 /// Trait implemented by svt plugins.
 ///
 /// A plugin provides metadata (name, version, API version) and may contribute
-/// additional [`ConstraintEvaluator`]s and [`ExportFormat`]s to the host
-/// application.
+/// additional [`ConstraintEvaluator`]s, [`ExportFormat`]s, and
+/// [`LanguageParser`]s to the host application.
 ///
 /// # Safety
 ///
@@ -72,6 +73,17 @@ pub trait SvtPlugin: Send + Sync {
     ///
     /// Returns an empty vec by default.
     fn export_formats(&self) -> Vec<Box<dyn ExportFormat>> {
+        Vec::new()
+    }
+
+    /// Language parsers contributed by this plugin.
+    ///
+    /// Each entry pairs a [`LanguageDescriptor`] (discovery configuration) with
+    /// a [`LanguageParser`] (source code parser). The host uses the descriptor
+    /// to find project units and the parser to extract structure.
+    ///
+    /// Returns an empty vec by default.
+    fn language_parsers(&self) -> Vec<(LanguageDescriptor, Box<dyn LanguageParser>)> {
         Vec::new()
     }
 }
@@ -161,6 +173,15 @@ mod tests {
         assert!(
             plugin.export_formats().is_empty(),
             "default export_formats() should return an empty vec"
+        );
+    }
+
+    #[test]
+    fn mock_plugin_default_language_parsers_is_empty() {
+        let plugin = MockPlugin;
+        assert!(
+            plugin.language_parsers().is_empty(),
+            "default language_parsers() should return an empty vec"
         );
     }
 

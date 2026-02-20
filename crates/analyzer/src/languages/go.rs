@@ -5,6 +5,7 @@
 
 use std::path::Path;
 
+use svt_core::analysis::{LanguageDescriptor, LanguageParser as CoreLanguageParser};
 use svt_core::model::{EdgeKind, NodeKind};
 
 use crate::types::{AnalysisItem, AnalysisRelation, AnalysisWarning};
@@ -28,6 +29,39 @@ impl GoAnalyzer {
 impl Default for GoAnalyzer {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl GoAnalyzer {
+    /// Language descriptor for Go modules.
+    #[must_use]
+    pub fn descriptor() -> LanguageDescriptor {
+        LanguageDescriptor {
+            language_id: "go".to_string(),
+            manifest_files: vec!["go.mod".to_string()],
+            source_extensions: vec![".go".to_string()],
+            skip_directories: vec![
+                "vendor".to_string(),
+                "node_modules".to_string(),
+                "target".to_string(),
+                ".git".to_string(),
+                "dist".to_string(),
+            ],
+            top_level_kind: NodeKind::Service,
+            top_level_sub_kind: "module".to_string(),
+        }
+    }
+
+    /// Create a boxed language parser for Go.
+    #[must_use]
+    pub fn parser() -> Box<dyn CoreLanguageParser> {
+        Box::new(GoAnalyzer::new())
+    }
+}
+
+impl CoreLanguageParser for GoAnalyzer {
+    fn parse(&self, unit_name: &str, files: &[&Path]) -> ParseResult {
+        self.analyze_crate(unit_name, files)
     }
 }
 
