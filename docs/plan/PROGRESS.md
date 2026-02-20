@@ -21,7 +21,7 @@
 | **15** | Additional Language Analyzers (Go + Python) | 2026-02-19 | 359 | tree-sitter-go/python analyzers, Go module + Python package discovery, `go.mod`/`pyproject.toml`/`setup.py` support, 6-phase analysis pipeline, 14 new Go/Python analyzer tests, 7 new discovery tests |
 | **16** | Web UI Diff View + SVG/PNG Export | 2026-02-20 | 371 | Diff overlay on Cytoscape graph (added/removed/changed CSS classes), compare-to dropdown, diff summary banner, URL hash diff param; `SvgExporter`/`PngExporter` via Graphviz CLI piping, PNG binary handling in CLI |
 
-**Current state:** 349 Rust tests + 22 vitest tests = 371 total. All passing. clippy/fmt/audit clean. CI pipeline operational.
+**Current state:** 352 Rust tests + 22 vitest tests = 374 total. All passing. clippy/fmt/audit clean. CI pipeline operational.
 
 ## What's Working Now
 
@@ -55,7 +55,7 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 - ~~4 dog-food constraints were "not evaluable" in conformance mode.~~ Fixed by workspace-aware canonical path mapping (`svt-core` → `svt::core` → `/svt/core`) and enum variant extraction. All 12 constraints now pass.
 
 ### Analysis Depth — PARTIALLY RESOLVED
-- The analyzer extracts crate/module/type/function structure but does not resolve cross-crate call graphs, method calls, or trait implementations. ~~~3,500 warnings are generated during dog-food analysis (mostly "method call resolution not yet supported").~~ Warnings are now aggregated to one summary per file (e.g., "42 method call(s) could not be resolved without type information"), reducing noise from ~3,500 individual warnings to ~30 file-level summaries. This limits the accuracy of dependency-direction constraints.
+- ~~The analyzer extracts crate/module/type/function structure but does not resolve cross-crate call graphs, method calls, or trait implementations.~~ `self.method()` calls inside `impl` blocks are now resolved by propagating the impl type through the tree-sitter walk (e.g., `self.baz()` inside `impl Foo` resolves to `Foo::baz`). Methods in impl blocks are parented under their type in the containment hierarchy. Non-self method calls (`x.foo()`) and cross-crate calls remain unresolved (~20 file-level warning summaries). This limits the accuracy of dependency-direction constraints for non-self calls.
 
 ### Export Formats — RESOLVED (M16)
 - ~~Mermaid, JSON, and DOT are implemented. SVG/PNG rendering could be added via Graphviz CLI piping or embedded renderer.~~ SVG and PNG export added via Graphviz CLI piping (`SvgExporter`, `PngExporter`). All five formats (Mermaid, JSON, DOT, SVG, PNG) available.
@@ -215,3 +215,5 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 | `2026-02-20-diff-view-svg-export-design.md` | M16 design (diff view + SVG/PNG export) |
 | `2026-02-20-diff-view-svg-export-implementation.md` | M16 implementation plan (COMPLETE) |
 | `2026-02-19-milestones-11-16-design.md` | M11–M16 design (roadmap for remaining work) |
+| `2026-02-20-analysis-depth-design.md` | Analysis depth: Rust self.method() resolution design |
+| `2026-02-20-analysis-depth-implementation.md` | Analysis depth: Rust self.method() resolution implementation plan |
