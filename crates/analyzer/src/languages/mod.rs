@@ -8,18 +8,8 @@ pub mod typescript;
 
 use std::path::Path;
 
-use crate::types::{AnalysisItem, AnalysisRelation, AnalysisWarning};
-
-/// Result of parsing a set of source files for a single crate.
-#[derive(Debug, Default)]
-pub struct ParseResult {
-    /// Extracted code elements.
-    pub items: Vec<AnalysisItem>,
-    /// Extracted relationships between elements.
-    pub relations: Vec<AnalysisRelation>,
-    /// Warnings from parsing (non-fatal).
-    pub warnings: Vec<AnalysisWarning>,
-}
+// Re-export ParseResult from svt-core.
+pub use svt_core::analysis::ParseResult;
 
 /// A language-specific source code analyzer.
 pub trait LanguageAnalyzer: Send + Sync {
