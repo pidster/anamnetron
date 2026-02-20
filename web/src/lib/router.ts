@@ -3,6 +3,7 @@ export interface HashState {
   version?: number;
   node?: string;
   layout?: string;
+  diff?: number;
 }
 
 /** Parse the URL hash into state. */
@@ -22,6 +23,9 @@ export function parseHash(hash: string): HashState {
   const layout = params.get("layout");
   if (layout) state.layout = layout;
 
+  const diff = params.get("diff");
+  if (diff) state.diff = parseInt(diff, 10);
+
   return state;
 }
 
@@ -31,6 +35,7 @@ export function buildHash(state: HashState): string {
   if (state.version !== undefined) params.set("v", String(state.version));
   if (state.node !== undefined) params.set("node", state.node);
   if (state.layout !== undefined) params.set("layout", state.layout);
+  if (state.diff !== undefined) params.set("diff", String(state.diff));
   const str = params.toString();
   return str ? `#${str}` : "";
 }

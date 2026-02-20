@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import * as api from "./lib/api";
-  import type { Version } from "./lib/types";
+  import type { Version, SnapshotDiff } from "./lib/types";
   import { graphStore } from "./stores/graph";
   import { selectionStore } from "./stores/selection";
   import { initWasm, getWasmStore } from "./lib/wasm";
@@ -21,6 +21,7 @@
   let conformanceDesign = $state<Version | null>(null);
   let conformanceAnalysis = $state<Version | null>(null);
   let wasmVersion = $state<Version | null>(null);
+  let compareVersion = $state<number | null>(null);
   let theme = $state<"dark" | "light">(
     (typeof localStorage !== "undefined" && localStorage.getItem("svt-theme") as "dark" | "light") || "dark"
   );
@@ -90,6 +91,9 @@
       if (state.layout === "dagre" || state.layout === "cose-bilkent") {
         layoutChoice = state.layout;
       }
+      if (state.diff && state.diff !== graphStore.diffVersion) {
+        compareVersion = state.diff;
+      }
       suppressHashWrite = false;
     }
     window.addEventListener("hashchange", onHashChange);
@@ -103,6 +107,8 @@
       graphStore.selectedVersion = version;
       graphStore.conformanceReport = null;
       showConformance = false;
+      compareVersion = null;
+      graphStore.clearDiff();
       selectionStore.clear();
       wasmVersion = null;
 
@@ -138,6 +144,7 @@
       version: graphStore.selectedVersion ?? undefined,
       node: selectionStore.selectedNodeId ?? undefined,
       layout: layoutChoice,
+      diff: graphStore.diffVersion ?? undefined,
     });
     if (hash !== window.location.hash) {
       history.replaceState(null, "", hash || window.location.pathname);
@@ -150,6 +157,15 @@
     const version = graphStore.selectedVersion;
     if (nodeId && version) {
       loadNodeDetails(version, nodeId);
+    }
+  });
+
+  // React to diff comparison changes
+  $effect(() => {
+    if (compareVersion && graphStore.selectedVersion) {
+      loadDiff(compareVersion);
+    } else if (!compareVersion) {
+      graphStore.clearDiff();
     }
   });
 
@@ -230,6 +246,25 @@
     showConformance = false;
   }
 
+  async function loadDiff(diffVersion: number) {
+    if (!graphStore.selectedVersion) return;
+    try {
+      graphStore.loading = true;
+      const diff = await api.getDiff(diffVersion, graphStore.selectedVersion);
+      graphStore.diffReport = diff;
+      graphStore.diffVersion = diffVersion;
+    } catch (e) {
+      graphStore.error = e instanceof Error ? e.message : "Diff failed";
+    } finally {
+      graphStore.loading = false;
+    }
+  }
+
+  function clearDiff() {
+    compareVersion = null;
+    graphStore.clearDiff();
+  }
+
   function handleKeydown(e: KeyboardEvent) {
     // Escape: close any open panel
     if (e.key === "Escape") {
@@ -269,6 +304,22 @@
         onselect={selectVersion}
       />
       <SearchBar onsearch={handleSearch} />
+      {#if graphStore.snapshots.length > 1 && graphStore.selectedVersion}
+        <select
+          bind:value={compareVersion}
+          aria-label="Compare to version"
+        >
+          <option value={null}>Compare to...</option>
+          {#each graphStore.snapshots.filter(s => s.version !== graphStore.selectedVersion) as s}
+            <option value={s.version}>
+              v{s.version} ({s.kind}{s.commit_ref ? ` - ${s.commit_ref}` : ""})
+            </option>
+          {/each}
+        </select>
+        {#if compareVersion}
+          <button onclick={clearDiff} class="clear-btn">Clear diff</button>
+        {/if}
+      {/if}
     </div>
     <div class="toolbar-right">
       <select bind:value={layoutChoice} onchange={() => graphView?.relayout(layoutChoice)}>
@@ -307,6 +358,17 @@
     </div>
   {/if}
 
+  {#if graphStore.diffReport}
+    <div class="diff-bar">
+      Diff: v{graphStore.diffReport.from_version} &rarr; v{graphStore.diffReport.to_version}
+      &nbsp;|&nbsp;
+      <span class="diff-added-count">+{graphStore.diffReport.summary.nodes_added}</span>
+      <span class="diff-removed-count">-{graphStore.diffReport.summary.nodes_removed}</span>
+      <span class="diff-changed-count">~{graphStore.diffReport.summary.nodes_changed}</span>
+      nodes
+    </div>
+  {/if}
+
   <div class="main-content">
     {#if graphStore.loading && !graphStore.graph}
       <div class="center-message">
@@ -318,6 +380,7 @@
         bind:this={graphView}
         graph={graphStore.graph}
         conformance={graphStore.conformanceReport}
+        diff={graphStore.diffReport}
         layout={layoutChoice}
         {theme}
       />
@@ -462,5 +525,28 @@
 
   @keyframes spin {
     to { transform: rotate(360deg); }
+  }
+
+  .diff-bar {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 0.3rem 1rem;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .diff-added-count { color: var(--pass); font-weight: bold; }
+  .diff-removed-count { color: var(--fail); font-weight: bold; }
+  .diff-changed-count { color: var(--warn); font-weight: bold; }
+
+  .clear-btn {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    font-size: 0.75rem;
+    padding: 0.15rem 0.4rem;
   }
 </style>

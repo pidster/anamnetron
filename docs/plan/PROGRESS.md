@@ -19,8 +19,9 @@
 | **13** | Snapshot Diffing + Git Integration | 2026-02-19 | 315 | Core diff engine (node/edge matching by canonical path), `svt diff --from V1 --to V2` (human + JSON output), `GET /api/diff?from=V1&to=V2` endpoint, git HEAD auto-detection in `svt analyze` |
 | **14** | Web UI Polish | 2026-02-19 | 329 | Dark/light theme toggle, hash-based URL routing (`#v=1&node=id&layout=dagre`), localStorage persistence, keyboard navigation (Escape/f), loading spinner, empty state, `getDiff` API client + diff types |
 | **15** | Additional Language Analyzers (Go + Python) | 2026-02-19 | 359 | tree-sitter-go/python analyzers, Go module + Python package discovery, `go.mod`/`pyproject.toml`/`setup.py` support, 6-phase analysis pipeline, 14 new Go/Python analyzer tests, 7 new discovery tests |
+| **16** | Web UI Diff View + SVG/PNG Export | 2026-02-20 | 371 | Diff overlay on Cytoscape graph (added/removed/changed CSS classes), compare-to dropdown, diff summary banner, URL hash diff param; `SvgExporter`/`PngExporter` via Graphviz CLI piping, PNG binary handling in CLI |
 
-**Current state:** 347 Rust tests + 19 vitest tests = 366 total. All passing. clippy/fmt/audit clean. CI pipeline operational.
+**Current state:** 349 Rust tests + 22 vitest tests = 371 total. All passing. clippy/fmt/audit clean. CI pipeline operational.
 
 ## What's Working Now
 
@@ -32,6 +33,8 @@ svt check --analysis                     # Compare design vs analysis
 svt export --format mermaid              # Export as Mermaid flowchart
 svt export --format json                 # Export as interchange JSON
 svt export --format dot                  # Export as DOT (Graphviz)
+svt export --format svg -o arch.svg      # Export as SVG (requires Graphviz)
+svt export --format png -o arch.png      # Export as PNG (requires Graphviz)
 svt export --format mermaid -o arch.mmd  # Export to file
 svt diff --from 1 --to 2                 # Compare two snapshots (human output)
 svt diff --from 1 --to 2 --format json   # Compare two snapshots (JSON output)
@@ -39,7 +42,7 @@ svt-server --design design/architecture.yaml --project .
                                          # Serve API + web UI at http://localhost:3000
 ```
 
-The web UI renders the architecture graph with compound nodes, click-to-inspect node details, search, layout switching (force-directed / hierarchical), and conformance overlay. With WASM loaded, node detail lookups and search run entirely in the browser — zero API round-trips after initial snapshot load.
+The web UI renders the architecture graph with compound nodes, click-to-inspect node details, search, layout switching (force-directed / hierarchical), conformance overlay, and diff view overlay for comparing snapshots. With WASM loaded, node detail lookups and search run entirely in the browser — zero API round-trips after initial snapshot load.
 
 All 12 constraints in `design/architecture.yaml` are fully evaluated in both design-only and full conformance mode — zero `NotEvaluable`. Dog-food conformance: 12 passed, 0 failed, 0 warned, 0 not evaluable. There are 10 unimplemented design nodes (expected — some are future work like `/svt/web`) and ~518 undocumented analysis nodes (expected — analysis is much more granular than the design model).
 
@@ -54,17 +57,17 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 ### Analysis Depth — PARTIALLY RESOLVED
 - The analyzer extracts crate/module/type/function structure but does not resolve cross-crate call graphs, method calls, or trait implementations. ~~~3,500 warnings are generated during dog-food analysis (mostly "method call resolution not yet supported").~~ Warnings are now aggregated to one summary per file (e.g., "42 method call(s) could not be resolved without type information"), reducing noise from ~3,500 individual warnings to ~30 file-level summaries. This limits the accuracy of dependency-direction constraints.
 
-### Export Formats
-- Mermaid, JSON, and DOT are implemented. SVG/PNG rendering could be added via Graphviz CLI piping or embedded renderer (PRINCIPLES.md: Interoperability).
+### Export Formats — RESOLVED (M16)
+- ~~Mermaid, JSON, and DOT are implemented. SVG/PNG rendering could be added via Graphviz CLI piping or embedded renderer.~~ SVG and PNG export added via Graphviz CLI piping (`SvgExporter`, `PngExporter`). All five formats (Mermaid, JSON, DOT, SVG, PNG) available.
 
-### Web UI — PARTIALLY RESOLVED (M14)
-- ~~No dark mode, no persistence of layout/filter state, no URL routing/permalinks.~~ Dark/light theme toggle, hash-based URL routing, localStorage persistence, and keyboard shortcuts added. Remaining: diff view overlay for comparing snapshots in the graph.
+### Web UI — RESOLVED (M16)
+- ~~No dark mode, no persistence of layout/filter state, no URL routing/permalinks.~~ Dark/light theme toggle, hash-based URL routing, localStorage persistence, keyboard shortcuts, and diff view overlay all implemented.
 
 ### Additional Languages — PARTIALLY RESOLVED (M15)
 - ~~Only Rust and TypeScript analyzers exist.~~ Go and Python analyzers added in M15 with tree-sitter grammars. Java and other languages remain as future goals (PRINCIPLES.md: Extensibility).
 
-### Git Integration — PARTIALLY RESOLVED (M13)
-- ~~`analyze_project()` accepts an optional `commit_ref` but there is no automatic git-aware snapshot creation or change detection.~~ `svt analyze` now auto-detects git HEAD when `--commit-ref` is not provided. Change detection between snapshots is available via `svt diff`. Remaining: web UI diff view overlay.
+### Git Integration — RESOLVED (M13 + M16)
+- ~~`analyze_project()` accepts an optional `commit_ref` but there is no automatic git-aware snapshot creation or change detection.~~ `svt analyze` now auto-detects git HEAD when `--commit-ref` is not provided. Change detection between snapshots is available via `svt diff`. Web UI diff view overlay added in M16.
 
 ### Dynamic Plugin Loading
 - Plugin registries exist with `.register()` API but all plugins are compiled in. No external plugin discovery, no dynamic loading, no plugin manifest format.
@@ -96,7 +99,7 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 - 3 unit tests + 1 snapshot test + 1 CLI integration test
 - `svt export --format dot` works out of the box
 
-**Not yet done (deferred):** SVG rendering could be added via Graphviz CLI piping or an embedded renderer.
+**Not yet done (deferred):** ~~SVG rendering could be added via Graphviz CLI piping or an embedded renderer.~~ Resolved in M16 with `SvgExporter` and `PngExporter`.
 
 ### Milestone 13: Snapshot Diffing + Git Integration — COMPLETE
 
@@ -110,7 +113,7 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 - Git HEAD auto-detection in `svt analyze` (shells out to `git rev-parse HEAD`)
 - 9 core diff tests + 2 CLI integration tests + 2 server tests
 
-**Not yet done (deferred):** Web UI diff view — highlight added/removed/changed nodes in graph overlay.
+**Not yet done (deferred):** ~~Web UI diff view — highlight added/removed/changed nodes in graph overlay.~~ Resolved in M16.
 
 ### Milestone 14: Web UI Polish — COMPLETE
 
@@ -126,7 +129,7 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 - `getDiff` API client function and `SnapshotDiff` TypeScript types
 - 13 new router tests + 1 new API test = 19 total vitest tests
 
-**Not yet done (deferred):** Error boundary components with retry, diff view overlay in graph, arrow-key graph traversal.
+**Not yet done (deferred):** Error boundary components with retry, ~~diff view overlay in graph~~ (resolved in M16), arrow-key graph traversal.
 
 ### Milestone 15: Additional Language Analyzers — COMPLETE
 
@@ -156,7 +159,23 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 - Method-call warning aggregation: one summary per file instead of ~3,500 individual warnings
 - Project root validation in `analyze_project()` for better error reporting
 
-### Milestone 16: Dynamic Plugin Loading
+### Milestone 16: Web UI Diff View + SVG/PNG Export — COMPLETE
+
+**Goal:** Add diff overlay visualization to the web UI and SVG/PNG export via Graphviz CLI piping.
+
+**Delivered:**
+- `SvgExporter` and `PngExporter` implementing `ExportFormat` trait, piping DOT through `dot -Tsvg`/`dot -Tpng`
+- PNG binary handling in CLI (`--output` required, writes raw bytes)
+- Graceful error when Graphviz `dot` is not installed
+- Diff overlay on Cytoscape graph: `.diff-added` (green dashed), `.diff-removed` (red dashed, faded), `.diff-changed` (amber dashed)
+- "Compare to..." dropdown in toolbar for selecting comparison snapshot
+- Diff summary banner showing added/removed/changed node counts
+- `diff` parameter in URL hash routing for permalinks (`#v=2&diff=1`)
+- Diff state in graph store (`diffReport`, `diffVersion`, `clearDiff()`)
+- 2 new Rust export tests + 3 new vitest router tests
+- **Result: 349 Rust tests + 22 vitest tests = 371 total**
+
+### Milestone 17: Dynamic Plugin Loading
 
 **Goal:** Support external plugins loaded at runtime from the filesystem.
 
@@ -193,4 +212,6 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 | `2026-02-19-milestone-13-implementation.md` | M13 implementation plan (COMPLETE) |
 | `2026-02-19-milestone-14-implementation.md` | M14 implementation plan (COMPLETE) |
 | `2026-02-20-milestone-15-implementation.md` | M15 implementation plan (COMPLETE) |
+| `2026-02-20-diff-view-svg-export-design.md` | M16 design (diff view + SVG/PNG export) |
+| `2026-02-20-diff-view-svg-export-implementation.md` | M16 implementation plan (COMPLETE) |
 | `2026-02-19-milestones-11-16-design.md` | M11–M16 design (roadmap for remaining work) |

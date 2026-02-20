@@ -31,7 +31,7 @@ enum Commands {
     Check(CheckArgs),
     /// Analyze a Rust project and create an analysis snapshot.
     Analyze(AnalyzeArgs),
-    /// Export graph as Mermaid, JSON, or DOT.
+    /// Export graph as Mermaid, JSON, DOT, SVG, or PNG.
     Export(ExportArgs),
     /// Compare two snapshot versions and show what changed.
     Diff(DiffArgs),
@@ -76,7 +76,7 @@ struct AnalyzeArgs {
 
 #[derive(clap::Args, Debug)]
 struct ExportArgs {
-    /// Output format: mermaid, json, or dot.
+    /// Output format: mermaid, json, dot, svg, or png.
     #[arg(long)]
     format: String,
 
@@ -377,6 +377,19 @@ fn run_export(store_path: &Path, args: &ExportArgs) -> Result<()> {
             .map_err(|e| anyhow::anyhow!("{}", e))?
             .ok_or_else(|| anyhow::anyhow!("No design versions found in store"))?,
     };
+
+    // PNG requires an output file (binary format)
+    if args.format == "png" {
+        let output_path = args.output.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("PNG is a binary format. Please specify --output FILE")
+        })?;
+        let png_bytes = svt_core::export::svg::to_png_bytes(&store, version)
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        std::fs::write(output_path, &png_bytes)
+            .with_context(|| format!("writing to {}", output_path.display()))?;
+        println!("Exported PNG to {}", output_path.display());
+        return Ok(());
+    }
 
     let exporter = registry.get(&args.format).ok_or_else(|| {
         let available: Vec<&str> = registry.names();

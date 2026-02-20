@@ -33,6 +33,10 @@ describe("parseHash", () => {
   it("decodes URI components", () => {
     expect(parseHash("#v=1&node=%2Fsvt%2Fcore")).toEqual({ version: 1, node: "/svt/core" });
   });
+
+  it("parses diff parameter", () => {
+    expect(parseHash("#v=2&diff=1")).toEqual({ version: 2, diff: 1 });
+  });
 });
 
 describe("buildHash", () => {
@@ -61,6 +65,17 @@ describe("buildHash", () => {
 
   it("round-trips through parseHash", () => {
     const state = { version: 3, node: "/svt/core", layout: "dagre" };
+    expect(parseHash(buildHash(state))).toEqual(state);
+  });
+
+  it("includes diff when present", () => {
+    const hash = buildHash({ version: 2, diff: 1 });
+    expect(hash).toContain("v=2");
+    expect(hash).toContain("diff=1");
+  });
+
+  it("round-trips diff parameter", () => {
+    const state = { version: 3, diff: 1, layout: "dagre" };
     expect(parseHash(buildHash(state))).toEqual(state);
   });
 });

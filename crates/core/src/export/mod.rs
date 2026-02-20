@@ -2,6 +2,7 @@
 
 pub mod dot;
 pub mod mermaid;
+pub mod svg;
 
 use crate::model::Version;
 use crate::store::{GraphStore, Result};
@@ -53,6 +54,37 @@ impl ExportFormat for DotExporter {
     }
 }
 
+/// SVG exporter via Graphviz `dot` command.
+#[derive(Debug)]
+pub struct SvgExporter;
+
+impl ExportFormat for SvgExporter {
+    fn name(&self) -> &str {
+        "svg"
+    }
+    fn export(&self, store: &dyn GraphStore, version: Version) -> Result<String> {
+        svg::to_svg(store, version)
+    }
+}
+
+/// PNG exporter via Graphviz `dot` command.
+///
+/// Note: PNG is binary. Use [`svg::to_png_bytes`] for raw binary output.
+/// The `export()` method returns an error directing to use `--output` flag.
+#[derive(Debug)]
+pub struct PngExporter;
+
+impl ExportFormat for PngExporter {
+    fn name(&self) -> &str {
+        "png"
+    }
+    fn export(&self, _store: &dyn GraphStore, _version: Version) -> Result<String> {
+        Err(crate::store::StoreError::Internal(
+            "PNG is a binary format. Use `svt export --format png --output FILE`".to_string(),
+        ))
+    }
+}
+
 /// Registry of export formats, keyed by format name.
 pub struct ExportRegistry {
     formats: std::collections::HashMap<String, Box<dyn ExportFormat>>,
@@ -72,6 +104,8 @@ impl ExportRegistry {
         registry.register(Box::new(MermaidExporter));
         registry.register(Box::new(JsonExporter));
         registry.register(Box::new(DotExporter));
+        registry.register(Box::new(SvgExporter));
+        registry.register(Box::new(PngExporter));
         registry
     }
 
@@ -109,6 +143,10 @@ mod tests {
         assert_eq!(json.name(), "json");
         let dot = DotExporter;
         assert_eq!(dot.name(), "dot");
+        let svg = SvgExporter;
+        assert_eq!(svg.name(), "svg");
+        let png = PngExporter;
+        assert_eq!(png.name(), "png");
     }
 
     #[test]
@@ -117,9 +155,29 @@ mod tests {
         assert!(registry.get("mermaid").is_some());
         assert!(registry.get("json").is_some());
         assert!(registry.get("dot").is_some());
+        assert!(registry.get("svg").is_some());
+        assert!(registry.get("png").is_some());
         assert!(registry.get("unknown").is_none());
         let mut names = registry.names();
         names.sort();
-        assert_eq!(names, vec!["dot", "json", "mermaid"]);
+        assert_eq!(names, vec!["dot", "json", "mermaid", "png", "svg"]);
+    }
+
+    #[test]
+    fn export_registry_with_defaults_includes_svg() {
+        let registry = ExportRegistry::with_defaults();
+        assert!(
+            registry.get("svg").is_some(),
+            "svg format should be registered"
+        );
+    }
+
+    #[test]
+    fn export_registry_with_defaults_includes_png() {
+        let registry = ExportRegistry::with_defaults();
+        assert!(
+            registry.get("png").is_some(),
+            "png format should be registered"
+        );
     }
 }

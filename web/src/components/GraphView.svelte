@@ -3,7 +3,7 @@
   import cytoscape from "cytoscape";
   import coseBilkent from "cytoscape-cose-bilkent";
   import dagre from "cytoscape-dagre";
-  import type { CytoscapeGraph, ConformanceReport } from "../lib/types";
+  import type { CytoscapeGraph, ConformanceReport, SnapshotDiff } from "../lib/types";
   import { selectionStore } from "../stores/selection";
 
   // Register layout extensions once
@@ -13,11 +13,12 @@
   interface Props {
     graph: CytoscapeGraph | null;
     conformance?: ConformanceReport | null;
+    diff?: SnapshotDiff | null;
     layout?: "cose-bilkent" | "dagre";
     theme?: "dark" | "light";
   }
 
-  let { graph, conformance = null, layout = "cose-bilkent", theme = "dark" }: Props = $props();
+  let { graph, conformance = null, diff = null, layout = "cose-bilkent", theme = "dark" }: Props = $props();
 
   let container: HTMLDivElement;
   let cy: cytoscape.Core | null = null;
@@ -114,6 +115,26 @@
         selector: ".conformance-undocumented",
         style: { "border-color": muted, "border-width": 3 },
       },
+      {
+        selector: ".diff-added",
+        style: { "border-color": pass, "border-width": 3, "border-style": "dashed" },
+      },
+      {
+        selector: ".diff-removed",
+        style: { "border-color": fail, "border-width": 3, "border-style": "dashed", opacity: 0.5 },
+      },
+      {
+        selector: ".diff-changed",
+        style: { "border-color": warn, "border-width": 3, "border-style": "dashed" },
+      },
+      {
+        selector: "edge.diff-added",
+        style: { "line-color": pass, "target-arrow-color": pass, "line-style": "dashed" },
+      },
+      {
+        selector: "edge.diff-removed",
+        style: { "line-color": fail, "target-arrow-color": fail, "line-style": "dashed", opacity: 0.5 },
+      },
     ];
   }
 
@@ -190,6 +211,42 @@
       .addClass("conformance-pass");
   }
 
+  function applyDiffOverlay(report: SnapshotDiff) {
+    if (!cy) return;
+
+    // Clear previous diff overlay
+    cy.elements().removeClass("diff-added diff-removed diff-changed");
+
+    // Apply node changes
+    for (const change of report.node_changes) {
+      const node = cy.nodes().filter((n) => n.data("canonical_path") === change.canonical_path);
+      if (node.length > 0) {
+        node.addClass(`diff-${change.change}`);
+      }
+    }
+
+    // Apply edge changes
+    for (const change of report.edge_changes) {
+      const edge = cy.edges().filter((e) => {
+        const srcNode = cy!.getElementById(e.data("source"));
+        const tgtNode = cy!.getElementById(e.data("target"));
+        return (
+          srcNode.data("canonical_path") === change.source_path &&
+          tgtNode.data("canonical_path") === change.target_path &&
+          e.data("kind") === change.edge_kind
+        );
+      });
+      if (edge.length > 0) {
+        edge.addClass(`diff-${change.change}`);
+      }
+    }
+  }
+
+  function clearDiffOverlay() {
+    if (!cy) return;
+    cy.elements().removeClass("diff-added diff-removed diff-changed");
+  }
+
   onMount(() => {
     return () => {
       if (cy) cy.destroy();
@@ -205,6 +262,14 @@
   $effect(() => {
     if (conformance && cy) {
       applyConformanceOverlay(conformance);
+    }
+  });
+
+  $effect(() => {
+    if (diff && cy) {
+      applyDiffOverlay(diff);
+    } else if (!diff && cy) {
+      clearDiffOverlay();
     }
   });
 
