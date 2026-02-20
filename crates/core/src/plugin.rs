@@ -88,6 +88,7 @@ pub trait SvtPlugin: Send + Sync {
 /// ```ignore
 /// use svt_core::plugin::{SvtPlugin, SVT_PLUGIN_API_VERSION};
 ///
+/// #[derive(Default)]
 /// struct MyPlugin;
 ///
 /// impl SvtPlugin for MyPlugin {

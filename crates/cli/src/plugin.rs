@@ -145,26 +145,46 @@ impl PluginLoader {
         errors
     }
 
-    /// Register all loaded plugins' contributions into the provided registries.
-    ///
-    /// Each plugin's [`SvtPlugin::constraint_evaluators`] are added to the
-    /// constraint registry, and [`SvtPlugin::export_formats`] are added to the
-    /// export registry.
-    pub fn register_all(&self, constraints: &mut ConstraintRegistry, exports: &mut ExportRegistry) {
+    /// Register all loaded plugins' constraint evaluators into the given registry.
+    pub fn register_constraints(&self, constraints: &mut ConstraintRegistry) {
         for plugin in &self.plugins {
             for evaluator in plugin.constraint_evaluators() {
                 constraints.register(evaluator);
             }
+        }
+    }
+
+    /// Register all loaded plugins' export formats into the given registry.
+    pub fn register_exports(&self, exports: &mut ExportRegistry) {
+        for plugin in &self.plugins {
             for format in plugin.export_formats() {
                 exports.register(format);
             }
         }
     }
 
+    /// Register all loaded plugins' contributions into the provided registries.
+    ///
+    /// Convenience method that calls [`register_constraints`](Self::register_constraints)
+    /// and [`register_exports`](Self::register_exports).
+    #[allow(dead_code)] // Public API — currently only used in tests
+    pub fn register_all(&self, constraints: &mut ConstraintRegistry, exports: &mut ExportRegistry) {
+        self.register_constraints(constraints);
+        self.register_exports(exports);
+    }
+
     /// Return a slice of all loaded plugin instances.
     #[must_use]
     pub fn plugins(&self) -> &[Box<dyn SvtPlugin>] {
         &self.plugins
+    }
+}
+
+impl std::fmt::Debug for PluginLoader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PluginLoader")
+            .field("plugin_count", &self.plugins.len())
+            .finish()
     }
 }
 

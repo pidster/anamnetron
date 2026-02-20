@@ -196,8 +196,7 @@ fn run_check(store_path: &Path, args: &CheckArgs, loader: &plugin::PluginLoader)
 
     let store = open_store(store_path)?;
     let mut registry = ConstraintRegistry::with_defaults();
-    let mut export_registry = svt_core::export::ExportRegistry::new();
-    loader.register_all(&mut registry, &mut export_registry);
+    loader.register_constraints(&mut registry);
 
     let design_version = match args.design {
         Some(v) => v,
@@ -393,8 +392,7 @@ fn run_export(store_path: &Path, args: &ExportArgs, loader: &plugin::PluginLoade
 
     let store = open_store(store_path)?;
     let mut registry = ExportRegistry::with_defaults();
-    let mut constraint_registry = svt_core::conformance::ConstraintRegistry::new();
-    loader.register_all(&mut constraint_registry, &mut registry);
+    loader.register_exports(&mut registry);
 
     let version = match args.version {
         Some(v) => v,
@@ -517,7 +515,7 @@ fn build_plugin_loader(plugin_paths: &[PathBuf]) -> plugin::PluginLoader {
     // 1. CLI-specified plugins
     for path in plugin_paths {
         if let Err(e) = loader.load(path) {
-            eprintln!("  WARN  failed to load plugin {}: {e}", path.display());
+            eprintln!("  WARN  {e}");
         }
     }
 
