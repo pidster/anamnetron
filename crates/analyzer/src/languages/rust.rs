@@ -115,6 +115,7 @@ fn parse_file(
         relations,
         warnings,
         &mut unresolved_method_calls,
+        None,
     );
 
     if unresolved_method_calls > 0 {
@@ -138,6 +139,7 @@ fn visit_children(
     relations: &mut Vec<AnalysisRelation>,
     warnings: &mut Vec<AnalysisWarning>,
     unresolved_method_calls: &mut usize,
+    impl_type: Option<&str>,
 ) {
     for i in 0..node.named_child_count() {
         if let Some(child) = node.named_child(i) {
@@ -150,6 +152,7 @@ fn visit_children(
                 relations,
                 warnings,
                 unresolved_method_calls,
+                impl_type,
             );
         }
     }
@@ -166,6 +169,7 @@ fn visit_node(
     relations: &mut Vec<AnalysisRelation>,
     warnings: &mut Vec<AnalysisWarning>,
     unresolved_method_calls: &mut usize,
+    impl_type: Option<&str>,
 ) {
     match node.kind() {
         "mod_item" => {
@@ -178,6 +182,7 @@ fn visit_node(
                 relations,
                 warnings,
                 unresolved_method_calls,
+                impl_type,
             );
         }
         "struct_item" => {
@@ -233,6 +238,7 @@ fn visit_node(
                     module_context,
                     relations,
                     unresolved_method_calls,
+                    impl_type,
                 );
             }
         }
@@ -246,6 +252,7 @@ fn visit_node(
                 relations,
                 warnings,
                 unresolved_method_calls,
+                impl_type,
             );
         }
         "use_declaration" => {
@@ -263,6 +270,7 @@ fn visit_node(
                 relations,
                 warnings,
                 unresolved_method_calls,
+                impl_type,
             );
         }
     }
@@ -351,6 +359,7 @@ fn visit_mod_item(
     relations: &mut Vec<AnalysisRelation>,
     warnings: &mut Vec<AnalysisWarning>,
     unresolved_method_calls: &mut usize,
+    _impl_type: Option<&str>,
 ) {
     let Some(name) = item_name(node, source) else {
         return;
@@ -383,6 +392,7 @@ fn visit_mod_item(
             relations,
             warnings,
             unresolved_method_calls,
+            None,
         );
     }
 }
@@ -399,6 +409,7 @@ fn visit_impl_item(
     relations: &mut Vec<AnalysisRelation>,
     warnings: &mut Vec<AnalysisWarning>,
     unresolved_method_calls: &mut usize,
+    _impl_type: Option<&str>,
 ) {
     // Check for `impl Trait for Type` — emit an Implements relation.
     let trait_node = node.child_by_field_name("trait");
@@ -434,6 +445,7 @@ fn visit_impl_item(
             relations,
             warnings,
             unresolved_method_calls,
+            None,
         );
     }
 }
@@ -491,6 +503,7 @@ fn visit_call_expressions(
     module_context: &[String],
     relations: &mut Vec<AnalysisRelation>,
     unresolved_method_calls: &mut usize,
+    _impl_type: Option<&str>,
 ) {
     for i in 0..node.named_child_count() {
         let Some(child) = node.named_child(i) else {
@@ -533,6 +546,7 @@ fn visit_call_expressions(
             module_context,
             relations,
             unresolved_method_calls,
+            _impl_type,
         );
     }
 }
