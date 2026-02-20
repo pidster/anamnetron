@@ -8,6 +8,7 @@ pub mod health;
 pub mod nodes;
 pub mod search;
 pub mod snapshots;
+pub mod store;
 
 use std::sync::Arc;
 
@@ -49,6 +50,7 @@ pub fn api_router(state: Arc<AppState>) -> Router {
         .route("/api/conformance", get(conformance::evaluate_conformance))
         .route("/api/diff", get(diff::get_diff))
         .route("/api/search", get(search::search_nodes))
+        .route("/api/store/info", get(store::store_info))
         .layer(CorsLayer::permissive())
         .with_state(state)
 }
