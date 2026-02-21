@@ -6,6 +6,7 @@
   import { selectionStore } from "./stores/selection.svelte";
   import { initWasm, getWasmStore } from "./lib/wasm";
   import { parseHash, buildHash } from "./lib/router";
+  import { getParent, getFirstChild, getNextSibling, getPrevSibling } from "./lib/traversal";
   import GraphView from "./components/GraphView.svelte";
   import NodeDetail from "./components/NodeDetail.svelte";
   import ConformanceReport from "./components/ConformanceReport.svelte";
@@ -281,6 +282,28 @@
 
     // Don't handle keys when focus is in an input/select
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+
+    // Arrow keys: navigate graph containment hierarchy
+    if (selectionStore.selectedNodeId && graphView) {
+      const index = graphView.getTraversalIndex();
+      if (index) {
+        let targetId: string | null = null;
+        if (e.key === "ArrowUp") {
+          targetId = getParent(index, selectionStore.selectedNodeId);
+        } else if (e.key === "ArrowDown") {
+          targetId = getFirstChild(index, selectionStore.selectedNodeId);
+        } else if (e.key === "ArrowLeft") {
+          targetId = getPrevSibling(index, selectionStore.selectedNodeId);
+        } else if (e.key === "ArrowRight") {
+          targetId = getNextSibling(index, selectionStore.selectedNodeId);
+        }
+        if (targetId) {
+          graphView.selectAndCenter(targetId);
+          e.preventDefault();
+          return;
+        }
+      }
+    }
 
     // f: fit all elements in viewport
     if (e.key === "f") {

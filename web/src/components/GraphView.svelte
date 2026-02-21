@@ -5,6 +5,7 @@
   import dagre from "cytoscape-dagre";
   import type { CytoscapeGraph, ConformanceReport, SnapshotDiff } from "../lib/types";
   import { selectionStore } from "../stores/selection.svelte";
+  import { buildTraversalIndex, type TraversalIndex } from "../lib/traversal";
 
   // Register layout extensions once
   cytoscape.use(coseBilkent);
@@ -22,6 +23,7 @@
 
   let container: HTMLDivElement;
   let cy: cytoscape.Core | null = null;
+  let traversalIndex: TraversalIndex | null = null;
 
   function getCssVar(name: string): string {
     return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -259,6 +261,15 @@
     }
   });
 
+  // Rebuild traversal index when graph changes
+  $effect(() => {
+    if (graph) {
+      traversalIndex = buildTraversalIndex(graph);
+    } else {
+      traversalIndex = null;
+    }
+  });
+
   $effect(() => {
     if (conformance && cy) {
       applyConformanceOverlay(conformance);
@@ -296,6 +307,11 @@
   export function fitAll() {
     if (!cy) return;
     cy.fit(undefined, 50);
+  }
+
+  /** Get the current traversal index for keyboard navigation. */
+  export function getTraversalIndex(): TraversalIndex | null {
+    return traversalIndex;
   }
 
   /** Re-run layout. */
