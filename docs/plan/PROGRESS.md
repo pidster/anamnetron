@@ -25,8 +25,9 @@
 | **19** | Store Persistence & Management | 2026-02-20 | 420 | Schema version + migration framework, `store_info()` with per-snapshot counts, `svt store info\|compact\|reset` CLI commands, `--store` flag for server persistent storage, `GET /api/store/info` endpoint |
 | **20** | Incremental Analysis | 2026-02-20 | 453 | BLAKE3 file hashing, `file_manifest` relation, `copy_nodes`/`copy_edges` store methods, unit-level skip with copy-then-upsert, `svt analyze --incremental`, proptest for manifest diffing |
 | **21** | Analysis Depth | 2026-02-21 | 470 | Crate-level `Depends` edges from Cargo metadata, `Self::method()` and `Type::method()` resolution, heuristic local variable type inference (`let x: Foo`, `Foo::new()`, struct expressions, function params), method call resolution statistics |
+| **22** | Plugin Ecosystem | 2026-02-21 | 506 | Plugin manifest format (`svt-plugin.toml`), `svt plugin install\|remove\|info` commands, manifest-aware plugin loading with source tracking, sidecar manifest discovery, plugin authoring documentation |
 
-**Current state:** 448 Rust tests + 22 vitest tests = 470 total. All passing. clippy/fmt/audit clean. CI pipeline operational.
+**Current state:** 484 Rust tests + 22 vitest tests = 506 total. All passing. clippy/fmt/audit clean. CI pipeline operational.
 
 ## What's Working Now
 
@@ -49,6 +50,10 @@ svt store compact                        # Remove old versions (keep latest desi
 svt store compact --keep 1 --keep 3      # Keep specific versions
 svt store reset --force                  # Delete and recreate the store
 svt plugin list                          # List loaded plugins and their contributions
+svt plugin install /path/to/plugin       # Install plugin from directory with svt-plugin.toml
+svt plugin install /path/to/plugin --global  # Install to user-global ~/.svt/plugins/
+svt plugin remove svt-plugin-foo         # Remove installed plugin
+svt plugin info /path/to/plugin          # Show plugin manifest metadata
 svt --plugin path/to/lib.dylib check     # Load a plugin and run conformance checks
 svt-server --design design/architecture.yaml --project .
                                          # Serve API + web UI at http://localhost:3000
@@ -84,8 +89,8 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 ### Git Integration — RESOLVED (M13 + M16)
 - ~~`analyze_project()` accepts an optional `commit_ref` but there is no automatic git-aware snapshot creation or change detection.~~ `svt analyze` now auto-detects git HEAD when `--commit-ref` is not provided. Change detection between snapshots is available via `svt diff`. Web UI diff view overlay added in M16.
 
-### Dynamic Plugin Loading — RESOLVED (M17)
-- ~~Plugin registries exist with `.register()` API but all plugins are compiled in. No external plugin discovery, no dynamic loading, no plugin manifest format.~~ Resolved: `SvtPlugin` trait + `declare_plugin!` macro, `PluginLoader` with `libloading`, `--plugin` flag, `svt plugin list`, 3-tier discovery (CLI/project-local/user-global). Plugin manifest format (`svt-plugin.toml`) and install/remove commands remain as future work.
+### Dynamic Plugin Loading — RESOLVED (M17 + M22)
+- ~~Plugin registries exist with `.register()` API but all plugins are compiled in. No external plugin discovery, no dynamic loading, no plugin manifest format.~~ Resolved: `SvtPlugin` trait + `declare_plugin!` macro, `PluginLoader` with `libloading`, `--plugin` flag, `svt plugin list`, 3-tier discovery (CLI/project-local/user-global). ~~Plugin manifest format (`svt-plugin.toml`) and install/remove commands remain as future work.~~ Resolved in M22: `svt-plugin.toml` manifest format, `svt plugin install|remove|info` commands, manifest-aware loading with source tracking, plugin authoring documentation.
 
 ### Plugin Analyzer Support — RESOLVED (M18)
 - ~~`LanguageOrchestrator` lives in svt-analyzer; plugins depend on svt-core only. External plugins cannot contribute language analyzers.~~ Resolved: `LanguageDescriptor` struct + `LanguageParser` trait in svt-core (WASM-compatible), `DescriptorOrchestrator` adapter in svt-analyzer, `SvtPlugin::language_parsers()` method. Go, Python, TypeScript refactored to descriptor+parser pattern. Plugin language contributions wired into CLI analysis pipeline via `analyze_project_with_registry()`.
@@ -217,7 +222,7 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 - 15 plugin unit tests (7 in svt-core, 8 in svt-cli) + 2 CLI integration tests
 - **Result: 366 Rust tests + 22 vitest tests = 388 total**
 
-**Not yet done (deferred):** Plugin manifest format (`svt-plugin.toml`), `svt plugin install|remove` commands, plugin sandboxing. ~~`LanguageOrchestrator` support in plugin API~~ — resolved in M18.
+**Not yet done (deferred):** ~~Plugin manifest format (`svt-plugin.toml`), `svt plugin install|remove` commands~~ — resolved in M22. Plugin sandboxing remains as future work. ~~`LanguageOrchestrator` support in plugin API~~ — resolved in M18.
 
 ### Milestone 18: Plugin Analyzer Support — COMPLETE
 
@@ -301,13 +306,34 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 - Import aliasing not handled (`use other::Foo; Foo::new()`)
 - Only workspace-internal Cargo dependencies (external crates not represented)
 
-## Roadmap (Post-M21)
+### Milestone 22: Plugin Ecosystem — COMPLETE
+
+**Goal:** Add plugin manifest format, install/remove/info CLI commands, manifest-aware loading, and plugin authoring documentation.
+
+**Delivered:**
+- `PluginManifest` struct with TOML parsing/validation/serialization (`svt-plugin.toml` format)
+- `PluginMetadata` (name, version, description, authors, license, api_version, library) and `PluginContributions` (constraint_kinds, export_formats, language_ids)
+- `ManifestError` enum with `thiserror` for structured error reporting
+- Platform-aware library filename derivation (`lib<name>.dylib`/`.so`/`.dll`)
+- `LoadedPlugin` wrapper pairing plugin instance with path, manifest, and `PluginSource` (CliFlag/ProjectLocal/UserGlobal)
+- Sidecar manifest discovery: `<stem>.svt-plugin.toml` then `svt-plugin.toml` in library directory
+- `svt plugin install <source> [--global] [--force]` — copies library + manifest to plugins directory
+- `svt plugin remove <name> [--global]` — removes plugin by name
+- `svt plugin info <path>` — displays manifest metadata with API compatibility check
+- Enhanced `svt plugin list` showing source label, manifest description, and contribution details
+- Comprehensive plugin authoring guide (`docs/plugin-authoring.md`): Quick Start, trait implementation, contributing types, manifest format, building/installing, testing, API reference, troubleshooting
+- 36 new tests (12 manifest, 4 plugin loader, 15 plugin commands, 5 CLI integration)
+- **Result: 484 Rust tests + 22 vitest tests = 506 total**
+- **Dog-food: conformance 12/12 passed**
+
+**Not yet done (deferred):** Remote plugin registry, plugin dependencies, plugin hot-reloading, plugin configuration/settings, plugin sandboxing.
+
+## Roadmap (Post-M22)
 
 Priority-ordered next milestones:
 
 | # | Milestone | Description | Key Challenge |
 |---|-----------|-------------|---------------|
-| **M22** | Plugin Ecosystem | Plugin manifest (`svt-plugin.toml`), `svt plugin install\|remove`, plugin author documentation | Discovery conventions, version compatibility, documentation site |
 | **M23** | Web UI Enhancements | Error boundaries with retry, arrow-key graph traversal, filtering sidebar (by kind/metadata) | UX design, Cytoscape keyboard integration |
 | **M24** | Additional Languages | Java analyzer (tree-sitter-java), others as community demand dictates | tree-sitter-java grammar, Maven/Gradle project discovery |
 
