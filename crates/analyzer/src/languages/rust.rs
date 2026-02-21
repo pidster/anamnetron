@@ -4,6 +4,7 @@
 //! and relationships (use dependencies, trait implementations, function calls)
 //! from Rust source files using tree-sitter parsing.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use svt_core::analysis::LanguageParser as CoreLanguageParser;
@@ -254,7 +255,17 @@ fn visit_node(
                     items,
                 );
             }
+            // Build local type map from function parameters and body.
+            let mut local_type_map = node
+                .child_by_field_name("parameters")
+                .map(|params| extract_param_types(params, source, module_context))
+                .unwrap_or_default();
+            if let Some(body) = node.child_by_field_name("body") {
+                local_type_map.extend(build_local_type_map(body, source, module_context));
+            }
+
             // Descend into the function body to find call expressions.
+            let mut resolved_method_calls: usize = 0;
             if let Some(body) = node.child_by_field_name("body") {
                 visit_call_expressions(
                     body,
@@ -262,7 +273,9 @@ fn visit_node(
                     module_context,
                     relations,
                     unresolved_method_calls,
+                    &mut resolved_method_calls,
                     impl_type,
+                    &local_type_map,
                 );
             }
         }
@@ -522,6 +535,192 @@ fn visit_use_declaration(
     }
 }
 
+/// Build a map of local variable names to inferred type qualified names.
+///
+/// Walks `let_declaration` nodes in a function body and extracts type
+/// information from three sources:
+/// - **Explicit type annotation**: `let x: Foo = ...`
+/// - **Constructor call**: `let x = Foo::new()`
+/// - **Struct expression**: `let x = Foo { ... }`
+fn build_local_type_map(
+    body: tree_sitter::Node<'_>,
+    source: &[u8],
+    module_context: &[String],
+) -> HashMap<String, String> {
+    let mut type_map = HashMap::new();
+    collect_let_declarations(body, source, module_context, &mut type_map);
+    type_map
+}
+
+/// Recursively collect `let_declaration` nodes and extract variable → type mappings.
+fn collect_let_declarations(
+    node: tree_sitter::Node<'_>,
+    source: &[u8],
+    module_context: &[String],
+    type_map: &mut HashMap<String, String>,
+) {
+    for i in 0..node.named_child_count() {
+        let Some(child) = node.named_child(i) else {
+            continue;
+        };
+
+        if child.kind() == "let_declaration" {
+            if let Some(pattern) = child.child_by_field_name("pattern") {
+                if let Ok(var_name) = pattern.utf8_text(source) {
+                    let var_name = var_name.trim().to_string();
+                    if var_name.is_empty() || var_name.contains(' ') {
+                        // Skip destructuring patterns
+                        continue;
+                    }
+
+                    // Try explicit type annotation first: `let x: Foo = ...`
+                    if let Some(type_node) = child.child_by_field_name("type") {
+                        if let Some(type_qn) =
+                            extract_type_from_annotation(type_node, source, module_context)
+                        {
+                            type_map.insert(var_name, type_qn);
+                            continue;
+                        }
+                    }
+
+                    // Try inferring from the value expression
+                    if let Some(value) = child.child_by_field_name("value") {
+                        if let Some(type_qn) = infer_type_from_value(value, source, module_context)
+                        {
+                            type_map.insert(var_name, type_qn);
+                        }
+                    }
+                }
+            }
+        } else {
+            // Recurse into child nodes (e.g., blocks within the function body)
+            collect_let_declarations(child, source, module_context, type_map);
+        }
+    }
+}
+
+/// Extract a type qualified name from a type annotation node.
+///
+/// Handles `type_identifier` (e.g., `Foo`), `generic_type` (e.g., `Vec<Foo>`
+/// → extracts `Vec`), and `scoped_type_identifier` (e.g., `std::io::Stdout`).
+fn extract_type_from_annotation(
+    type_node: tree_sitter::Node<'_>,
+    source: &[u8],
+    module_context: &[String],
+) -> Option<String> {
+    match type_node.kind() {
+        "type_identifier" => {
+            let name = type_node.utf8_text(source).ok()?;
+            if name.starts_with(|c: char| c.is_uppercase()) {
+                let module_qn = build_qualified_name(module_context);
+                Some(format!("{module_qn}::{name}"))
+            } else {
+                None
+            }
+        }
+        "generic_type" => {
+            // Extract the base type from generic (e.g., `Vec<T>` → `Vec`)
+            let base = type_node.child_by_field_name("type")?;
+            extract_type_from_annotation(base, source, module_context)
+        }
+        "scoped_type_identifier" => {
+            // Fully qualified type path — keep as-is
+            let text = type_node.utf8_text(source).ok()?;
+            Some(text.replace(' ', ""))
+        }
+        "reference_type" => {
+            // &Type or &mut Type — extract the inner type
+            let inner = type_node.child_by_field_name("type")?;
+            extract_type_from_annotation(inner, source, module_context)
+        }
+        _ => None,
+    }
+}
+
+/// Infer a type from a value expression.
+///
+/// Handles constructor calls (`Foo::new()`) and struct expressions (`Foo { ... }`).
+fn infer_type_from_value(
+    value: tree_sitter::Node<'_>,
+    source: &[u8],
+    module_context: &[String],
+) -> Option<String> {
+    match value.kind() {
+        "call_expression" => {
+            // Check for constructor pattern: `Foo::new()` or `Foo::default()`
+            let function = value.child_by_field_name("function")?;
+            if function.kind() == "scoped_identifier" {
+                let text = function.utf8_text(source).ok()?.replace(' ', "");
+                let segments: Vec<&str> = text.split("::").collect();
+                if segments.len() == 2 {
+                    let type_seg = segments[0];
+                    if type_seg.starts_with(|c: char| c.is_uppercase()) {
+                        let module_qn = build_qualified_name(module_context);
+                        return Some(format!("{module_qn}::{type_seg}"));
+                    }
+                }
+            }
+            None
+        }
+        "struct_expression" => {
+            // `Foo { field: value }` — extract type from name
+            let name_node = value.child_by_field_name("name")?;
+            let name = name_node.utf8_text(source).ok()?;
+            if name.starts_with(|c: char| c.is_uppercase()) {
+                let module_qn = build_qualified_name(module_context);
+                Some(format!("{module_qn}::{name}"))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Extract parameter name → type mappings from a function's parameter list.
+///
+/// Skips `self` parameters. Handles `&Type` and `&mut Type` by stripping
+/// reference wrappers to extract the underlying type.
+fn extract_param_types(
+    params_node: tree_sitter::Node<'_>,
+    source: &[u8],
+    module_context: &[String],
+) -> HashMap<String, String> {
+    let mut type_map = HashMap::new();
+
+    for i in 0..params_node.named_child_count() {
+        let Some(child) = params_node.named_child(i) else {
+            continue;
+        };
+
+        if child.kind() == "parameter" {
+            let pattern = match child.child_by_field_name("pattern") {
+                Some(p) => p,
+                None => continue,
+            };
+            let type_node = match child.child_by_field_name("type") {
+                Some(t) => t,
+                None => continue,
+            };
+
+            if let Ok(param_name) = pattern.utf8_text(source) {
+                let param_name = param_name.trim();
+                if param_name == "self" || param_name.is_empty() {
+                    continue;
+                }
+                if let Some(type_qn) =
+                    extract_type_from_annotation(type_node, source, module_context)
+                {
+                    type_map.insert(param_name.to_string(), type_qn);
+                }
+            }
+        }
+        // Skip self_parameter nodes
+    }
+
+    type_map
+}
+
 /// Resolve a scoped call path to a fully qualified name.
 ///
 /// Applies heuristic resolution for common call patterns:
@@ -555,15 +754,19 @@ fn resolve_scoped_call(callee: &str, module_context: &[String], impl_type: Optio
 /// and emit `Calls` relations for syntactically resolvable calls.
 ///
 /// When `impl_type` is `Some`, `self.method()` calls are resolved to
-/// `ImplType::method`. Other method calls (non-self receivers) remain
-/// unresolved and are counted for the aggregated warning.
+/// `ImplType::method`. When `local_type_map` contains a mapping for
+/// a receiver variable, `x.method()` calls are resolved to
+/// `Type::method`. Other method calls remain unresolved.
+#[allow(clippy::too_many_arguments)]
 fn visit_call_expressions(
     node: tree_sitter::Node<'_>,
     source: &[u8],
     module_context: &[String],
     relations: &mut Vec<AnalysisRelation>,
     unresolved_method_calls: &mut usize,
+    resolved_method_calls: &mut usize,
     impl_type: Option<&str>,
+    local_type_map: &HashMap<String, String>,
 ) {
     for i in 0..node.named_child_count() {
         let Some(child) = node.named_child(i) else {
@@ -593,15 +796,17 @@ fn visit_call_expressions(
                     "field_expression" => {
                         // Method call (e.g., `self.foo()` or `x.foo()`)
                         let mut resolved = false;
-                        if let Some(type_qn) = impl_type {
-                            if let (Some(receiver), Some(method)) = (
-                                function.child_by_field_name("value"),
-                                function.child_by_field_name("field"),
-                            ) {
-                                if let (Ok(receiver_text), Ok(method_name)) =
-                                    (receiver.utf8_text(source), method.utf8_text(source))
-                                {
-                                    if receiver_text == "self" {
+
+                        if let (Some(receiver), Some(method)) = (
+                            function.child_by_field_name("value"),
+                            function.child_by_field_name("field"),
+                        ) {
+                            if let (Ok(receiver_text), Ok(method_name)) =
+                                (receiver.utf8_text(source), method.utf8_text(source))
+                            {
+                                if receiver_text == "self" {
+                                    // self.method() → resolve via impl_type
+                                    if let Some(type_qn) = impl_type {
                                         relations.push(AnalysisRelation {
                                             source_qualified_name: build_qualified_name(
                                                 module_context,
@@ -613,9 +818,27 @@ fn visit_call_expressions(
                                         });
                                         resolved = true;
                                     }
+                                } else if receiver.kind() == "identifier" {
+                                    // x.method() → look up x in local_type_map
+                                    if let Some(type_qn) = local_type_map.get(receiver_text) {
+                                        relations.push(AnalysisRelation {
+                                            source_qualified_name: build_qualified_name(
+                                                module_context,
+                                            ),
+                                            target_qualified_name: format!(
+                                                "{type_qn}::{method_name}"
+                                            ),
+                                            kind: EdgeKind::Calls,
+                                        });
+                                        *resolved_method_calls += 1;
+                                        resolved = true;
+                                    }
                                 }
+                                // Chained calls (receiver is call_expression) and field
+                                // access (self.field.method()) are not resolved.
                             }
                         }
+
                         if !resolved {
                             *unresolved_method_calls += 1;
                         }
@@ -634,7 +857,9 @@ fn visit_call_expressions(
             module_context,
             relations,
             unresolved_method_calls,
+            resolved_method_calls,
             impl_type,
+            local_type_map,
         );
     }
 }
@@ -1153,9 +1378,10 @@ mod tests {
         let result = parse_source(
             "my_crate",
             r#"
+            fn get_thing() -> u32 { 0 }
             fn main() {
-                let x = String::new();
-                x.push_str("hello");
+                let x = get_thing();
+                x.do_stuff();
             }
         "#,
         );
@@ -1180,22 +1406,45 @@ mod tests {
         let result = parse_source(
             "my_crate",
             r#"
+            fn get_thing() -> u32 { 0 }
+            fn main() {
+                let x = get_thing();
+                x.do_stuff();
+            }
+        "#,
+        );
+        // Method calls on opaque types can't be resolved — should not crash.
+        let method_calls: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Calls && r.target_qualified_name.contains("do_stuff"))
+            .collect();
+        assert!(
+            method_calls.is_empty(),
+            "method call on opaque type should not generate a Calls relation"
+        );
+    }
+
+    #[test]
+    fn constructor_method_call_is_resolved() {
+        let result = parse_source(
+            "my_crate",
+            r#"
             fn main() {
                 let x = String::new();
                 x.push_str("hello");
             }
         "#,
         );
-        // Method calls can't be resolved by tree-sitter — should not crash.
-        // Should not produce a Calls relation for method calls.
+        // With heuristic type resolution, constructor patterns are resolved.
         let method_calls: Vec<_> = result
             .relations
             .iter()
             .filter(|r| r.kind == EdgeKind::Calls && r.target_qualified_name.contains("push_str"))
             .collect();
         assert!(
-            method_calls.is_empty(),
-            "method call should not generate a Calls relation"
+            !method_calls.is_empty(),
+            "method call on constructor-initialized variable should be resolved"
         );
     }
 
@@ -1232,11 +1481,12 @@ mod tests {
         let result = parse_source(
             "my_crate",
             r#"
+        fn get_thing() -> u32 { 0 }
         pub struct Foo;
         impl Foo {
             pub fn bar(&self) {
-                let x = String::new();
-                x.push_str("hello");
+                let x = get_thing();
+                x.do_stuff();
             }
         }
     "#,
@@ -1244,11 +1494,11 @@ mod tests {
         let calls: Vec<_> = result
             .relations
             .iter()
-            .filter(|r| r.kind == EdgeKind::Calls && r.target_qualified_name.contains("push_str"))
+            .filter(|r| r.kind == EdgeKind::Calls && r.target_qualified_name.contains("do_stuff"))
             .collect();
         assert!(
             calls.is_empty(),
-            "non-self method call should not generate a Calls relation, got: {:?}",
+            "opaque method call should not generate a Calls relation, got: {:?}",
             calls
         );
         let method_warnings: Vec<_> = result
@@ -1258,7 +1508,7 @@ mod tests {
             .collect();
         assert!(
             !method_warnings.is_empty(),
-            "non-self method call should still produce unresolved warning"
+            "opaque method call should still produce unresolved warning"
         );
     }
 
@@ -1341,6 +1591,206 @@ mod tests {
                 .any(|c| c.target_qualified_name == "std::io::stdout"),
             "std::io::stdout() should stay as-is, got: {:?}",
             calls
+        );
+    }
+
+    // --- Local type resolution tests (Task 3) ---
+
+    #[test]
+    fn let_with_type_annotation_resolves_method_call() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub struct Foo;
+            impl Foo { pub fn bar(&self) {} }
+            fn main() {
+                let x: Foo = Foo;
+                x.bar();
+            }
+        "#,
+        );
+        let calls: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Calls && r.target_qualified_name.contains("bar"))
+            .collect();
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.target_qualified_name == "my_crate::Foo::bar"),
+            "x.bar() with type annotation should resolve to my_crate::Foo::bar, got: {:?}",
+            calls
+        );
+    }
+
+    #[test]
+    fn let_with_constructor_resolves_method_call() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub struct Foo;
+            impl Foo {
+                pub fn new() -> Self { Foo }
+                pub fn bar(&self) {}
+            }
+            fn main() {
+                let x = Foo::new();
+                x.bar();
+            }
+        "#,
+        );
+        let calls: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Calls && r.target_qualified_name.contains("bar"))
+            .collect();
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.target_qualified_name == "my_crate::Foo::bar"),
+            "x.bar() with constructor should resolve to my_crate::Foo::bar, got: {:?}",
+            calls
+        );
+    }
+
+    #[test]
+    fn let_with_struct_expression_resolves_method_call() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub struct Foo { val: u32 }
+            impl Foo { pub fn bar(&self) {} }
+            fn main() {
+                let x = Foo { val: 42 };
+                x.bar();
+            }
+        "#,
+        );
+        let calls: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Calls && r.target_qualified_name.contains("bar"))
+            .collect();
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.target_qualified_name == "my_crate::Foo::bar"),
+            "x.bar() with struct expression should resolve to my_crate::Foo::bar, got: {:?}",
+            calls
+        );
+    }
+
+    #[test]
+    fn function_parameter_type_resolves_method_call() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub struct Foo;
+            impl Foo { pub fn bar(&self) {} }
+            fn process(x: Foo) {
+                x.bar();
+            }
+        "#,
+        );
+        let calls: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Calls && r.target_qualified_name.contains("bar"))
+            .collect();
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.target_qualified_name == "my_crate::Foo::bar"),
+            "x.bar() with parameter type should resolve to my_crate::Foo::bar, got: {:?}",
+            calls
+        );
+    }
+
+    #[test]
+    fn reference_parameter_resolves_method_call() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub struct Foo;
+            impl Foo { pub fn bar(&self) {} }
+            fn process(x: &Foo) {
+                x.bar();
+            }
+        "#,
+        );
+        let calls: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Calls && r.target_qualified_name.contains("bar"))
+            .collect();
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.target_qualified_name == "my_crate::Foo::bar"),
+            "x.bar() with &Foo parameter should resolve through reference, got: {:?}",
+            calls
+        );
+    }
+
+    #[test]
+    fn unknown_variable_still_unresolved() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            fn get_something() -> u32 { 0 }
+            fn main() {
+                let x = get_something();
+                x.bar();
+            }
+        "#,
+        );
+        let calls: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Calls && r.target_qualified_name.contains("bar"))
+            .collect();
+        assert!(
+            calls.is_empty(),
+            "opaque let x = something() should remain unresolved, got: {:?}",
+            calls
+        );
+        let method_warnings: Vec<_> = result
+            .warnings
+            .iter()
+            .filter(|w| w.message.contains("could not be resolved"))
+            .collect();
+        assert!(
+            !method_warnings.is_empty(),
+            "should still produce unresolved warning"
+        );
+    }
+
+    #[test]
+    fn chained_calls_remain_unresolved() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub struct Foo;
+            impl Foo {
+                pub fn new() -> Self { Foo }
+                pub fn bar(&self) -> &Self { self }
+                pub fn baz(&self) {}
+            }
+            fn main() {
+                Foo::new().bar().baz();
+            }
+        "#,
+        );
+        // The chained call .baz() should remain unresolved since
+        // the receiver is a call expression, not an identifier.
+        let method_warnings: Vec<_> = result
+            .warnings
+            .iter()
+            .filter(|w| w.message.contains("could not be resolved"))
+            .collect();
+        assert!(
+            !method_warnings.is_empty(),
+            "chained method calls should produce unresolved warning"
         );
     }
 
