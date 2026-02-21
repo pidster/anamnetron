@@ -9,6 +9,7 @@
   import GraphView from "./components/GraphView.svelte";
   import NodeDetail from "./components/NodeDetail.svelte";
   import ConformanceReport from "./components/ConformanceReport.svelte";
+  import ErrorBoundary from "./components/ErrorBoundary.svelte";
   import SnapshotSelector from "./components/SnapshotSelector.svelte";
   import SearchBar from "./components/SearchBar.svelte";
 
@@ -376,14 +377,16 @@
         <p>Loading graph data...</p>
       </div>
     {:else if graphStore.graph}
-      <GraphView
-        bind:this={graphView}
-        graph={graphStore.graph}
-        conformance={graphStore.conformanceReport}
-        diff={graphStore.diffReport}
-        layout={layoutChoice}
-        {theme}
-      />
+      <ErrorBoundary name="Graph View">
+        <GraphView
+          bind:this={graphView}
+          graph={graphStore.graph}
+          conformance={graphStore.conformanceReport}
+          diff={graphStore.diffReport}
+          layout={layoutChoice}
+          {theme}
+        />
+      </ErrorBoundary>
     {:else}
       <div class="center-message">
         <p>No data loaded</p>
@@ -392,18 +395,22 @@
     {/if}
 
     {#if selectionStore.panelOpen}
-      <NodeDetail
-        node={selectionStore.selectedNode}
-        children={selectionStore.children}
-        ancestors={selectionStore.ancestors}
-        dependencies={selectionStore.dependencies}
-        dependents={selectionStore.dependents}
-        loading={selectionStore.loading}
-      />
+      <ErrorBoundary name="Node Detail">
+        <NodeDetail
+          node={selectionStore.selectedNode}
+          children={selectionStore.children}
+          ancestors={selectionStore.ancestors}
+          dependencies={selectionStore.dependencies}
+          dependents={selectionStore.dependents}
+          loading={selectionStore.loading}
+        />
+      </ErrorBoundary>
     {/if}
 
     {#if showConformance && graphStore.conformanceReport}
-      <ConformanceReport report={graphStore.conformanceReport} onclose={clearConformance} />
+      <ErrorBoundary name="Conformance Report">
+        <ConformanceReport report={graphStore.conformanceReport} onclose={clearConformance} />
+      </ErrorBoundary>
     {/if}
   </div>
 </div>
