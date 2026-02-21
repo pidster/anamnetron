@@ -24,8 +24,9 @@
 | **18** | Plugin Analyzer Support | 2026-02-20 | 404 | `LanguageDescriptor` + `LanguageParser` trait in svt-core, `DescriptorOrchestrator` in svt-analyzer, Go/Python/TypeScript refactored to descriptor+parser pattern, `SvtPlugin::language_parsers()` method, plugin parsers wired into CLI analysis pipeline |
 | **19** | Store Persistence & Management | 2026-02-20 | 420 | Schema version + migration framework, `store_info()` with per-snapshot counts, `svt store info\|compact\|reset` CLI commands, `--store` flag for server persistent storage, `GET /api/store/info` endpoint |
 | **20** | Incremental Analysis | 2026-02-20 | 453 | BLAKE3 file hashing, `file_manifest` relation, `copy_nodes`/`copy_edges` store methods, unit-level skip with copy-then-upsert, `svt analyze --incremental`, proptest for manifest diffing |
+| **21** | Analysis Depth | 2026-02-21 | 470 | Crate-level `Depends` edges from Cargo metadata, `Self::method()` and `Type::method()` resolution, heuristic local variable type inference (`let x: Foo`, `Foo::new()`, struct expressions, function params), method call resolution statistics |
 
-**Current state:** 431 Rust tests + 22 vitest tests = 453 total. All passing. clippy/fmt/audit clean. CI pipeline operational.
+**Current state:** 448 Rust tests + 22 vitest tests = 470 total. All passing. clippy/fmt/audit clean. CI pipeline operational.
 
 ## What's Working Now
 
@@ -68,8 +69,8 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 ### Canonical Path Alignment — RESOLVED (M11)
 - ~~4 dog-food constraints were "not evaluable" in conformance mode.~~ Fixed by workspace-aware canonical path mapping (`svt-core` → `svt::core` → `/svt/core`) and enum variant extraction. All 12 constraints now pass.
 
-### Analysis Depth — PARTIALLY RESOLVED
-- ~~The analyzer extracts crate/module/type/function structure but does not resolve cross-crate call graphs, method calls, or trait implementations.~~ `self.method()` calls inside `impl` blocks are now resolved by propagating the impl type through the tree-sitter walk (e.g., `self.baz()` inside `impl Foo` resolves to `Foo::baz`). Methods in impl blocks are parented under their type in the containment hierarchy. Non-self method calls (`x.foo()`) and cross-crate calls remain unresolved (~20 file-level warning summaries). This limits the accuracy of dependency-direction constraints for non-self calls.
+### Analysis Depth — PARTIALLY RESOLVED (M21)
+- ~~The analyzer extracts crate/module/type/function structure but does not resolve cross-crate call graphs, method calls, or trait implementations.~~ `self.method()` calls inside `impl` blocks are resolved by propagating the impl type through the tree-sitter walk. `Self::method()` and local `Type::method()` associated function calls are resolved via scope-aware rewriting. Heuristic local variable type inference resolves method calls on variables with known types (explicit annotations, constructor patterns like `Foo::new()`, struct expressions, function parameters including `&`/`&mut` stripping). Crate-level `Depends` edges are extracted from Cargo metadata workspace dependencies. Dog-food: 468 of 3997 method calls resolved (11.7%). Chained calls (`x.foo().bar()`), trait objects, generics, closures, and cross-function type flow remain unresolved.
 
 ### Export Formats — RESOLVED (M16)
 - ~~Mermaid, JSON, and DOT are implemented. SVG/PNG rendering could be added via Graphviz CLI piping or embedded renderer.~~ SVG and PNG export added via Graphviz CLI piping (`SvgExporter`, `PngExporter`). All five formats (Mermaid, JSON, DOT, SVG, PNG) available.
@@ -276,13 +277,36 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 
 **Known limitation (v1):** If a language unit is entirely removed between runs, its ghost nodes remain (copied from previous, never overwritten). Periodic full analysis cleans this up.
 
-## Roadmap (Post-M20)
+### Milestone 21: Analysis Depth — COMPLETE
+
+**Goal:** Improve method call resolution depth through crate-level dependency extraction, Self::/Type:: associated call resolution, and heuristic local variable type inference.
+
+**Delivered:**
+- Crate-level `Depends` edges from Cargo metadata: `CrateInfo.workspace_dependencies` populated from `cargo metadata`, `RustOrchestrator.post_process()` emits `Depends` relations between workspace crates
+- `resolve_scoped_call()` function: rewrites `Self::method()` to `Type::method()` using impl context, prepends module context for local `Type::method()` calls
+- `build_local_type_map()` with `collect_let_declarations()`: walks function bodies for `let` bindings, extracts type from explicit annotations (`let x: Foo`), constructor calls (`let x = Foo::new()`), and struct expressions (`let x = Foo { ... }`)
+- `extract_param_types()`: extracts function parameter name→type mappings with `&`/`&mut` reference stripping
+- Modified `visit_call_expressions()` to use local type map for receiver type lookup on `x.method()` calls
+- Method call resolution statistics: `method_calls_resolved`/`method_calls_unresolved` counters threaded through entire analysis pipeline
+- CLI output shows resolution stats: "method calls: N resolved, M unresolved (of T total)"
+- 17 new tests (12 unit tests in rust.rs, 2 discovery/orchestrator tests, 3 integration tests)
+- **Result: 448 Rust tests + 22 vitest tests = 470 total**
+- **Dog-food: 954 nodes, 1076 edges, 468/3997 method calls resolved (11.7%), conformance 12/12 passed**
+
+**Known limitations:**
+- No chained call resolution (`x.foo().bar()` — receiver of `.bar()` is a call expression)
+- No field access resolution (`self.field.method()`)
+- No trait object/generic resolution (`Box<dyn Foo>`, `fn f<T: Foo>(x: T)`)
+- No closure parameter types (`items.iter().map(|x| x.foo())`)
+- Import aliasing not handled (`use other::Foo; Foo::new()`)
+- Only workspace-internal Cargo dependencies (external crates not represented)
+
+## Roadmap (Post-M21)
 
 Priority-ordered next milestones:
 
 | # | Milestone | Description | Key Challenge |
 |---|-----------|-------------|---------------|
-| **M21** | Analysis Depth | Resolve non-self method calls (`x.foo()`), cross-crate dependency edges | Needs type inference or heuristic resolution; significantly harder than self-method resolution |
 | **M22** | Plugin Ecosystem | Plugin manifest (`svt-plugin.toml`), `svt plugin install\|remove`, plugin author documentation | Discovery conventions, version compatibility, documentation site |
 | **M23** | Web UI Enhancements | Error boundaries with retry, arrow-key graph traversal, filtering sidebar (by kind/metadata) | UX design, Cytoscape keyboard integration |
 | **M24** | Additional Languages | Java analyzer (tree-sitter-java), others as community demand dictates | tree-sitter-java grammar, Maven/Gradle project discovery |
