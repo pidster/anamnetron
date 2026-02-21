@@ -26,8 +26,9 @@
 | **20** | Incremental Analysis | 2026-02-20 | 453 | BLAKE3 file hashing, `file_manifest` relation, `copy_nodes`/`copy_edges` store methods, unit-level skip with copy-then-upsert, `svt analyze --incremental`, proptest for manifest diffing |
 | **21** | Analysis Depth | 2026-02-21 | 470 | Crate-level `Depends` edges from Cargo metadata, `Self::method()` and `Type::method()` resolution, heuristic local variable type inference (`let x: Foo`, `Foo::new()`, struct expressions, function params), method call resolution statistics |
 | **22** | Plugin Ecosystem | 2026-02-21 | 506 | Plugin manifest format (`svt-plugin.toml`), `svt plugin install\|remove\|info` commands, manifest-aware plugin loading with source tracking, sidecar manifest discovery, plugin authoring documentation |
+| **23** | Web UI Enhancements | 2026-02-21 | 533 | Error boundaries with retry, arrow-key graph traversal (Up/Down/Left/Right for containment hierarchy), filtering sidebar (node kind, edge kind, sub-kind, language) |
 
-**Current state:** 484 Rust tests + 22 vitest tests = 506 total. All passing. clippy/fmt/audit clean. CI pipeline operational.
+**Current state:** 484 Rust tests + 49 vitest tests = 533 total. All passing. clippy/fmt/audit clean. CI pipeline operational.
 
 ## What's Working Now
 
@@ -62,7 +63,7 @@ svt-server --store .svt/store --design design/architecture.yaml
                                          # Persistent store + fresh design import at startup
 ```
 
-The web UI renders the architecture graph with compound nodes, click-to-inspect node details, search, layout switching (force-directed / hierarchical), conformance overlay, and diff view overlay for comparing snapshots. With WASM loaded, node detail lookups and search run entirely in the browser — zero API round-trips after initial snapshot load.
+The web UI renders the architecture graph with compound nodes, click-to-inspect node details, search, layout switching (force-directed / hierarchical), conformance overlay, diff view overlay, error boundaries with retry, arrow-key graph traversal, and a filtering sidebar for node/edge/sub-kind/language filtering. With WASM loaded, node detail lookups and search run entirely in the browser — zero API round-trips after initial snapshot load.
 
 All 12 constraints in `design/architecture.yaml` are fully evaluated in both design-only and full conformance mode — zero `NotEvaluable`. Dog-food conformance: 12 passed, 0 failed, 0 warned, 0 not evaluable. There are 10 unimplemented design nodes (expected — some are future work like `/svt/web`) and ~518 undocumented analysis nodes (expected — analysis is much more granular than the design model).
 
@@ -80,8 +81,8 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 ### Export Formats — RESOLVED (M16)
 - ~~Mermaid, JSON, and DOT are implemented. SVG/PNG rendering could be added via Graphviz CLI piping or embedded renderer.~~ SVG and PNG export added via Graphviz CLI piping (`SvgExporter`, `PngExporter`). All five formats (Mermaid, JSON, DOT, SVG, PNG) available.
 
-### Web UI — RESOLVED (M16)
-- ~~No dark mode, no persistence of layout/filter state, no URL routing/permalinks.~~ Dark/light theme toggle, hash-based URL routing, localStorage persistence, keyboard shortcuts, and diff view overlay all implemented.
+### Web UI — RESOLVED (M16 + M23)
+- ~~No dark mode, no persistence of layout/filter state, no URL routing/permalinks.~~ Dark/light theme toggle, hash-based URL routing, localStorage persistence, keyboard shortcuts, diff view overlay, error boundaries with retry, arrow-key graph traversal, and filtering sidebar all implemented.
 
 ### Additional Languages — PARTIALLY RESOLVED (M15)
 - ~~Only Rust and TypeScript analyzers exist.~~ Go and Python analyzers added in M15 with tree-sitter grammars. Java and other languages remain as future goals (PRINCIPLES.md: Extensibility).
@@ -158,7 +159,7 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 - `getDiff` API client function and `SnapshotDiff` TypeScript types
 - 13 new router tests + 1 new API test = 19 total vitest tests
 
-**Not yet done (deferred):** Error boundary components with retry, ~~diff view overlay in graph~~ (resolved in M16), arrow-key graph traversal.
+**Not yet done (deferred):** ~~Error boundary components with retry~~ (resolved in M23), ~~diff view overlay in graph~~ (resolved in M16), ~~arrow-key graph traversal~~ (resolved in M23).
 
 ### Milestone 15: Additional Language Analyzers — COMPLETE
 
@@ -328,13 +329,31 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 
 **Not yet done (deferred):** Remote plugin registry, plugin dependencies, plugin hot-reloading, plugin configuration/settings, plugin sandboxing.
 
-## Roadmap (Post-M22)
+### Milestone 23: Web UI Enhancements — COMPLETE
+
+**Goal:** Add error boundaries with retry, arrow-key graph traversal, and a filtering sidebar.
+
+**Delivered:**
+- `ErrorBoundary.svelte` using Svelte 5's `<svelte:boundary>` with `{#snippet failed}` and `{#key retryKey}` for full remount on retry
+- Error boundaries wrap GraphView, NodeDetail, and ConformanceReport sections
+- Arrow-key graph traversal: Up=parent, Down=first child, Left/Right=prev/next sibling in containment hierarchy
+- Pre-computed `TraversalIndex` with O(1) lookups (parentMap, childrenMap, siblingsMap sorted by label)
+- `FilterSidebar.svelte`: collapsible left sidebar with checkbox filters for node kind, edge kind, sub-kind, and language
+- `filter.svelte.ts` reactive store with `populateFromGraph()`, `resetAll()`, `hasActiveFilters`
+- Filters applied client-side via Cytoscape `startBatch()`/`endBatch()` show/hide
+- Sidebar state persisted to localStorage, toggled via toolbar button or `g` key
+- `*` indicator on filter button when filters are active
+- 15 traversal tests + 12 filter logic tests = 27 new vitest tests
+- **Result: 484 Rust tests + 49 vitest tests = 533 total**
+
+**Not yet done (deferred):** Provenance filtering (requires adding provenance to Cytoscape graph endpoint), URL hash persistence of filter state, filter count badges, component-level tests with @testing-library/svelte.
+
+## Roadmap (Post-M23)
 
 Priority-ordered next milestones:
 
 | # | Milestone | Description | Key Challenge |
 |---|-----------|-------------|---------------|
-| **M23** | Web UI Enhancements | Error boundaries with retry, arrow-key graph traversal, filtering sidebar (by kind/metadata) | UX design, Cytoscape keyboard integration |
 | **M24** | Additional Languages | Java analyzer (tree-sitter-java), others as community demand dictates | tree-sitter-java grammar, Maven/Gradle project discovery |
 
 ## Plan Documents

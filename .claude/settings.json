@@ -28,6 +28,7 @@
     ]
   },
   "hooks": {
+    "PreToolUse": [],
     "PostToolUse": [
       {
         "matcher": "Edit|Write",
@@ -40,8 +41,8 @@
       }
     ]
   },
-  "teammateMode": "tmux",
   "enabledPlugins": {
-    "frontend-design@claude-plugins-official": true
-  }
+    "rust-analyzer-lsp@claude-plugins-official": true
+  },
+  "teammateMode": "tmux"
 }

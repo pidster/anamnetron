@@ -66,9 +66,8 @@ cargo audit              # Dependency audit
 - Minimize dependencies — each dependency must be justified
 - No `unsafe` without documented justification and review
 
-## Roadmap Priority (Post-M22)
+## Roadmap Priority (Post-M23)
 
 Next milestones in priority order:
 
-1. **Web UI Enhancements** — Error boundaries, arrow-key graph traversal, filtering sidebar
-2. **Additional Languages** — Java analyzer (tree-sitter-java), others as needed
+1. **Additional Languages** — Java analyzer (tree-sitter-java), others as needed
