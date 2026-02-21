@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { ApiNode, ApiEdge } from "../lib/types";
-  import { selectionStore } from "../stores/selection";
+  import { selectionStore } from "../stores/selection.svelte";
 
   interface Props {
     node: ApiNode | null;

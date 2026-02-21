@@ -2,8 +2,8 @@
   import { onMount } from "svelte";
   import * as api from "./lib/api";
   import type { Version, SnapshotDiff } from "./lib/types";
-  import { graphStore } from "./stores/graph";
-  import { selectionStore } from "./stores/selection";
+  import { graphStore } from "./stores/graph.svelte";
+  import { selectionStore } from "./stores/selection.svelte";
   import { initWasm, getWasmStore } from "./lib/wasm";
   import { parseHash, buildHash } from "./lib/router";
   import GraphView from "./components/GraphView.svelte";

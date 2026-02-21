@@ -4,7 +4,7 @@
   import coseBilkent from "cytoscape-cose-bilkent";
   import dagre from "cytoscape-dagre";
   import type { CytoscapeGraph, ConformanceReport, SnapshotDiff } from "../lib/types";
-  import { selectionStore } from "../stores/selection";
+  import { selectionStore } from "../stores/selection.svelte";
 
   // Register layout extensions once
   cytoscape.use(coseBilkent);
