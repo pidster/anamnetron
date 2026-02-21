@@ -17,9 +17,23 @@
     diff?: SnapshotDiff | null;
     layout?: "cose-bilkent" | "dagre";
     theme?: "dark" | "light";
+    filterNodeKinds?: Set<string>;
+    filterEdgeKinds?: Set<string>;
+    filterSubKinds?: Set<string>;
+    filterLanguages?: Set<string>;
   }
 
-  let { graph, conformance = null, diff = null, layout = "cose-bilkent", theme = "dark" }: Props = $props();
+  let {
+    graph,
+    conformance = null,
+    diff = null,
+    layout = "cose-bilkent",
+    theme = "dark",
+    filterNodeKinds,
+    filterEdgeKinds,
+    filterSubKinds,
+    filterLanguages,
+  }: Props = $props();
 
   let container: HTMLDivElement;
   let cy: cytoscape.Core | null = null;
@@ -291,6 +305,50 @@
     if (cy) {
       cy.style(buildStyleSheet() as unknown as cytoscape.StylesheetCSS[]);
     }
+  });
+
+  // Apply filters when filter state changes
+  $effect(() => {
+    if (!cy) return;
+    // Access all filter props to track as dependencies
+    const nk = filterNodeKinds;
+    const ek = filterEdgeKinds;
+    const sk = filterSubKinds;
+    const lg = filterLanguages;
+    if (!nk || !ek || !sk || !lg) return;
+
+    cy.startBatch();
+    cy.elements().show();
+
+    // Hide nodes that don't match filters
+    cy.nodes().forEach((node) => {
+      const kind = node.data("kind") as string;
+      const subKind = node.data("sub_kind") as string;
+      const language = node.data("language") as string | undefined;
+
+      const kindMatch = nk.has(kind);
+      const subKindMatch = !subKind || sk.has(subKind);
+      const langMatch = !language || lg.has(language);
+
+      if (!kindMatch || !subKindMatch || !langMatch) {
+        node.hide();
+      }
+    });
+
+    // Hide edges that don't match filters or have hidden endpoints
+    cy.edges().forEach((edge) => {
+      const kind = edge.data("kind") as string;
+      if (!ek.has(kind)) {
+        edge.hide();
+        return;
+      }
+      // Hide edges where source or target is hidden
+      if (!edge.source().visible() || !edge.target().visible()) {
+        edge.hide();
+      }
+    });
+
+    cy.endBatch();
   });
 
   /** Select and center on a node. */

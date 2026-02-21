@@ -13,6 +13,8 @@
   import ErrorBoundary from "./components/ErrorBoundary.svelte";
   import SnapshotSelector from "./components/SnapshotSelector.svelte";
   import SearchBar from "./components/SearchBar.svelte";
+  import FilterSidebar from "./components/FilterSidebar.svelte";
+  import { filterStore } from "./stores/filter.svelte";
 
   const savedLayout = typeof localStorage !== "undefined" ? localStorage.getItem("svt-layout") : null;
   let layoutChoice = $state<"cose-bilkent" | "dagre">(
@@ -43,6 +45,12 @@
   let suppressHashWrite = false;
 
   onMount(async () => {
+    // Restore sidebar state from localStorage
+    const savedSidebar = typeof localStorage !== "undefined" ? localStorage.getItem("svt-filter-sidebar") : null;
+    if (savedSidebar === "true") {
+      filterStore.sidebarOpen = true;
+    }
+
     try {
       graphStore.loading = true;
       // Initialize WASM and load snapshots in parallel
@@ -123,9 +131,12 @@
           api.getEdges(version),
         ]);
         graphStore.graph = graph;
+        filterStore.populateFromGraph(graph.elements.nodes);
         wasmVersion = wasmStore.loadSnapshot(nodes, edges);
       } else {
-        graphStore.graph = await api.getGraph(version);
+        const graph = await api.getGraph(version);
+        graphStore.graph = graph;
+        filterStore.populateFromGraph(graph.elements.nodes);
       }
     } catch (e) {
       graphStore.error = e instanceof Error ? e.message : "Failed to load graph";
@@ -137,6 +148,11 @@
   // Persist layout choice
   $effect(() => {
     localStorage.setItem("svt-layout", layoutChoice);
+  });
+
+  // Persist filter sidebar state
+  $effect(() => {
+    localStorage.setItem("svt-filter-sidebar", String(filterStore.sidebarOpen));
   });
 
   // Sync state to URL hash
@@ -310,6 +326,12 @@
       graphView?.fitAll();
       e.preventDefault();
     }
+
+    // g: toggle filter sidebar
+    if (e.key === "g") {
+      filterStore.sidebarOpen = !filterStore.sidebarOpen;
+      e.preventDefault();
+    }
   }
 </script>
 
@@ -328,6 +350,11 @@
         onselect={selectVersion}
       />
       <SearchBar onsearch={handleSearch} />
+      <button
+        class="filter-toggle"
+        onclick={() => filterStore.sidebarOpen = !filterStore.sidebarOpen}
+        aria-label="Toggle filters"
+      >Filters{#if filterStore.hasActiveFilters}<span class="filter-indicator">*</span>{/if}</button>
       {#if graphStore.snapshots.length > 1 && graphStore.selectedVersion}
         <select
           bind:value={compareVersion}
@@ -394,6 +421,7 @@
   {/if}
 
   <div class="main-content">
+    <FilterSidebar />
     {#if graphStore.loading && !graphStore.graph}
       <div class="center-message">
         <div class="spinner"></div>
@@ -408,6 +436,10 @@
           diff={graphStore.diffReport}
           layout={layoutChoice}
           {theme}
+          filterNodeKinds={filterStore.nodeKinds}
+          filterEdgeKinds={filterStore.edgeKinds}
+          filterSubKinds={filterStore.subKinds}
+          filterLanguages={filterStore.languages}
         />
       </ErrorBoundary>
     {:else}
@@ -578,5 +610,21 @@
     border: 1px solid var(--border);
     font-size: 0.75rem;
     padding: 0.15rem 0.4rem;
+  }
+
+  .filter-toggle {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    font-size: 0.85rem;
+    padding: 0.3rem 0.5rem;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+
+  .filter-indicator {
+    color: var(--accent);
+    font-weight: bold;
+    margin-left: 0.15rem;
   }
 </style>
