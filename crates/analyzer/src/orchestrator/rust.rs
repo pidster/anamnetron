@@ -5,13 +5,14 @@
 //! detection and qualified name mapping.
 
 use std::path::Path;
+use std::sync::Mutex;
 
-use svt_core::model::NodeKind;
+use svt_core::model::{EdgeKind, NodeKind};
 
 use crate::discovery::discover_project;
 use crate::languages::rust::RustAnalyzer;
 use crate::languages::{LanguageAnalyzer, ParseResult};
-use crate::types::AnalysisItem;
+use crate::types::{AnalysisItem, AnalysisRelation};
 
 use super::{LanguageOrchestrator, LanguageUnit};
 
@@ -19,6 +20,12 @@ use super::{LanguageOrchestrator, LanguageUnit};
 #[derive(Debug)]
 pub struct RustOrchestrator {
     analyzer: RustAnalyzer,
+    /// Cached crate-level dependency pairs (source_qn, target_qn).
+    ///
+    /// Populated during [`discover()`](LanguageOrchestrator::discover) from
+    /// `Cargo.toml` workspace-internal dependencies, then emitted as
+    /// `Depends` relations during [`post_process()`](LanguageOrchestrator::post_process).
+    crate_deps: Mutex<Vec<(String, String)>>,
 }
 
 impl RustOrchestrator {
@@ -27,6 +34,7 @@ impl RustOrchestrator {
     pub fn new() -> Self {
         Self {
             analyzer: RustAnalyzer::new(),
+            crate_deps: Mutex::new(Vec::new()),
         }
     }
 }
@@ -67,6 +75,20 @@ impl LanguageOrchestrator for RustOrchestrator {
             Err(_) => return vec![],
         };
 
+        // Cache crate-level dependency pairs for post_process().
+        let mut dep_pairs = Vec::new();
+        for c in &layout.crates {
+            let source_qn = workspace_qualified_name(&c.name, layout.workspace_name.as_deref());
+            for dep_name in &c.workspace_dependencies {
+                let target_qn =
+                    workspace_qualified_name(dep_name, layout.workspace_name.as_deref());
+                dep_pairs.push((source_qn.clone(), target_qn));
+            }
+        }
+        if let Ok(mut deps) = self.crate_deps.lock() {
+            *deps = dep_pairs;
+        }
+
         layout
             .crates
             .iter()
@@ -93,6 +115,21 @@ impl LanguageOrchestrator for RustOrchestrator {
     fn analyze(&self, unit: &LanguageUnit) -> ParseResult {
         let file_refs: Vec<&Path> = unit.source_files.iter().map(|p| p.as_path()).collect();
         self.analyzer.analyze_crate(&unit.name, &file_refs)
+    }
+
+    fn post_process(&self, unit: &LanguageUnit, result: &mut ParseResult) {
+        // Emit crate-level Depends edges for this unit's workspace dependencies.
+        if let Ok(deps) = self.crate_deps.lock() {
+            for (source_qn, target_qn) in deps.iter() {
+                if source_qn == &unit.name {
+                    result.relations.push(AnalysisRelation {
+                        source_qualified_name: source_qn.clone(),
+                        target_qualified_name: target_qn.clone(),
+                        kind: EdgeKind::Depends,
+                    });
+                }
+            }
+        }
     }
 }
 
@@ -175,6 +212,42 @@ mod tests {
         assert_eq!(
             workspace_qualified_name("other-crate", Some("svt")),
             "other_crate"
+        );
+    }
+
+    #[test]
+    fn rust_orchestrator_emits_crate_dependency_edges() {
+        use svt_core::model::EdgeKind;
+
+        let project_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let orch = RustOrchestrator::new();
+        let units = orch.discover(&project_root);
+
+        // Find the analyzer unit and run post_process to get dependency edges.
+        let analyzer_unit = units
+            .iter()
+            .find(|u| u.name == "svt::analyzer")
+            .expect("should find svt::analyzer unit");
+
+        let mut result = ParseResult::default();
+        orch.post_process(analyzer_unit, &mut result);
+
+        let deps: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Depends)
+            .collect();
+        assert!(
+            deps.iter()
+                .any(|d| d.source_qualified_name == "svt::analyzer"
+                    && d.target_qualified_name == "svt::core"),
+            "should emit Depends edge from svt::analyzer to svt::core, got: {:?}",
+            deps
         );
     }
 }

@@ -33,7 +33,25 @@ pub fn discover_project(project_root: &Path) -> Result<ProjectLayout, DiscoveryE
     let workspace_root = metadata.workspace_root.clone().into_std_path_buf();
     let mut crates = Vec::new();
 
+    // Build a set of workspace member names for filtering dependencies.
+    let workspace_member_names: std::collections::HashSet<String> = metadata
+        .workspace_packages()
+        .iter()
+        .map(|p| p.name.clone())
+        .collect();
+
     for package in metadata.workspace_packages() {
+        // Collect workspace-internal normal dependencies for this package.
+        let workspace_dependencies: Vec<String> = package
+            .dependencies
+            .iter()
+            .filter(|dep| {
+                dep.kind == cargo_metadata::DependencyKind::Normal
+                    && workspace_member_names.contains(&dep.name)
+            })
+            .map(|dep| dep.name.clone())
+            .collect();
+
         for target in &package.targets {
             let crate_type = if target.is_lib() {
                 CrateType::Lib
@@ -59,6 +77,7 @@ pub fn discover_project(project_root: &Path) -> Result<ProjectLayout, DiscoveryE
                 root: crate_root,
                 entry_point,
                 source_files,
+                workspace_dependencies: workspace_dependencies.clone(),
             });
         }
     }
@@ -598,6 +617,31 @@ mod tests {
         assert_eq!(layout.crates.len(), 1, "should find exactly 1 crate");
         assert_eq!(layout.crates[0].name, "single-crate");
         assert_eq!(layout.crates[0].crate_type, CrateType::Lib);
+    }
+
+    #[test]
+    fn discovers_workspace_internal_dependencies() {
+        let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let layout = discover_project(&project_root).unwrap();
+
+        // svt-analyzer depends on svt-core
+        let analyzer = layout
+            .crates
+            .iter()
+            .find(|c| c.name == "svt-analyzer")
+            .expect("should find svt-analyzer");
+        assert!(
+            analyzer
+                .workspace_dependencies
+                .contains(&"svt-core".to_string()),
+            "svt-analyzer should depend on svt-core, got: {:?}",
+            analyzer.workspace_dependencies
+        );
     }
 
     #[test]

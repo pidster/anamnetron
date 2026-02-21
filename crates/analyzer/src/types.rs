@@ -24,6 +24,8 @@ pub struct CrateInfo {
     pub entry_point: PathBuf,
     /// All `.rs` source files under `src/`.
     pub source_files: Vec<PathBuf>,
+    /// Names of workspace-internal crates this crate depends on (normal dependencies only).
+    pub workspace_dependencies: Vec<String>,
 }
 
 /// Layout of a Rust project (workspace or single crate).
