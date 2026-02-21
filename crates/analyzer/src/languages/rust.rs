@@ -522,6 +522,35 @@ fn visit_use_declaration(
     }
 }
 
+/// Resolve a scoped call path to a fully qualified name.
+///
+/// Applies heuristic resolution for common call patterns:
+/// - `Self::method` → replace `Self` with the `impl_type` QN (when available)
+/// - `Type::method` (single-segment Type starting with uppercase) → prepend `module_context`
+/// - Multi-segment paths (e.g., `std::io::stdout`) → keep as-is
+fn resolve_scoped_call(callee: &str, module_context: &[String], impl_type: Option<&str>) -> String {
+    // Self::method → impl_type::method
+    if let Some(rest) = callee.strip_prefix("Self::") {
+        if let Some(type_qn) = impl_type {
+            return format!("{type_qn}::{rest}");
+        }
+    }
+
+    // Check if it's a two-segment path with uppercase first segment (local type).
+    // Skip "Self::" without impl_type — it can't be resolved.
+    let segments: Vec<&str> = callee.split("::").collect();
+    if segments.len() == 2 {
+        let first = segments[0];
+        if first != "Self" && first.starts_with(|c: char| c.is_uppercase()) {
+            let module_qn = build_qualified_name(module_context);
+            return format!("{module_qn}::{callee}");
+        }
+    }
+
+    // Multi-segment or lowercase path — keep as-is.
+    callee.to_string()
+}
+
 /// Recursively walk a subtree looking for `call_expression` nodes
 /// and emit `Calls` relations for syntactically resolvable calls.
 ///
@@ -551,9 +580,11 @@ fn visit_call_expressions(
                         if let Ok(callee) = function.utf8_text(source) {
                             let callee = callee.replace(' ', "");
                             if !callee.is_empty() {
+                                let resolved =
+                                    resolve_scoped_call(&callee, module_context, impl_type);
                                 relations.push(AnalysisRelation {
                                     source_qualified_name: source_qn,
-                                    target_qualified_name: callee,
+                                    target_qualified_name: resolved,
                                     kind: EdgeKind::Calls,
                                 });
                             }
@@ -1228,6 +1259,124 @@ mod tests {
         assert!(
             !method_warnings.is_empty(),
             "non-self method call should still produce unresolved warning"
+        );
+    }
+
+    // --- Scoped call resolution tests (Task 2) ---
+
+    #[test]
+    fn self_type_associated_call_resolved() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub struct Foo;
+            impl Foo {
+                pub fn create() -> Self {
+                    Self::new()
+                }
+                pub fn new() -> Self { Foo }
+            }
+        "#,
+        );
+        let calls: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Calls)
+            .collect();
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.target_qualified_name == "my_crate::Foo::new"),
+            "Self::new() inside impl Foo should resolve to my_crate::Foo::new, got: {:?}",
+            calls
+        );
+    }
+
+    #[test]
+    fn local_type_associated_call_resolved() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub struct Foo;
+            impl Foo {
+                pub fn new() -> Self { Foo }
+            }
+            fn main() {
+                Foo::new();
+            }
+        "#,
+        );
+        let calls: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Calls && r.target_qualified_name.contains("new"))
+            .collect();
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.target_qualified_name == "my_crate::Foo::new"),
+            "Foo::new() in same module should resolve to my_crate::Foo::new, got: {:?}",
+            calls
+        );
+    }
+
+    #[test]
+    fn fully_qualified_call_preserved() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            fn main() {
+                std::io::stdout();
+            }
+        "#,
+        );
+        let calls: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Calls)
+            .collect();
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.target_qualified_name == "std::io::stdout"),
+            "std::io::stdout() should stay as-is, got: {:?}",
+            calls
+        );
+    }
+
+    #[test]
+    fn resolve_scoped_call_unit_tests() {
+        let ctx = vec!["my_crate".to_string(), "module".to_string()];
+        let impl_type = Some("my_crate::Foo");
+
+        // Self::method → impl_type::method
+        assert_eq!(
+            resolve_scoped_call("Self::new", &ctx, impl_type),
+            "my_crate::Foo::new"
+        );
+
+        // Type::method (uppercase, 2 segments) → module_context::Type::method
+        assert_eq!(
+            resolve_scoped_call("Bar::create", &ctx, impl_type),
+            "my_crate::module::Bar::create"
+        );
+
+        // Multi-segment → kept as-is
+        assert_eq!(
+            resolve_scoped_call("std::io::stdout", &ctx, impl_type),
+            "std::io::stdout"
+        );
+
+        // Simple function (no ::) → kept as-is
+        assert_eq!(resolve_scoped_call("helper", &ctx, impl_type), "helper");
+
+        // Self:: without impl_type → kept as-is
+        assert_eq!(resolve_scoped_call("Self::new", &ctx, None), "Self::new");
+
+        // Lowercase 2-segment → kept as-is (not a type)
+        assert_eq!(
+            resolve_scoped_call("module::func", &ctx, impl_type),
+            "module::func"
         );
     }
 }
