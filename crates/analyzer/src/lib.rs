@@ -123,6 +123,10 @@ pub fn analyze_project_with_registry(
     let (nodes, edges, mapping_warnings) = map_to_graph(&all_items, &all_relations);
     all_warnings.extend(mapping_warnings);
 
+    // Aggregate method call resolution stats from warnings.
+    let (method_calls_resolved, method_calls_unresolved) =
+        aggregate_method_call_stats(&all_warnings);
+
     // Create snapshot and insert.
     let version = store.create_snapshot(SnapshotKind::Analysis, commit_ref)?;
     store.add_nodes_batch(version, &nodes)?;
@@ -143,6 +147,8 @@ pub fn analyze_project_with_registry(
         units_reanalyzed: 0,
         nodes_copied: 0,
         edges_copied: 0,
+        method_calls_resolved,
+        method_calls_unresolved,
     })
 }
 
@@ -298,6 +304,10 @@ pub fn analyze_project_incremental_with_registry(
     let (nodes, edges, mapping_warnings) = map_to_graph(&all_items, &all_relations);
     all_warnings.extend(mapping_warnings);
 
+    // Aggregate method call resolution stats from warnings.
+    let (method_calls_resolved, method_calls_unresolved) =
+        aggregate_method_call_stats(&all_warnings);
+
     store.add_nodes_batch(version, &nodes)?;
     store.add_edges_batch(version, &edges)?;
 
@@ -319,7 +329,45 @@ pub fn analyze_project_incremental_with_registry(
         units_reanalyzed,
         nodes_copied,
         edges_copied,
+        method_calls_resolved,
+        method_calls_unresolved,
     })
+}
+
+/// Aggregate method call resolution stats from analysis warnings.
+///
+/// Parses warning messages with the format:
+/// `"N method call(s): M resolved, K could not be resolved without type information"`
+fn aggregate_method_call_stats(warnings: &[crate::types::AnalysisWarning]) -> (usize, usize) {
+    let mut resolved = 0;
+    let mut unresolved = 0;
+
+    for w in warnings {
+        if w.message.contains("method call(s):") {
+            // Extract "M resolved" count
+            if let Some(r_pos) = w.message.find(" resolved") {
+                let before = &w.message[..r_pos];
+                if let Some(space) = before.rfind(' ') {
+                    if let Ok(n) = before[space + 1..].parse::<usize>() {
+                        resolved += n;
+                    }
+                } else if let Ok(n) = before.parse::<usize>() {
+                    resolved += n;
+                }
+            }
+            // Extract "K could not be resolved" count
+            if let Some(u_pos) = w.message.find(" could not be resolved") {
+                let before = &w.message[..u_pos];
+                if let Some(comma) = before.rfind(", ") {
+                    if let Ok(n) = before[comma + 2..].trim().parse::<usize>() {
+                        unresolved += n;
+                    }
+                }
+            }
+        }
+    }
+
+    (resolved, unresolved)
 }
 
 #[cfg(test)]

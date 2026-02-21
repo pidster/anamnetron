@@ -113,6 +113,7 @@ fn parse_file(
 
     let module_context = vec![crate_name.to_string()];
     let mut unresolved_method_calls: usize = 0;
+    let mut resolved_method_calls: usize = 0;
 
     visit_children(
         root,
@@ -123,14 +124,17 @@ fn parse_file(
         relations,
         warnings,
         &mut unresolved_method_calls,
+        &mut resolved_method_calls,
         None,
     );
 
-    if unresolved_method_calls > 0 {
+    let total = resolved_method_calls + unresolved_method_calls;
+    if total > 0 {
         warnings.push(AnalysisWarning {
             source_ref: file_path.display().to_string(),
             message: format!(
-                "{unresolved_method_calls} method call(s) could not be resolved without type information"
+                "{total} method call(s): {resolved_method_calls} resolved, \
+                 {unresolved_method_calls} could not be resolved without type information"
             ),
         });
     }
@@ -147,6 +151,7 @@ fn visit_children(
     relations: &mut Vec<AnalysisRelation>,
     warnings: &mut Vec<AnalysisWarning>,
     unresolved_method_calls: &mut usize,
+    resolved_method_calls: &mut usize,
     impl_type: Option<&str>,
 ) {
     for i in 0..node.named_child_count() {
@@ -160,6 +165,7 @@ fn visit_children(
                 relations,
                 warnings,
                 unresolved_method_calls,
+                resolved_method_calls,
                 impl_type,
             );
         }
@@ -177,6 +183,7 @@ fn visit_node(
     relations: &mut Vec<AnalysisRelation>,
     warnings: &mut Vec<AnalysisWarning>,
     unresolved_method_calls: &mut usize,
+    resolved_method_calls: &mut usize,
     impl_type: Option<&str>,
 ) {
     match node.kind() {
@@ -190,6 +197,7 @@ fn visit_node(
                 relations,
                 warnings,
                 unresolved_method_calls,
+                resolved_method_calls,
                 impl_type,
             );
         }
@@ -265,7 +273,6 @@ fn visit_node(
             }
 
             // Descend into the function body to find call expressions.
-            let mut resolved_method_calls: usize = 0;
             if let Some(body) = node.child_by_field_name("body") {
                 visit_call_expressions(
                     body,
@@ -273,7 +280,7 @@ fn visit_node(
                     module_context,
                     relations,
                     unresolved_method_calls,
-                    &mut resolved_method_calls,
+                    resolved_method_calls,
                     impl_type,
                     &local_type_map,
                 );
@@ -289,6 +296,7 @@ fn visit_node(
                 relations,
                 warnings,
                 unresolved_method_calls,
+                resolved_method_calls,
                 impl_type,
             );
         }
@@ -307,6 +315,7 @@ fn visit_node(
                 relations,
                 warnings,
                 unresolved_method_calls,
+                resolved_method_calls,
                 impl_type,
             );
         }
@@ -396,6 +405,7 @@ fn visit_mod_item(
     relations: &mut Vec<AnalysisRelation>,
     warnings: &mut Vec<AnalysisWarning>,
     unresolved_method_calls: &mut usize,
+    resolved_method_calls: &mut usize,
     _impl_type: Option<&str>,
 ) {
     let Some(name) = item_name(node, source) else {
@@ -429,6 +439,7 @@ fn visit_mod_item(
             relations,
             warnings,
             unresolved_method_calls,
+            resolved_method_calls,
             None,
         );
     }
@@ -446,6 +457,7 @@ fn visit_impl_item(
     relations: &mut Vec<AnalysisRelation>,
     warnings: &mut Vec<AnalysisWarning>,
     unresolved_method_calls: &mut usize,
+    resolved_method_calls: &mut usize,
     _impl_type: Option<&str>,
 ) {
     // Check for `impl Trait for Type` — emit an Implements relation.
@@ -489,6 +501,7 @@ fn visit_impl_item(
             relations,
             warnings,
             unresolved_method_calls,
+            resolved_method_calls,
             resolved_impl_type.as_deref(),
         );
     }

@@ -447,6 +447,14 @@ fn run_analyze(store_path: &Path, args: &AnalyzeArgs, loader: &plugin::PluginLoa
         );
     }
 
+    let total_method_calls = summary.method_calls_resolved + summary.method_calls_unresolved;
+    if total_method_calls > 0 {
+        println!(
+            "    method calls: {} resolved, {} unresolved (of {} total)",
+            summary.method_calls_resolved, summary.method_calls_unresolved, total_method_calls,
+        );
+    }
+
     if !summary.warnings.is_empty() {
         eprintln!("\n  {} warnings:", summary.warnings.len());
         for w in summary.warnings.iter().take(20) {

@@ -130,4 +130,8 @@ pub struct AnalysisSummary {
     pub nodes_copied: usize,
     /// Number of edges copied from the previous version.
     pub edges_copied: usize,
+    /// Number of method calls resolved via heuristic type inference.
+    pub method_calls_resolved: usize,
+    /// Number of method calls that could not be resolved.
+    pub method_calls_unresolved: usize,
 }
