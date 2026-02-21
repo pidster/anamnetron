@@ -5,13 +5,15 @@
 //! than `svt-core` because `libloading` is platform-specific and core must remain
 //! WASM-compatible.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use svt_analyzer::orchestrator::descriptor::DescriptorOrchestrator;
 use svt_analyzer::orchestrator::OrchestratorRegistry;
 use svt_core::conformance::ConstraintRegistry;
 use svt_core::export::ExportRegistry;
 use svt_core::plugin::{PluginError, SvtPlugin, SVT_PLUGIN_API_VERSION};
+
+use crate::manifest::{self, PluginManifest};
 
 /// Type of the `svt_plugin_create` entry point exported by plugin shared libraries.
 ///
@@ -23,21 +25,58 @@ use svt_core::plugin::{PluginError, SvtPlugin, SVT_PLUGIN_API_VERSION};
 #[allow(improper_ctypes_definitions)]
 type PluginCreateFn = unsafe extern "C" fn() -> *mut dyn SvtPlugin;
 
+/// Where a loaded plugin was discovered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PluginSource {
+    /// Loaded via `--plugin` CLI flag.
+    CliFlag,
+    /// Found in `.svt/plugins/` (project-local).
+    ProjectLocal,
+    /// Found in `~/.svt/plugins/` (user-global).
+    UserGlobal,
+}
+
+impl std::fmt::Display for PluginSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PluginSource::CliFlag => write!(f, "cli-flag"),
+            PluginSource::ProjectLocal => write!(f, "project-local"),
+            PluginSource::UserGlobal => write!(f, "user-global"),
+        }
+    }
+}
+
+/// A loaded plugin paired with its origin and optional manifest.
+pub struct LoadedPlugin {
+    plugin: Box<dyn SvtPlugin>,
+    /// Filesystem path of the loaded shared library.
+    #[allow(dead_code)] // Public API — useful for diagnostics and future features
+    pub path: PathBuf,
+    /// Optional sidecar manifest found alongside the library.
+    pub manifest: Option<PluginManifest>,
+    /// Where the plugin was discovered.
+    pub source: PluginSource,
+}
+
+impl LoadedPlugin {
+    /// Access the underlying [`SvtPlugin`] trait object.
+    pub fn plugin(&self) -> &dyn SvtPlugin {
+        self.plugin.as_ref()
+    }
+}
+
 /// Loads svt plugins from shared libraries at runtime.
 ///
 /// The loader discovers `.dylib`/`.so`/`.dll` files, opens them with `libloading`,
 /// looks up the `svt_plugin_create` symbol, and calls it to obtain plugin instances.
-/// Both the [`libloading::Library`] handle and the [`Box<dyn SvtPlugin>`] are kept
+/// Both the [`libloading::Library`] handle and the [`LoadedPlugin`] are kept
 /// alive for the lifetime of the loader.
-///
-/// Library handles and plugin instances are stored in parallel vecs so that
-/// [`plugins()`](PluginLoader::plugins) can return a contiguous `&[Box<dyn SvtPlugin>]`.
 pub struct PluginLoader {
     /// Library handles kept alive so function pointers and vtables remain valid.
-    /// Order matches `plugins` — `libraries[i]` is the library for `plugins[i]`.
+    /// Order matches `loaded_plugins` — `libraries[i]` is the library for `loaded_plugins[i]`.
     libraries: Vec<libloading::Library>,
-    /// Plugin instances obtained from the libraries' entry points.
-    plugins: Vec<Box<dyn SvtPlugin>>,
+    /// Plugin instances with metadata.
+    loaded_plugins: Vec<LoadedPlugin>,
 }
 
 impl PluginLoader {
@@ -46,7 +85,7 @@ impl PluginLoader {
     pub fn new() -> Self {
         Self {
             libraries: Vec::new(),
-            plugins: Vec::new(),
+            loaded_plugins: Vec::new(),
         }
     }
 
@@ -63,7 +102,21 @@ impl PluginLoader {
     /// Returns [`PluginError::LoadFailed`] if the library cannot be opened,
     /// [`PluginError::SymbolNotFound`] if the entry point is missing, or
     /// [`PluginError::ApiVersionMismatch`] if the versions disagree.
+    #[allow(dead_code)] // Convenience wrapper used in tests
     pub fn load(&mut self, path: &Path) -> Result<(), PluginError> {
+        self.load_with_source(path, PluginSource::CliFlag)
+    }
+
+    /// Load a plugin from `path` with the given [`PluginSource`].
+    ///
+    /// After loading the library and creating the plugin instance, this also
+    /// looks for a sidecar manifest (`<stem>.svt-plugin.toml` or `svt-plugin.toml`
+    /// in the same directory) and attaches it if found.
+    pub fn load_with_source(
+        &mut self,
+        path: &Path,
+        source: PluginSource,
+    ) -> Result<(), PluginError> {
         let path_str = path.display().to_string();
 
         // SAFETY: `Library::new` loads a shared library into the process. This is
@@ -110,8 +163,16 @@ impl PluginLoader {
             });
         }
 
+        let manifest = find_sidecar_manifest(path);
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+
         self.libraries.push(library);
-        self.plugins.push(plugin);
+        self.loaded_plugins.push(LoadedPlugin {
+            plugin,
+            path: canonical,
+            manifest,
+            source,
+        });
 
         Ok(())
     }
@@ -125,7 +186,17 @@ impl PluginLoader {
     ///
     /// Returns an empty vec if the directory does not exist or contains no
     /// matching files.
+    #[allow(dead_code)] // Convenience wrapper used in tests
     pub fn scan_directory(&mut self, dir: &Path) -> Vec<PluginError> {
+        self.scan_directory_with_source(dir, PluginSource::ProjectLocal)
+    }
+
+    /// Scan a directory for shared library files with the given [`PluginSource`].
+    pub fn scan_directory_with_source(
+        &mut self,
+        dir: &Path,
+        source: PluginSource,
+    ) -> Vec<PluginError> {
         let mut errors = Vec::new();
 
         let entries = match std::fs::read_dir(dir) {
@@ -138,7 +209,7 @@ impl PluginLoader {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) == Some(ext) {
-                if let Err(e) = self.load(&path) {
+                if let Err(e) = self.load_with_source(&path, source.clone()) {
                     errors.push(e);
                 }
             }
@@ -149,8 +220,8 @@ impl PluginLoader {
 
     /// Register all loaded plugins' constraint evaluators into the given registry.
     pub fn register_constraints(&self, constraints: &mut ConstraintRegistry) {
-        for plugin in &self.plugins {
-            for evaluator in plugin.constraint_evaluators() {
+        for lp in &self.loaded_plugins {
+            for evaluator in lp.plugin.constraint_evaluators() {
                 constraints.register(evaluator);
             }
         }
@@ -158,8 +229,8 @@ impl PluginLoader {
 
     /// Register all loaded plugins' export formats into the given registry.
     pub fn register_exports(&self, exports: &mut ExportRegistry) {
-        for plugin in &self.plugins {
-            for format in plugin.export_formats() {
+        for lp in &self.loaded_plugins {
+            for format in lp.plugin.export_formats() {
                 exports.register(format);
             }
         }
@@ -170,8 +241,8 @@ impl PluginLoader {
     /// Each plugin's [`SvtPlugin::language_parsers`] returns `(LanguageDescriptor, Box<dyn LanguageParser>)`
     /// pairs. Each pair is wrapped in a [`DescriptorOrchestrator`] and registered.
     pub fn register_language_parsers(&self, registry: &mut OrchestratorRegistry) {
-        for plugin in &self.plugins {
-            for (descriptor, parser) in plugin.language_parsers() {
+        for lp in &self.loaded_plugins {
+            for (descriptor, parser) in lp.plugin.language_parsers() {
                 registry.register(Box::new(DescriptorOrchestrator::new(descriptor, parser)));
             }
         }
@@ -187,17 +258,17 @@ impl PluginLoader {
         self.register_exports(exports);
     }
 
-    /// Return a slice of all loaded plugin instances.
+    /// Return a slice of all loaded plugins.
     #[must_use]
-    pub fn plugins(&self) -> &[Box<dyn SvtPlugin>] {
-        &self.plugins
+    pub fn plugins(&self) -> &[LoadedPlugin] {
+        &self.loaded_plugins
     }
 }
 
 impl std::fmt::Debug for PluginLoader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PluginLoader")
-            .field("plugin_count", &self.plugins.len())
+            .field("plugin_count", &self.loaded_plugins.len())
             .finish()
     }
 }
@@ -222,6 +293,31 @@ pub fn shared_library_extension() -> &'static str {
     } else {
         "so"
     }
+}
+
+/// Look for a sidecar manifest alongside a library file.
+///
+/// Checks in order:
+/// 1. `<stem>.svt-plugin.toml` in the same directory (e.g. `svt_plugin_java.svt-plugin.toml`)
+/// 2. `svt-plugin.toml` in the same directory (generic fallback)
+///
+/// Returns `None` if neither file exists or cannot be parsed.
+pub fn find_sidecar_manifest(library_path: &Path) -> Option<PluginManifest> {
+    let dir = library_path.parent()?;
+
+    // Try stem-named manifest first
+    if let Some(stem) = library_path.file_stem().and_then(|s| s.to_str()) {
+        // Strip "lib" prefix on Unix for cleaner matching
+        let clean_stem = stem.strip_prefix("lib").unwrap_or(stem);
+        let named_manifest = dir.join(format!("{clean_stem}.svt-plugin.toml"));
+        if let Ok(m) = manifest::read_manifest(&named_manifest) {
+            return Some(m);
+        }
+    }
+
+    // Fall back to generic manifest
+    let generic_manifest = dir.join("svt-plugin.toml");
+    manifest::read_manifest(&generic_manifest).ok()
 }
 
 #[cfg(test)]
@@ -345,5 +441,67 @@ mod tests {
             exports.names().is_empty(),
             "empty loader should not add any export formats"
         );
+    }
+
+    #[test]
+    fn find_sidecar_manifest_with_stem_named_toml() {
+        let dir = tempfile::tempdir().expect("failed to create tempdir");
+        let lib_path = dir.path().join("libmy_plugin.dylib");
+        std::fs::write(&lib_path, b"fake").unwrap();
+
+        let manifest_content = r#"
+[plugin]
+name = "my-plugin"
+version = "1.0.0"
+api_version = 1
+"#;
+        std::fs::write(
+            dir.path().join("my_plugin.svt-plugin.toml"),
+            manifest_content,
+        )
+        .unwrap();
+
+        let result = find_sidecar_manifest(&lib_path);
+        assert!(result.is_some(), "should find stem-named sidecar manifest");
+        assert_eq!(result.unwrap().plugin.name, "my-plugin");
+    }
+
+    #[test]
+    fn find_sidecar_manifest_with_generic_toml() {
+        let dir = tempfile::tempdir().expect("failed to create tempdir");
+        let lib_path = dir.path().join("libmy_plugin.dylib");
+        std::fs::write(&lib_path, b"fake").unwrap();
+
+        let manifest_content = r#"
+[plugin]
+name = "generic-plugin"
+version = "0.5.0"
+api_version = 1
+"#;
+        std::fs::write(dir.path().join("svt-plugin.toml"), manifest_content).unwrap();
+
+        let result = find_sidecar_manifest(&lib_path);
+        assert!(result.is_some(), "should find generic sidecar manifest");
+        assert_eq!(result.unwrap().plugin.name, "generic-plugin");
+    }
+
+    #[test]
+    fn find_sidecar_manifest_returns_none_when_missing() {
+        let dir = tempfile::tempdir().expect("failed to create tempdir");
+        let lib_path = dir.path().join("libmy_plugin.dylib");
+        std::fs::write(&lib_path, b"fake").unwrap();
+
+        let result = find_sidecar_manifest(&lib_path);
+        assert!(
+            result.is_none(),
+            "should return None when no sidecar manifest exists"
+        );
+    }
+
+    #[test]
+    fn plugin_source_display() {
+        assert_eq!(PluginSource::CliFlag.to_string(), "cli-flag");
+        assert_eq!(PluginSource::ProjectLocal.to_string(), "project-local");
+        assert_eq!(PluginSource::UserGlobal.to_string(), "user-global");
     }
 }

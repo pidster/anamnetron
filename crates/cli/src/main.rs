@@ -2,7 +2,9 @@
 
 #![warn(missing_docs)]
 
+pub(crate) mod manifest;
 pub(crate) mod plugin;
+pub(crate) mod plugin_commands;
 
 use std::path::{Path, PathBuf};
 
@@ -130,6 +132,42 @@ struct PluginArgs {
 enum PluginCommands {
     /// List all loaded plugins and their contributions.
     List,
+    /// Install a plugin from a local directory or manifest.
+    Install(PluginInstallArgs),
+    /// Remove an installed plugin by name.
+    Remove(PluginRemoveArgs),
+    /// Show information about a plugin from its manifest.
+    Info(PluginInfoArgs),
+}
+
+/// Arguments for `svt plugin install`.
+#[derive(clap::Args, Debug)]
+struct PluginInstallArgs {
+    /// Directory containing svt-plugin.toml + compiled library, or path to a manifest file.
+    source: PathBuf,
+    /// Install to ~/.svt/plugins/ instead of .svt/plugins/.
+    #[arg(long)]
+    global: bool,
+    /// Overwrite existing plugin with the same name.
+    #[arg(long)]
+    force: bool,
+}
+
+/// Arguments for `svt plugin remove`.
+#[derive(clap::Args, Debug)]
+struct PluginRemoveArgs {
+    /// Plugin name to remove (matches <name>.svt-plugin.toml).
+    name: String,
+    /// Remove from ~/.svt/plugins/ instead of .svt/plugins/.
+    #[arg(long)]
+    global: bool,
+}
+
+/// Arguments for `svt plugin info`.
+#[derive(clap::Args, Debug)]
+struct PluginInfoArgs {
+    /// Directory containing svt-plugin.toml, or path to a .toml manifest file.
+    path: PathBuf,
 }
 
 /// Arguments for the `svt store` subcommand.
@@ -596,21 +634,21 @@ fn build_plugin_loader(plugin_paths: &[PathBuf]) -> plugin::PluginLoader {
 
     // 1. CLI-specified plugins
     for path in plugin_paths {
-        if let Err(e) = loader.load(path) {
+        if let Err(e) = loader.load_with_source(path, plugin::PluginSource::CliFlag) {
             eprintln!("  WARN  {e}");
         }
     }
 
     // 2. Project-local plugins (.svt/plugins/)
     let local_dir = PathBuf::from(".svt/plugins");
-    for e in loader.scan_directory(&local_dir) {
+    for e in loader.scan_directory_with_source(&local_dir, plugin::PluginSource::ProjectLocal) {
         eprintln!("  WARN  {e}");
     }
 
     // 3. User-global plugins (~/.svt/plugins/)
     if let Some(home) = home_dir() {
         let global_dir = home.join(".svt").join("plugins");
-        for e in loader.scan_directory(&global_dir) {
+        for e in loader.scan_directory_with_source(&global_dir, plugin::PluginSource::UserGlobal) {
             eprintln!("  WARN  {e}");
         }
     }
@@ -625,14 +663,34 @@ fn home_dir() -> Option<PathBuf> {
 
 /// List all loaded plugins and their contributions to stdout.
 fn run_plugin_list(loader: &plugin::PluginLoader) -> Result<()> {
-    let plugins = loader.plugins();
-    if plugins.is_empty() {
+    let loaded = loader.plugins();
+    if loaded.is_empty() {
         println!("No plugins loaded.");
         return Ok(());
     }
 
-    for p in plugins {
-        println!("{} v{} (API v{})", p.name(), p.version(), p.api_version());
+    for lp in loaded {
+        let p = lp.plugin();
+
+        // Use manifest metadata if available for richer display
+        if let Some(ref m) = lp.manifest {
+            println!(
+                "{} v{} (API v{}) [{}]",
+                m.plugin.name, m.plugin.version, m.plugin.api_version, lp.source,
+            );
+            if !m.plugin.description.is_empty() {
+                println!("  {}", m.plugin.description);
+            }
+        } else {
+            println!(
+                "{} v{} (API v{}) [{}]",
+                p.name(),
+                p.version(),
+                p.api_version(),
+                lp.source,
+            );
+        }
+
         let evaluators = p.constraint_evaluators();
         if !evaluators.is_empty() {
             println!("  Constraint evaluators:");
@@ -792,6 +850,15 @@ fn main() -> Result<()> {
         Commands::Diff(args) => run_diff(&cli.store, args),
         Commands::Plugin(args) => match &args.command {
             PluginCommands::List => run_plugin_list(&loader),
+            PluginCommands::Install(install_args) => plugin_commands::run_install(
+                &install_args.source,
+                install_args.global,
+                install_args.force,
+            ),
+            PluginCommands::Remove(remove_args) => {
+                plugin_commands::run_remove(&remove_args.name, remove_args.global)
+            }
+            PluginCommands::Info(info_args) => plugin_commands::run_info(&info_args.path),
         },
         Commands::Store(args) => match &args.command {
             StoreCommands::Info => run_store_info(&cli.store),
