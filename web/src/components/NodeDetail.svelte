@@ -101,6 +101,7 @@
 <style>
   .node-detail {
     width: 360px;
+    flex-shrink: 0;
     background: var(--surface);
     border-left: 1px solid var(--border);
     overflow-y: auto;
