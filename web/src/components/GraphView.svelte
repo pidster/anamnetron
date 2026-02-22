@@ -38,6 +38,7 @@
   let container: HTMLDivElement;
   let cy: cytoscape.Core | null = null;
   let traversalIndex: TraversalIndex | null = null;
+  let pathIndex: Map<string, cytoscape.NodeSingular> = new Map();
 
   function getCssVar(name: string): string {
     return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -156,6 +157,9 @@
 
   function initCytoscape(elements: CytoscapeGraph["elements"]) {
     if (cy) cy.destroy();
+    pathIndex.clear();
+
+    const nodeCount = elements.nodes.length;
 
     cy = cytoscape({
       container,
@@ -166,10 +170,12 @@
       style: buildStyleSheet(),
       layout: {
         name: layout,
-        animate: false,
+        animate: nodeCount >= 200,
         nodeDimensionsIncludeLabels: true,
       } as cytoscape.LayoutOptions,
-    });
+      textureOnViewport: nodeCount > 300,
+      hideEdgesOnViewport: nodeCount > 500,
+    } as cytoscape.CytoscapeOptions);
 
     cy.on("tap", "node", (evt) => {
       const nodeId = evt.target.id();
@@ -182,6 +188,12 @@
         selectionStore.clear();
       }
     });
+
+    // Build canonical path index for O(1) lookups in overlays
+    cy.nodes().forEach((node) => {
+      const cp = node.data("canonical_path") as string | undefined;
+      if (cp) pathIndex.set(cp, node);
+    });
   }
 
   function applyConformanceOverlay(report: ConformanceReport) {
@@ -192,28 +204,26 @@
       "conformance-pass conformance-fail conformance-unimplemented conformance-undocumented",
     );
 
-    // Mark failed constraints
+    // Mark failed constraints via path index
     for (const result of report.constraint_results) {
       if (result.status === "fail") {
         for (const violation of result.violations) {
-          const node = cy.nodes().filter((n) => n.data("canonical_path") === violation.source_path);
-          node.addClass("conformance-fail");
+          const node = pathIndex.get(violation.source_path);
+          if (node) node.addClass("conformance-fail");
         }
       }
     }
 
-    // Mark unimplemented
-    for (const node of report.unimplemented) {
-      cy.nodes()
-        .filter((n) => n.data("canonical_path") === node.canonical_path)
-        .addClass("conformance-unimplemented");
+    // Mark unimplemented via path index
+    for (const entry of report.unimplemented) {
+      const node = pathIndex.get(entry.canonical_path);
+      if (node) node.addClass("conformance-unimplemented");
     }
 
-    // Mark undocumented
-    for (const node of report.undocumented) {
-      cy.nodes()
-        .filter((n) => n.data("canonical_path") === node.canonical_path)
-        .addClass("conformance-undocumented");
+    // Mark undocumented via path index
+    for (const entry of report.undocumented) {
+      const node = pathIndex.get(entry.canonical_path);
+      if (node) node.addClass("conformance-undocumented");
     }
 
     // Remaining nodes with no overlay = pass
@@ -233,28 +243,28 @@
     // Clear previous diff overlay
     cy.elements().removeClass("diff-added diff-removed diff-changed");
 
-    // Apply node changes
+    // Apply node changes via path index
     for (const change of report.node_changes) {
-      const node = cy.nodes().filter((n) => n.data("canonical_path") === change.canonical_path);
-      if (node.length > 0) {
-        node.addClass(`diff-${change.change}`);
-      }
+      const node = pathIndex.get(change.canonical_path);
+      if (node) node.addClass(`diff-${change.change}`);
     }
 
-    // Apply edge changes
-    for (const change of report.edge_changes) {
-      const edge = cy.edges().filter((e) => {
-        const srcNode = cy!.getElementById(e.data("source"));
-        const tgtNode = cy!.getElementById(e.data("target"));
-        return (
-          srcNode.data("canonical_path") === change.source_path &&
-          tgtNode.data("canonical_path") === change.target_path &&
-          e.data("kind") === change.edge_kind
-        );
-      });
-      if (edge.length > 0) {
-        edge.addClass(`diff-${change.change}`);
+    // Build composite edge key map for O(1) lookups
+    const edgeIndex = new Map<string, cytoscape.EdgeSingular>();
+    cy.edges().forEach((edge) => {
+      const srcPath = cy!.getElementById(edge.data("source")).data("canonical_path") as string;
+      const tgtPath = cy!.getElementById(edge.data("target")).data("canonical_path") as string;
+      const kind = edge.data("kind") as string;
+      if (srcPath && tgtPath && kind) {
+        edgeIndex.set(`${srcPath}\0${tgtPath}\0${kind}`, edge);
       }
+    });
+
+    // Apply edge changes via composite key lookup
+    for (const change of report.edge_changes) {
+      const key = `${change.source_path}\0${change.target_path}\0${change.edge_kind}`;
+      const edge = edgeIndex.get(key);
+      if (edge) edge.addClass(`diff-${change.change}`);
     }
   }
 
@@ -264,7 +274,12 @@
   }
 
   onMount(() => {
+    const resizeObserver = new ResizeObserver(() => {
+      if (cy) cy.resize();
+    });
+    resizeObserver.observe(container);
     return () => {
+      resizeObserver.disconnect();
       if (cy) cy.destroy();
     };
   });
@@ -318,9 +333,8 @@
     if (!nk || !ek || !sk || !lg) return;
 
     cy.startBatch();
-    cy.elements().show();
 
-    // Hide nodes that don't match filters
+    // Single-pass filter: only toggle visibility when state actually changes
     cy.nodes().forEach((node) => {
       const kind = node.data("kind") as string;
       const subKind = node.data("sub_kind") as string;
@@ -329,21 +343,22 @@
       const kindMatch = nk.has(kind);
       const subKindMatch = !subKind || sk.has(subKind);
       const langMatch = !language || lg.has(language);
+      const shouldShow = kindMatch && subKindMatch && langMatch;
 
-      if (!kindMatch || !subKindMatch || !langMatch) {
+      if (shouldShow && node.hidden()) {
+        node.show();
+      } else if (!shouldShow && node.visible()) {
         node.hide();
       }
     });
 
-    // Hide edges that don't match filters or have hidden endpoints
     cy.edges().forEach((edge) => {
       const kind = edge.data("kind") as string;
-      if (!ek.has(kind)) {
-        edge.hide();
-        return;
-      }
-      // Hide edges where source or target is hidden
-      if (!edge.source().visible() || !edge.target().visible()) {
+      const shouldShow = ek.has(kind) && edge.source().visible() && edge.target().visible();
+
+      if (shouldShow && edge.hidden()) {
+        edge.show();
+      } else if (!shouldShow && edge.visible()) {
         edge.hide();
       }
     });
