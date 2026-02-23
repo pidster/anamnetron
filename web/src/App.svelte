@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import * as api from "./lib/api";
-  import type { Version, SnapshotDiff } from "./lib/types";
+  import type { Version, LayoutType } from "./lib/types";
   import { graphStore } from "./stores/graph.svelte";
   import { selectionStore } from "./stores/selection.svelte";
   import { initWasm, getWasmStore } from "./lib/wasm";
@@ -18,8 +18,6 @@
   import { filterStore } from "./stores/filter.svelte";
   import { expansionStore } from "./stores/expansion.svelte";
   import { focusStore } from "./stores/focus.svelte";
-
-  type LayoutType = "fcose" | "dagre" | "elk";
 
   function migrateLayout(saved: string | null): LayoutType {
     if (saved === "dagre") return "dagre";

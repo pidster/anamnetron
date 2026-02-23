@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import cytoscape from "cytoscape";
-  import coseBilkent from "cytoscape-cose-bilkent";
   import dagre from "cytoscape-dagre";
   import fcose from "cytoscape-fcose";
   import elk from "cytoscape-elk";
@@ -9,22 +8,19 @@
   import contextMenus from "cytoscape-context-menus";
   import popper from "cytoscape-popper";
   import tippy, { type Instance as TippyInstance } from "tippy.js";
-  import type { CytoscapeGraph, ConformanceReport, SnapshotDiff } from "../lib/types";
+  import type { CytoscapeGraph, ConformanceReport, SnapshotDiff, LayoutType } from "../lib/types";
   import { selectionStore } from "../stores/selection.svelte";
   import { buildTraversalIndex, type TraversalIndex } from "../lib/traversal";
   import { computeVisibleElements } from "../lib/expansion";
   import { KIND_COLORS, SUB_KIND_SHAPES, EDGE_STYLES } from "../lib/visual-encoding";
 
   // Register layout and interaction extensions once
-  cytoscape.use(coseBilkent);
   cytoscape.use(dagre);
   cytoscape.use(fcose);
   cytoscape.use(elk);
   cytoscape.use(navigator);
   cytoscape.use(contextMenus);
   cytoscape.use(popper);
-
-  type LayoutType = "fcose" | "dagre" | "elk";
 
   interface Props {
     graph: CytoscapeGraph | null;
@@ -66,7 +62,6 @@
   let pathIndex: Map<string, cytoscape.NodeSingular> = new Map();
   let tapTimeout: ReturnType<typeof setTimeout> | null = null;
   let activeTippy: TippyInstance | null = null;
-  let navInstance: unknown = null;
 
   function getCssVar(name: string): string {
     return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -266,17 +261,21 @@
     }
   }
 
+  function escapeHtml(str: string): string {
+    return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+
   function showTooltip(node: cytoscape.NodeSingular) {
     destroyTooltip();
     if (!cy) return;
 
     const ref = node.popperRef();
     const content = document.createElement("div");
-    const label = node.data("label") || node.id();
-    const kind = node.data("kind") || "";
-    const subKind = node.data("sub_kind") || "";
-    const cp = node.data("canonical_path") || "";
-    const lang = node.data("language") || "";
+    const label = escapeHtml(String(node.data("label") || node.id()));
+    const kind = escapeHtml(String(node.data("kind") || ""));
+    const subKind = escapeHtml(String(node.data("sub_kind") || ""));
+    const cp = escapeHtml(String(node.data("canonical_path") || ""));
+    const lang = escapeHtml(String(node.data("language") || ""));
     const childCount = node.data("_childCount");
 
     let html = `<strong>${label}</strong>`;
@@ -284,7 +283,7 @@
     if (subKind) html += ` / ${subKind}`;
     if (cp) html += `<br/><code>${cp}</code>`;
     if (lang) html += `<br/>Language: ${lang}`;
-    if (childCount !== undefined) html += `<br/>${childCount} descendants`;
+    if (childCount !== undefined) html += `<br/>${escapeHtml(String(childCount))} descendants`;
     content.innerHTML = html;
 
     activeTippy = tippy(document.createElement("div"), {
@@ -301,12 +300,11 @@
     });
   }
 
-  function applyFocusDimming(targetNodeId: string, degrees: number) {
-    if (!cy) return;
+  function applyFocusDimming(targetNodeId: string, degrees: number): cytoscape.Collection | null {
+    if (!cy) return null;
     const node = cy.getElementById(targetNodeId);
-    if (node.length === 0) return;
-    const neighborhood = node.closedNeighborhood();
-    let extended = neighborhood;
+    if (node.length === 0) return null;
+    let extended = node.closedNeighborhood();
     for (let i = 1; i < degrees; i++) {
       extended = extended.closedNeighborhood();
     }
@@ -314,6 +312,7 @@
     cy.elements().addClass("faded").removeClass("highlighted");
     extended.removeClass("faded").addClass("highlighted");
     cy.endBatch();
+    return extended;
   }
 
   function clearFocusDimming() {
@@ -458,7 +457,7 @@
         selector: "node",
         onClickFunction: (event: { target: cytoscape.SingularElementReturnValue }) => {
           const cp = event.target.data("canonical_path") as string;
-          if (cp) void navigator.clipboard?.writeText(cp).catch(() => {});
+          if (cp) void globalThis.navigator.clipboard?.writeText(cp).catch(() => {});
         },
       },
       {
@@ -482,7 +481,7 @@
     // --- Minimap ---
     const navContainer = container.querySelector(".cy-navigator");
     if (navContainer) {
-      navInstance = (cy as unknown as { navigator: (opts: unknown) => unknown }).navigator({
+      (cy as unknown as { navigator: (opts: unknown) => unknown }).navigator({
         container: navContainer,
         viewLiveFramerate: 0,
         thumbnailEventFramerate: 10,
@@ -582,6 +581,10 @@
     resizeObserver.observe(container);
     return () => {
       resizeObserver.disconnect();
+      if (tapTimeout) {
+        clearTimeout(tapTimeout);
+        tapTimeout = null;
+      }
       destroyTooltip();
       if (cy) cy.destroy();
     };
@@ -637,14 +640,8 @@
     const deg = focusDegrees;
     if (!cy) return;
     if (fid) {
-      applyFocusDimming(fid, deg);
-      // Fit to neighborhood
-      const node = cy.getElementById(fid);
-      if (node.length > 0) {
-        let neighborhood = node.closedNeighborhood();
-        for (let i = 1; i < deg; i++) {
-          neighborhood = neighborhood.closedNeighborhood();
-        }
+      const neighborhood = applyFocusDimming(fid, deg);
+      if (neighborhood) {
         cy.animate({ fit: { eles: neighborhood, padding: 50 }, duration: 300 });
       }
     } else {
