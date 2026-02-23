@@ -45,14 +45,13 @@
 
   function toggleTheme() {
     theme = theme === "dark" ? "light" : "dark";
-    document.documentElement.dataset.theme = theme;
     localStorage.setItem("svt-theme", theme);
   }
 
-  // Apply initial theme
-  if (typeof document !== "undefined") {
+  // Apply theme to document (reactive — also handles initial value)
+  $effect(() => {
     document.documentElement.dataset.theme = theme;
-  }
+  });
 
   // Build label lookup from graph for breadcrumb display
   let labelMap = $derived.by(() => {
@@ -82,54 +81,7 @@
   // Hash routing: suppress writes during reads to avoid loops
   let suppressHashWrite = false;
 
-  onMount(async () => {
-    try {
-      graphStore.loading = true;
-      // Initialize WASM and load snapshots in parallel
-      const [, snapshots] = await Promise.all([
-        initWasm(),
-        api.getSnapshots(),
-      ]);
-      graphStore.snapshots = snapshots;
-
-      // Apply initial state from hash
-      const initial = parseHash(window.location.hash);
-      if (initial.layout) {
-        layoutChoice = migrateLayout(initial.layout);
-      }
-
-      const initialVersion = initial.version && snapshots.some((s) => s.version === initial.version)
-        ? initial.version
-        : snapshots.length > 0 ? snapshots[0].version : null;
-
-      if (initial.scope) {
-        scopeStore.setScope(initial.scope);
-      }
-      if (initial.mermaid) {
-        mermaidStore.diagramType = initial.mermaid as "flowchart" | "dataflow" | "sequence" | "c4";
-        mermaidStore.open = true;
-      }
-
-      if (initialVersion) {
-        suppressHashWrite = true;
-        await selectVersion(initialVersion);
-        if (initial.node) {
-          // Expand ancestors so the hash-specified node becomes visible
-          const index = graphView?.getTraversalIndex();
-          if (index) {
-            expansionStore.expandAncestors(initial.node, index);
-          }
-          selectionStore.selectedNodeId = initial.node;
-          selectionStore.panelOpen = true;
-        }
-        suppressHashWrite = false;
-      }
-    } catch (e) {
-      graphStore.error = e instanceof Error ? e.message : "Failed to load";
-    } finally {
-      graphStore.loading = false;
-    }
-
+  onMount(() => {
     // Listen for back/forward navigation
     function onHashChange() {
       const state = parseHash(window.location.hash);
@@ -163,6 +115,54 @@
       suppressHashWrite = false;
     }
     window.addEventListener("hashchange", onHashChange);
+
+    // Initialize async: load WASM, snapshots, and apply initial hash state
+    (async () => {
+      try {
+        graphStore.loading = true;
+        const [, snapshots] = await Promise.all([
+          initWasm(),
+          api.getSnapshots(),
+        ]);
+        graphStore.snapshots = snapshots;
+
+        const initial = parseHash(window.location.hash);
+        if (initial.layout) {
+          layoutChoice = migrateLayout(initial.layout);
+        }
+
+        const initialVersion = initial.version && snapshots.some((s) => s.version === initial.version)
+          ? initial.version
+          : snapshots.length > 0 ? snapshots[0].version : null;
+
+        if (initial.scope) {
+          scopeStore.setScope(initial.scope);
+        }
+        if (initial.mermaid) {
+          mermaidStore.diagramType = initial.mermaid as "flowchart" | "dataflow" | "sequence" | "c4";
+          mermaidStore.open = true;
+        }
+
+        if (initialVersion) {
+          suppressHashWrite = true;
+          await selectVersion(initialVersion);
+          if (initial.node) {
+            const index = graphView?.getTraversalIndex();
+            if (index) {
+              expansionStore.expandAncestors(initial.node, index);
+            }
+            selectionStore.selectedNodeId = initial.node;
+            selectionStore.panelOpen = true;
+          }
+          suppressHashWrite = false;
+        }
+      } catch (e) {
+        graphStore.error = e instanceof Error ? e.message : "Failed to load";
+      } finally {
+        graphStore.loading = false;
+      }
+    })();
+
     return () => window.removeEventListener("hashchange", onHashChange);
   });
 

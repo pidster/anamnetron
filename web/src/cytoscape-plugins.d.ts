@@ -53,3 +53,27 @@ declare module "cytoscape-popper" {
   const popper: cytoscape.Ext;
   export default popper;
 }
+
+// Augment @types/cytoscape with missing methods from core API and plugins
+declare namespace cytoscape {
+  interface SingularElementReturnValue {
+    show(): this;
+    hide(): this;
+    hidden(): boolean;
+    visible(): boolean;
+  }
+
+  interface NodeSingular {
+    show(): this;
+    hide(): this;
+    hidden(): boolean;
+    visible(): boolean;
+  }
+
+  interface EdgeSingular {
+    show(): this;
+    hide(): this;
+    hidden(): boolean;
+    visible(): boolean;
+  }
+}

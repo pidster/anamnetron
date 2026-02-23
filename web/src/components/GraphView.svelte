@@ -148,7 +148,7 @@
     for (const [subKind, shape] of Object.entries(SUB_KIND_SHAPES)) {
       styles.push({
         selector: `node[sub_kind = '${subKind}']:childless`,
-        style: { shape },
+        style: { shape: shape as cytoscape.Css.NodeShape },
       });
     }
 
@@ -173,10 +173,10 @@
       styles.push({
         selector: `edge[kind = '${kind}']`,
         style: {
-          "line-style": def.lineStyle,
+          "line-style": def.lineStyle as cytoscape.Css.LineStyle,
           "line-color": color,
           "target-arrow-color": color,
-          "target-arrow-shape": def.arrowShape,
+          "target-arrow-shape": def.arrowShape as cytoscape.Css.ArrowShape,
         },
       });
     }
@@ -270,7 +270,7 @@
     destroyTooltip();
     if (!cy) return;
 
-    const ref = node.popperRef();
+    const ref = (node as unknown as { popperRef: () => { getBoundingClientRect: () => DOMRect } }).popperRef();
     const content = document.createElement("div");
     const label = escapeHtml(String(node.data("label") || node.id()));
     const kind = escapeHtml(String(node.data("kind") || ""));
