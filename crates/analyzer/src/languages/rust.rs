@@ -464,18 +464,23 @@ fn visit_impl_item(
     let trait_node = node.child_by_field_name("trait");
     let type_node = node.child_by_field_name("type");
 
-    if let (Some(trait_n), Some(type_n)) = (trait_node, type_node) {
-        if let (Ok(trait_name), Some(type_name)) = (
-            trait_n.utf8_text(source.as_ref()),
-            type_name_without_generics(type_n, source),
-        ) {
-            let module_qn = build_qualified_name(module_context);
-            let source_qn = format!("{module_qn}::{type_name}");
-            let target_qn = trait_name.to_string();
+    // Extract type parameter names (e.g., T, E from `impl<T, E>`) so we can
+    // detect blanket impls where the type IS a parameter.
+    let type_params = impl_type_param_names(node, source);
 
+    // Resolve the impl target type to a qualified name, skipping type
+    // parameters and primitives that would produce phantom parent nodes.
+    let impl_type_qn = type_node
+        .and_then(|tn| type_name_without_generics(tn, source))
+        .and_then(|name| resolve_impl_type_qn(&name, &type_params, module_context));
+
+    // Emit an Implements relation for trait impls (only when the source type
+    // resolves to a real node).
+    if let (Some(trait_n), Some(source_qn)) = (trait_node, impl_type_qn.as_ref()) {
+        if let Ok(trait_name) = trait_n.utf8_text(source.as_ref()) {
             relations.push(AnalysisRelation {
-                source_qualified_name: source_qn,
-                target_qualified_name: target_qn,
+                source_qualified_name: source_qn.clone(),
+                target_qualified_name: trait_name.to_string(),
                 kind: EdgeKind::Implements,
             });
         }
@@ -483,14 +488,6 @@ fn visit_impl_item(
 
     // Find the body of the impl block and extract function items from it.
     if let Some(body) = node.child_by_field_name("body") {
-        // Extract the type being impl'd to enable self.method() resolution.
-        let resolved_impl_type = type_node
-            .and_then(|tn| type_name_without_generics(tn, source))
-            .map(|type_name| {
-                let module_qn = build_qualified_name(module_context);
-                format!("{module_qn}::{type_name}")
-            });
-
         visit_children(
             body,
             source,
@@ -501,7 +498,7 @@ fn visit_impl_item(
             warnings,
             unresolved_method_calls,
             resolved_method_calls,
-            resolved_impl_type.as_deref(),
+            impl_type_qn.as_deref(),
         );
     }
 }
@@ -631,6 +628,77 @@ fn type_name_without_generics(node: tree_sitter::Node<'_>, source: &[u8]) -> Opt
             let text = node.utf8_text(source).ok()?;
             Some(text.split('<').next().unwrap_or(text).trim().to_string())
         }
+    }
+}
+
+/// Extract type parameter names declared on an `impl` block.
+///
+/// For `impl<T, E>`, returns `["T", "E"]`. For `impl<'a, T: Display>`,
+/// returns `["T"]` (lifetimes are excluded).
+fn impl_type_param_names(impl_node: tree_sitter::Node<'_>, source: &[u8]) -> Vec<String> {
+    let Some(type_params) = impl_node.child_by_field_name("type_parameters") else {
+        return Vec::new();
+    };
+    let mut names = Vec::new();
+    let mut cursor = type_params.walk();
+    for child in type_params.children(&mut cursor) {
+        // tree-sitter-rust wraps each type param in a `type_parameter` node
+        // with a `name` field (e.g., `T` or `T: Display`).
+        if child.kind() == "type_parameter" {
+            if let Some(name_node) = child.child_by_field_name("name") {
+                if let Ok(name) = name_node.utf8_text(source) {
+                    names.push(name.to_string());
+                }
+            }
+        }
+        // `lifetime_parameter` nodes are skipped (not type params).
+    }
+    names
+}
+
+/// Check whether a type name is a Rust primitive (not a user-defined node).
+fn is_rust_primitive(name: &str) -> bool {
+    matches!(
+        name,
+        "bool"
+            | "char"
+            | "str"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "usize"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "isize"
+            | "f32"
+            | "f64"
+    )
+}
+
+/// Build the qualified name for an impl block's target type, or `None` if the
+/// type is a type parameter or primitive (which would produce a phantom node).
+///
+/// Scoped types (containing `::`) are kept as-is since they are already
+/// qualified. Unscoped types get the module context prepended.
+fn resolve_impl_type_qn(
+    type_name: &str,
+    type_params: &[String],
+    module_context: &[String],
+) -> Option<String> {
+    if type_params.contains(&type_name.to_string()) || is_rust_primitive(type_name) {
+        return None;
+    }
+    if type_name.contains("::") {
+        // Already scoped (e.g., `other_crate::Type`) — keep as-is.
+        Some(type_name.to_string())
+    } else {
+        let module_qn = build_qualified_name(module_context);
+        Some(format!("{module_qn}::{type_name}"))
     }
 }
 
@@ -1936,6 +2004,146 @@ mod tests {
             method.parent_qualified_name,
             Some("my_crate::Guard".to_string()),
             "method parent should be Guard, not Guard<'a>"
+        );
+    }
+
+    // --- Blanket impl and primitive type filtering tests ---
+
+    #[test]
+    fn blanket_impl_methods_not_parented() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub trait MyTrait { fn do_thing(&self); }
+            impl<T> MyTrait for T {
+                fn do_thing(&self) {}
+            }
+        "#,
+        );
+        let method = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name.ends_with("do_thing"));
+        // In a blanket impl, methods should not be parented under type parameter T.
+        // They become module-scoped instead.
+        assert!(
+            method.is_none()
+                || method.unwrap().parent_qualified_name.as_deref() != Some("my_crate::T"),
+            "blanket impl method should not be parented under type parameter T"
+        );
+    }
+
+    #[test]
+    fn blanket_impl_skips_implements_relation() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub trait MyTrait {}
+            impl<T> MyTrait for T {}
+        "#,
+        );
+        let impls: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Implements)
+            .collect();
+        assert!(
+            impls.is_empty(),
+            "blanket impl should not emit Implements relation (source node is phantom), got: {:?}",
+            impls
+        );
+    }
+
+    #[test]
+    fn primitive_impl_methods_not_parented() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub trait MyTrait { fn do_thing(&self); }
+            impl MyTrait for u64 {
+                fn do_thing(&self) {}
+            }
+        "#,
+        );
+        let method = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name.ends_with("do_thing"));
+        assert!(
+            method.is_none()
+                || method.unwrap().parent_qualified_name.as_deref() != Some("my_crate::u64"),
+            "primitive impl method should not be parented under u64"
+        );
+    }
+
+    #[test]
+    fn constrained_type_param_detected() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub trait Display { fn fmt(&self); }
+            impl<T: Display> Display for T {
+                fn fmt(&self) {}
+            }
+        "#,
+        );
+        let impls: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Implements)
+            .collect();
+        assert!(
+            impls.is_empty(),
+            "impl with constrained type param should not emit Implements (phantom source), got: {:?}",
+            impls
+        );
+    }
+
+    #[test]
+    fn scoped_impl_type_not_prefixed_with_module() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub trait MyTrait {}
+            impl MyTrait for other_crate::Foo {}
+        "#,
+        );
+        let impls: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Implements)
+            .collect();
+        assert!(
+            !impls.is_empty(),
+            "scoped type impl should still emit Implements relation"
+        );
+        assert_eq!(
+            impls[0].source_qualified_name, "other_crate::Foo",
+            "scoped type should not get module prefix prepended"
+        );
+    }
+
+    #[test]
+    fn normal_inherent_impl_still_works() {
+        // Regression: ensure normal impls are not broken by the filtering.
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub struct Foo;
+            impl Foo {
+                pub fn bar(&self) {}
+            }
+        "#,
+        );
+        let method = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name == "my_crate::Foo::bar")
+            .expect("should find method bar");
+        assert_eq!(
+            method.parent_qualified_name,
+            Some("my_crate::Foo".to_string()),
+            "inherent impl method should still be parented under its type"
         );
     }
 }
