@@ -34,10 +34,6 @@
   function handleClick(e: MouseEvent) {
     e.stopPropagation();
     onselectnode?.(nodeId);
-  }
-
-  function handleDblClick(e: MouseEvent) {
-    e.stopPropagation();
     onscopenode?.(nodeId);
   }
 
@@ -60,7 +56,6 @@
     class:selected={isSelected}
     style="padding-left: {depth * 16 + 4}px"
     onclick={handleClick}
-    ondblclick={handleDblClick}
     onkeydown={handleKeydown}
     role="treeitem"
     aria-expanded={hasChildren ? isExpanded : undefined}
