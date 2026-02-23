@@ -67,6 +67,8 @@ export interface CyNodeData {
   parent?: string;
   language?: string;
   source_ref?: string;
+  /** Number of descendants when the node is in collapsed state. Set by expansion logic. */
+  _childCount?: number;
 }
 
 /** Cytoscape edge data from /graph endpoint. */

@@ -6,6 +6,7 @@
   import type { CytoscapeGraph, ConformanceReport, SnapshotDiff } from "../lib/types";
   import { selectionStore } from "../stores/selection.svelte";
   import { buildTraversalIndex, type TraversalIndex } from "../lib/traversal";
+  import { computeVisibleElements } from "../lib/expansion";
 
   // Register layout extensions once
   cytoscape.use(coseBilkent);
@@ -13,6 +14,8 @@
 
   interface Props {
     graph: CytoscapeGraph | null;
+    expandedNodes?: Set<string>;
+    onToggleExpand?: (nodeId: string) => void;
     conformance?: ConformanceReport | null;
     diff?: SnapshotDiff | null;
     layout?: "cose-bilkent" | "dagre";
@@ -25,6 +28,8 @@
 
   let {
     graph,
+    expandedNodes,
+    onToggleExpand,
     conformance = null,
     diff = null,
     layout = "cose-bilkent",
@@ -87,6 +92,16 @@
           "font-size": "14px",
           "font-weight": "bold",
           padding: "20px",
+        },
+      },
+      {
+        selector: "node[_childCount]",
+        style: {
+          "border-style": "double",
+          "border-width": 4,
+          "border-color": parentBorder,
+          label: (ele: cytoscape.NodeSingular) =>
+            `${ele.data("label")} (${ele.data("_childCount")})`,
         },
       },
       {
@@ -189,6 +204,14 @@
       }
     });
 
+    // Double-click to expand/collapse parent nodes
+    cy.on("dbltap", "node", (evt) => {
+      const nodeId = evt.target.id();
+      if (onToggleExpand && traversalIndex?.childrenMap.has(nodeId)) {
+        onToggleExpand(nodeId);
+      }
+    });
+
     // Build canonical path index for O(1) lookups in overlays
     cy.nodes().forEach((node) => {
       const cp = node.data("canonical_path") as string | undefined;
@@ -284,18 +307,24 @@
     };
   });
 
-  $effect(() => {
-    if (graph && container) {
-      initCytoscape(graph.elements);
-    }
-  });
-
-  // Rebuild traversal index when graph changes
+  // Rebuild traversal index when the full graph changes
   $effect(() => {
     if (graph) {
       traversalIndex = buildTraversalIndex(graph);
     } else {
       traversalIndex = null;
+    }
+  });
+
+  // Compute visible subset based on expansion state
+  let visibleGraph = $derived.by(() => {
+    if (!graph || !traversalIndex || !expandedNodes) return graph;
+    return computeVisibleElements(graph, expandedNodes, traversalIndex);
+  });
+
+  $effect(() => {
+    if (visibleGraph && container) {
+      initCytoscape(visibleGraph.elements);
     }
   });
 

@@ -43,12 +43,24 @@ Key documents:
 
 ## Build Commands
 
+**Always use `./scripts/build.sh` to build the application.** Do not run `cargo build`, `wasm-pack build`, or `npm run build` individually — the build script handles the correct dependency order (WASM → Web → Rust).
+
 ```bash
-cargo build              # Build all crates
+./scripts/build.sh           # Full build (WASM → Web → Rust)
+./scripts/build.sh --release # Release profile
+./scripts/build.sh wasm      # Only WASM (crates/wasm → crates/wasm/pkg/)
+./scripts/build.sh web       # Only web (web/ → web/dist/, assumes WASM pkg exists)
+./scripts/build.sh rust      # Only Rust workspace
+```
+
+Other project commands (these are NOT part of the build):
+
+```bash
 cargo test               # Run all tests
 cargo clippy             # Lint
 cargo fmt --check        # Format check
 cargo audit              # Dependency audit
+cd web && npm test        # Run web tests
 ```
 
 ## Coding Standards

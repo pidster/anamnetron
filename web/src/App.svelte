@@ -6,7 +6,7 @@
   import { selectionStore } from "./stores/selection.svelte";
   import { initWasm, getWasmStore } from "./lib/wasm";
   import { parseHash, buildHash } from "./lib/router";
-  import { getParent, getFirstChild, getNextSibling, getPrevSibling } from "./lib/traversal";
+  import { buildTraversalIndex, getParent, getFirstChild, getNextSibling, getPrevSibling } from "./lib/traversal";
   import GraphView from "./components/GraphView.svelte";
   import NodeDetail from "./components/NodeDetail.svelte";
   import ConformanceReport from "./components/ConformanceReport.svelte";
@@ -14,7 +14,9 @@
   import SnapshotSelector from "./components/SnapshotSelector.svelte";
   import SearchBar from "./components/SearchBar.svelte";
   import FilterSidebar from "./components/FilterSidebar.svelte";
+  import Breadcrumb from "./components/Breadcrumb.svelte";
   import { filterStore } from "./stores/filter.svelte";
+  import { expansionStore } from "./stores/expansion.svelte";
 
   const savedLayout = typeof localStorage !== "undefined" ? localStorage.getItem("svt-layout") : null;
   let layoutChoice = $state<"cose-bilkent" | "dagre">(
@@ -40,6 +42,17 @@
   if (typeof document !== "undefined") {
     document.documentElement.dataset.theme = theme;
   }
+
+  // Build label lookup from graph for breadcrumb display
+  let labelMap = $derived.by(() => {
+    const map = new Map<string, string>();
+    if (graphStore.graph) {
+      for (const node of graphStore.graph.elements.nodes) {
+        map.set(node.data.id, node.data.label);
+      }
+    }
+    return map;
+  });
 
   // Hash routing: suppress writes during reads to avoid loops
   let suppressHashWrite = false;
@@ -74,6 +87,11 @@
         suppressHashWrite = true;
         await selectVersion(initialVersion);
         if (initial.node) {
+          // Expand ancestors so the hash-specified node becomes visible
+          const index = graphView?.getTraversalIndex();
+          if (index) {
+            expansionStore.expandAncestors(initial.node, index);
+          }
           selectionStore.selectedNodeId = initial.node;
           selectionStore.panelOpen = true;
         }
@@ -137,6 +155,12 @@
         const graph = await api.getGraph(version);
         graphStore.graph = graph;
         filterStore.populateFromGraph(graph.elements.nodes);
+      }
+
+      // Set default expansion: depth 2 shows system + services + components
+      if (graphStore.graph) {
+        const index = buildTraversalIndex(graphStore.graph);
+        expansionStore.expandToDepth(2, index);
       }
     } catch (e) {
       graphStore.error = e instanceof Error ? e.message : "Failed to load graph";
@@ -231,6 +255,11 @@
         results = await api.searchNodes(query, graphStore.selectedVersion);
       }
       if (results.length > 0) {
+        // Expand ancestors so the found node becomes visible
+        const index = graphView?.getTraversalIndex();
+        if (index) {
+          expansionStore.expandAncestors(results[0].id, index);
+        }
         selectionStore.selectedNodeId = results[0].id;
         selectionStore.panelOpen = true;
       }
@@ -307,6 +336,20 @@
         if (e.key === "ArrowUp") {
           targetId = getParent(index, selectionStore.selectedNodeId);
         } else if (e.key === "ArrowDown") {
+          // If node is collapsed (has children but not expanded), expand it first
+          if (
+            index.childrenMap.has(selectionStore.selectedNodeId) &&
+            !expansionStore.isExpanded(selectionStore.selectedNodeId)
+          ) {
+            expansionStore.expand(selectionStore.selectedNodeId);
+            // After expansion, select first child on next tick
+            const firstChild = getFirstChild(index, selectionStore.selectedNodeId);
+            if (firstChild) {
+              requestAnimationFrame(() => graphView?.selectAndCenter(firstChild));
+            }
+            e.preventDefault();
+            return;
+          }
           targetId = getFirstChild(index, selectionStore.selectedNodeId);
         } else if (e.key === "ArrowLeft") {
           targetId = getPrevSibling(index, selectionStore.selectedNodeId);
@@ -350,6 +393,37 @@
         onselect={selectVersion}
       />
       <SearchBar onsearch={handleSearch} />
+      <span class="depth-controls">
+        <button
+          class="depth-btn"
+          onclick={() => {
+            const index = graphView?.getTraversalIndex();
+            if (index && expansionStore.currentDepth > 0)
+              expansionStore.expandToDepth(expansionStore.currentDepth - 1, index);
+          }}
+          aria-label="Decrease depth"
+          disabled={expansionStore.currentDepth <= 0}
+        >&minus;</button>
+        <span class="depth-label">Depth {expansionStore.currentDepth}</span>
+        <button
+          class="depth-btn"
+          onclick={() => {
+            const index = graphView?.getTraversalIndex();
+            if (index)
+              expansionStore.expandToDepth(expansionStore.currentDepth + 1, index);
+          }}
+          aria-label="Increase depth"
+        >+</button>
+        <button
+          class="depth-btn"
+          onclick={() => {
+            const index = graphView?.getTraversalIndex();
+            if (index)
+              expansionStore.expandToDepth(10, index);
+          }}
+          aria-label="Expand all"
+        >All</button>
+      </span>
       <button
         class="filter-toggle"
         onclick={() => filterStore.sidebarOpen = !filterStore.sidebarOpen}
@@ -420,6 +494,13 @@
     </div>
   {/if}
 
+  <Breadcrumb
+    selectedNodeId={selectionStore.selectedNodeId}
+    traversalIndex={graphView?.getTraversalIndex() ?? null}
+    {labelMap}
+    onnavigate={(nodeId) => graphView?.selectAndCenter(nodeId)}
+  />
+
   <div class="main-content">
     <FilterSidebar />
     {#if graphStore.loading && !graphStore.graph}
@@ -432,6 +513,8 @@
         <GraphView
           bind:this={graphView}
           graph={graphStore.graph}
+          expandedNodes={expansionStore.expandedNodes}
+          onToggleExpand={(nodeId) => expansionStore.toggle(nodeId)}
           conformance={graphStore.conformanceReport}
           diff={graphStore.diffReport}
           layout={layoutChoice}
@@ -610,6 +693,29 @@
     border: 1px solid var(--border);
     font-size: 0.75rem;
     padding: 0.15rem 0.4rem;
+  }
+
+  .depth-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.2rem;
+  }
+
+  .depth-btn {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    font-size: 0.8rem;
+    padding: 0.2rem 0.45rem;
+    min-width: 1.6rem;
+    text-align: center;
+  }
+
+  .depth-label {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    min-width: 3.2rem;
+    text-align: center;
   }
 
   .filter-toggle {
