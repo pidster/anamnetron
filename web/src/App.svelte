@@ -642,7 +642,7 @@
           <p class="hint">Start the server with <code>--design</code> or <code>--project</code> flags.</p>
         </div>
       {/if}
-      <MermaidDrawer graph={scopedGraph} />
+      <MermaidDrawer graph={scopedGraph} {theme} />
     </div>
 
     {#if selectionStore.panelOpen}

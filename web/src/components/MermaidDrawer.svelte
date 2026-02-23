@@ -6,26 +6,21 @@
 
   interface Props {
     graph: CytoscapeGraph | null;
+    theme: "dark" | "light";
   }
 
-  let { graph }: Props = $props();
+  let { graph, theme }: Props = $props();
 
   let renderContainer = $state<HTMLDivElement>();
   let mermaidReady = $state(false);
   let renderError = $state<string | null>(null);
+  let expanded = $state(false);
   let mermaidModule: typeof import("mermaid") | null = null;
 
-  // Lazily load and initialize mermaid
+  // Lazily load mermaid
   onMount(async () => {
     try {
       mermaidModule = await import("mermaid");
-      mermaidModule.default.initialize({
-        startOnLoad: false,
-        theme: "dark",
-        securityLevel: "loose",
-        flowchart: { useMaxWidth: true, htmlLabels: true },
-        sequence: { useMaxWidth: true },
-      });
       mermaidReady = true;
     } catch (e) {
       renderError = `Failed to load Mermaid: ${e instanceof Error ? e.message : String(e)}`;
@@ -49,14 +44,34 @@
     mermaidStore.source = source;
   });
 
-  // Render the diagram when source changes
+  // Re-initialize mermaid with correct theme and re-render when source or theme changes
   $effect(() => {
     const src = source;
     const ready = mermaidReady;
+    const currentTheme = theme;
     if (!ready || !src || !renderContainer || !mermaidModule) return;
 
+    // Re-initialize mermaid with current theme settings
+    const isDark = currentTheme === "dark";
+    mermaidModule.default.initialize({
+      startOnLoad: false,
+      theme: isDark ? "dark" : "default",
+      securityLevel: "loose",
+      // Let diagrams render at natural width so they aren't compressed
+      flowchart: { useMaxWidth: false, htmlLabels: true },
+      sequence: { useMaxWidth: false },
+      // C4 diagram theming: Mermaid applies cScale colors to C4 component fills.
+      // personBkg is used for the person-man class (which renders Component boxes).
+      themeVariables: isDark ? {
+        personBkg: "#1e4976",
+        personBorder: "#53a8b6",
+      } : {
+        personBkg: "#3a7ca5",
+        personBorder: "#2d6a88",
+      },
+    });
+
     renderError = null;
-    // Use a unique ID to avoid mermaid caching issues
     const id = `mermaid-${Date.now()}`;
     renderContainer.innerHTML = "";
 
@@ -65,18 +80,54 @@
       .then(({ svg }) => {
         if (renderContainer) {
           renderContainer.innerHTML = svg;
+          // Fix C4 diagram contrast in dark mode.
+          // Mermaid C4 uses inline fill/stroke attributes that CSS can't easily override.
+          if (isDark && mermaidStore.diagramType === "c4") {
+            patchC4DarkTheme(renderContainer);
+          }
         }
       })
       .catch((err: unknown) => {
         renderError = `Render error: ${err instanceof Error ? err.message : String(err)}`;
-        // Clean up any mermaid error elements
         const errorEl = document.getElementById("d" + id);
         if (errorEl) errorEl.remove();
       });
   });
 
+  /** Patch inline SVG attributes for C4 diagrams in dark mode. */
+  function patchC4DarkTheme(container: HTMLDivElement) {
+    // Component boxes: lighten fill, teal border
+    container.querySelectorAll(".person-man rect").forEach((rect) => {
+      rect.setAttribute("fill", "#1e4976");
+      rect.setAttribute("stroke", "#53a8b6");
+    });
+    // Component text: ensure white
+    container.querySelectorAll(".person-man text").forEach((text) => {
+      text.setAttribute("fill", "#e0e0e0");
+    });
+    // Boundary rects: invisible #444444 → visible teal
+    container.querySelectorAll('rect[stroke="#444444"]').forEach((rect) => {
+      rect.setAttribute("stroke", "#53a8b6");
+    });
+    // Boundary labels: dark grey → muted light
+    container.querySelectorAll('text[fill="#444444"]').forEach((text) => {
+      text.setAttribute("fill", "#8899aa");
+    });
+    // Relationship lines
+    container.querySelectorAll('line[stroke="#444444"]').forEach((line) => {
+      line.setAttribute("stroke", "#8899aa");
+    });
+    container.querySelectorAll('path[stroke="#444444"]').forEach((path) => {
+      path.setAttribute("stroke", "#8899aa");
+    });
+  }
+
   function copySource() {
     void globalThis.navigator.clipboard?.writeText(source).catch(() => {});
+  }
+
+  function toggleExpand() {
+    expanded = !expanded;
   }
 
   const DIAGRAM_OPTIONS: Array<{ value: DiagramType; label: string }> = [
@@ -88,7 +139,7 @@
 </script>
 
 {#if mermaidStore.open}
-  <div class="mermaid-drawer">
+  <div class="mermaid-drawer" class:expanded>
     <div class="drawer-header">
       <span class="drawer-title">Mermaid Diagram</span>
       <div class="drawer-controls">
@@ -100,6 +151,9 @@
             <option value={opt.value}>{opt.label}</option>
           {/each}
         </select>
+        <button class="icon-btn" onclick={toggleExpand} title={expanded ? "Collapse drawer" : "Expand drawer"}>
+          {expanded ? "\u25B6" : "\u25C0"}
+        </button>
         <button class="copy-btn" onclick={copySource} title="Copy Mermaid source">Copy</button>
         <button class="close-btn" onclick={() => mermaidStore.close()} aria-label="Close drawer">&times;</button>
       </div>
@@ -136,6 +190,11 @@
     z-index: 20;
     display: flex;
     flex-direction: column;
+    transition: width 200ms ease;
+  }
+
+  .mermaid-drawer.expanded {
+    width: 100%;
   }
 
   .drawer-header {
@@ -168,6 +227,7 @@
     font-size: 0.8rem;
   }
 
+  .icon-btn,
   .copy-btn {
     background: var(--bg);
     color: var(--text);
@@ -178,6 +238,7 @@
     cursor: pointer;
   }
 
+  .icon-btn:hover,
   .copy-btn:hover {
     background: var(--border);
   }
@@ -205,15 +266,17 @@
   }
 
   .render-container {
-    display: flex;
-    justify-content: center;
     min-height: 100px;
+    overflow: auto;
   }
 
+  /* Let SVGs render at natural size and scroll instead of being compressed */
   .render-container :global(svg) {
-    max-width: 100%;
     height: auto;
+    min-width: min-content;
   }
+
+  /* C4 dark mode patching is done via DOM manipulation in patchC4DarkTheme() */
 
   .render-error {
     padding: 0.5rem;
