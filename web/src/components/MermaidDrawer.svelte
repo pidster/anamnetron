@@ -15,7 +15,12 @@
   let mermaidReady = $state(false);
   let renderError = $state<string | null>(null);
   let expanded = $state(false);
+  let zoom = $state(1);
   let mermaidModule: typeof import("mermaid") | null = null;
+
+  const ZOOM_MIN = 0.25;
+  const ZOOM_MAX = 4;
+  const ZOOM_STEP = 0.1;
 
   // Lazily load mermaid
   onMount(async () => {
@@ -122,6 +127,35 @@
     });
   }
 
+  // Reset zoom when diagram type changes
+  $effect(() => {
+    void mermaidStore.diagramType;
+    zoom = 1;
+  });
+
+  function applyZoom(delta: number) {
+    zoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoom + delta));
+  }
+
+  function handleWheel(e: WheelEvent) {
+    if (!e.ctrlKey && !e.metaKey) return;
+    e.preventDefault();
+    applyZoom(e.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP);
+  }
+
+  function handleKeydown(e: KeyboardEvent) {
+    if (e.key === "+" || e.key === "=") {
+      e.preventDefault();
+      applyZoom(ZOOM_STEP);
+    } else if (e.key === "-") {
+      e.preventDefault();
+      applyZoom(-ZOOM_STEP);
+    } else if (e.key === "0") {
+      e.preventDefault();
+      zoom = 1;
+    }
+  }
+
   function copySource() {
     void globalThis.navigator.clipboard?.writeText(source).catch(() => {});
   }
@@ -139,7 +173,8 @@
 </script>
 
 {#if mermaidStore.open}
-  <div class="mermaid-drawer" class:expanded>
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="mermaid-drawer" class:expanded onkeydown={handleKeydown}>
     <div class="drawer-header">
       <span class="drawer-title">Mermaid Diagram</span>
       <div class="drawer-controls">
@@ -151,6 +186,13 @@
             <option value={opt.value}>{opt.label}</option>
           {/each}
         </select>
+        <button class="icon-btn" onclick={() => applyZoom(-ZOOM_STEP)} title="Zoom out (-)">&#x2212;</button>
+        <button
+          class="zoom-label"
+          onclick={() => { zoom = 1; }}
+          title="Reset zoom (0)"
+        >{Math.round(zoom * 100)}%</button>
+        <button class="icon-btn" onclick={() => applyZoom(ZOOM_STEP)} title="Zoom in (+)">+</button>
         <button class="icon-btn" onclick={toggleExpand} title={expanded ? "Collapse drawer" : "Expand drawer"}>
           {expanded ? "\u25B6" : "\u25C0"}
         </button>
@@ -159,7 +201,8 @@
       </div>
     </div>
 
-    <div class="drawer-content">
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="drawer-content" onwheel={handleWheel}>
       {#if renderError}
         <div class="render-error">
           <p>{renderError}</p>
@@ -171,7 +214,12 @@
       {:else if !mermaidReady}
         <div class="loading">Loading Mermaid...</div>
       {/if}
-      <div class="render-container" bind:this={renderContainer}></div>
+      <div
+        class="render-container"
+        bind:this={renderContainer}
+        style:transform="scale({zoom})"
+        style:transform-origin="top left"
+      ></div>
     </div>
   </div>
 {/if}
@@ -236,6 +284,24 @@
     padding: 0.2rem 0.5rem;
     border-radius: 3px;
     cursor: pointer;
+  }
+
+  .zoom-label {
+    background: var(--bg);
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    font-size: 0.7rem;
+    font-variant-numeric: tabular-nums;
+    padding: 0.2rem 0.3rem;
+    border-radius: 3px;
+    cursor: pointer;
+    min-width: 3rem;
+    text-align: center;
+  }
+
+  .zoom-label:hover {
+    color: var(--text);
+    background: var(--border);
   }
 
   .icon-btn:hover,
