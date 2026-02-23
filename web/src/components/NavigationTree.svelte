@@ -5,11 +5,12 @@
   interface Props {
     traversalIndex: TraversalIndex;
     labelMap: Map<string, string>;
+    phantomIds?: Set<string>;
     onselectnode?: (nodeId: string) => void;
     onscopenode?: (nodeId: string) => void;
   }
 
-  let { traversalIndex, labelMap, onselectnode, onscopenode }: Props = $props();
+  let { traversalIndex, labelMap, phantomIds = new Set(), onselectnode, onscopenode }: Props = $props();
 
   // Track which tree nodes are expanded (independent from graph expansion)
   let expandedTreeNodes = $state<Set<string>>(new Set());
@@ -72,6 +73,7 @@
       nodeId={rootId}
       {traversalIndex}
       {labelMap}
+      {phantomIds}
       depth={0}
       {expandedTreeNodes}
       ontoggleexpand={toggleExpand}

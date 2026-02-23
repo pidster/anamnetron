@@ -93,7 +93,65 @@ pub async fn get_graph(
         }
     }
 
-    let cy_nodes: Vec<CyNode> = all_nodes
+    // Detect phantom parents: parent IDs referenced by Contains edges that don't exist as nodes
+    let real_node_ids: std::collections::HashSet<&str> =
+        all_nodes.iter().map(|n| n.id.as_str()).collect();
+
+    let phantom_ids: Vec<&str> = parent_map
+        .values()
+        .copied()
+        .filter(|pid| !real_node_ids.contains(pid))
+        .collect::<std::collections::HashSet<&str>>()
+        .into_iter()
+        .collect();
+
+    // Synthesize placeholder nodes for phantom parents
+    let mut synthetic_nodes: Vec<CyNode> = Vec::new();
+    for phantom_id in &phantom_ids {
+        // Find a child node referencing this phantom to derive a label/path
+        let (derived_label, derived_path) = all_nodes
+            .iter()
+            .find(|n| parent_map.get(n.id.as_str()) == Some(phantom_id))
+            .map(|child| {
+                // Strip last path segment from child's canonical_path
+                let parent_path = child
+                    .canonical_path
+                    .rsplit_once('/')
+                    .map(|(prefix, _)| prefix.to_string())
+                    .unwrap_or_else(|| child.canonical_path.clone());
+                let label = parent_path
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(&parent_path)
+                    .to_string();
+                (label, parent_path)
+            })
+            .unwrap_or_else(|| ("unknown".to_string(), "unknown".to_string()));
+
+        tracing::warn!(
+            phantom_id = %phantom_id,
+            derived_path = %derived_path,
+            "phantom parent node detected: parent referenced by Contains edge does not exist"
+        );
+
+        // The phantom node itself may have a parent (if its derived path has a grandparent)
+        let phantom_parent = parent_map.get(*phantom_id).map(|s| s.to_string());
+
+        synthetic_nodes.push(CyNode {
+            data: CyNodeData {
+                id: phantom_id.to_string(),
+                label: derived_label,
+                kind: "component".to_string(),
+                sub_kind: "phantom".to_string(),
+                canonical_path: derived_path,
+                parent: phantom_parent,
+                language: None,
+                source_ref: None,
+            },
+        });
+    }
+
+    let mut cy_nodes: Vec<CyNode> = all_nodes
         .iter()
         .map(|node| CyNode {
             data: CyNodeData {
@@ -111,6 +169,9 @@ pub async fn get_graph(
             },
         })
         .collect();
+
+    // Append synthetic phantom nodes
+    cy_nodes.extend(synthetic_nodes);
 
     // Only non-containment edges as Cytoscape edges
     let cy_edges: Vec<CyEdge> = all_edges
@@ -251,5 +312,81 @@ mod tests {
         // Only non-containment edges in edges list
         assert_eq!(graph.elements.edges.len(), 1);
         assert_eq!(graph.elements.edges[0].data.kind, "depends");
+    }
+
+    #[tokio::test]
+    async fn phantom_parent_gets_synthetic_node() {
+        let mut store = CozoStore::new_in_memory().unwrap();
+        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+
+        // Add only the child node — no parent node "phantom-parent"
+        store
+            .add_node(
+                v,
+                &make_node("child1", "/app/phantom-mod/child1", NodeKind::Service),
+            )
+            .unwrap();
+
+        // Contains edge referencing a non-existent parent
+        store
+            .add_edge(
+                v,
+                &Edge {
+                    id: "e-phantom".to_string(),
+                    source: "phantom-parent".to_string(),
+                    target: "child1".to_string(),
+                    kind: EdgeKind::Contains,
+                    provenance: Provenance::Design,
+                    metadata: None,
+                },
+            )
+            .unwrap();
+
+        let state = Arc::new(AppState {
+            store,
+            design_version: Some(v),
+            analysis_version: None,
+        });
+        let app = test_app(state);
+        let resp = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/snapshots/1/graph")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let graph: CytoscapeGraph = serde_json::from_slice(&body).unwrap();
+
+        // Should have 2 nodes: real child + synthetic phantom parent
+        assert_eq!(
+            graph.elements.nodes.len(),
+            2,
+            "expected 2 nodes (child + synthetic phantom)"
+        );
+
+        let phantom = graph
+            .elements
+            .nodes
+            .iter()
+            .find(|n| n.data.id == "phantom-parent")
+            .expect("synthetic phantom node should exist");
+
+        assert_eq!(phantom.data.sub_kind, "phantom");
+        // Label should be derived from child's path: /app/phantom-mod → "phantom-mod"
+        assert_eq!(phantom.data.label, "phantom-mod");
+        assert_eq!(phantom.data.canonical_path, "/app/phantom-mod");
+
+        // Child should have parent set to phantom-parent
+        let child = graph
+            .elements
+            .nodes
+            .iter()
+            .find(|n| n.data.id == "child1")
+            .unwrap();
+        assert_eq!(child.data.parent, Some("phantom-parent".to_string()));
     }
 }

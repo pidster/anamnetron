@@ -7,6 +7,7 @@
     nodeId: string;
     traversalIndex: TraversalIndex;
     labelMap: Map<string, string>;
+    phantomIds?: Set<string>;
     depth: number;
     expandedTreeNodes: Set<string>;
     ontoggleexpand: (nodeId: string) => void;
@@ -18,6 +19,7 @@
     nodeId,
     traversalIndex,
     labelMap,
+    phantomIds = new Set(),
     depth,
     expandedTreeNodes,
     ontoggleexpand,
@@ -29,6 +31,7 @@
   let hasChildren = $derived(children.length > 0);
   let isExpanded = $derived(expandedTreeNodes.has(nodeId));
   let isSelected = $derived(selectionStore.selectedNodeId === nodeId);
+  let isPhantom = $derived(phantomIds.has(nodeId));
   let label = $derived(labelMap.get(nodeId) ?? nodeId);
 
   function handleClick(e: MouseEvent) {
@@ -54,6 +57,7 @@
   <div
     class="tree-node-row"
     class:selected={isSelected}
+    class:phantom={isPhantom}
     style="padding-left: {depth * 16 + 4}px"
     onclick={handleClick}
     onkeydown={handleKeydown}
@@ -69,6 +73,7 @@
     {:else}
       <span class="chevron-spacer"></span>
     {/if}
+    {#if isPhantom}<span class="phantom-icon" title="Phantom node (parent not found in graph)">?</span>{/if}
     <span class="node-label" title={nodeId}>{label}</span>
   </div>
 
@@ -79,6 +84,7 @@
           nodeId={childId}
           {traversalIndex}
           {labelMap}
+          {phantomIds}
           depth={depth + 1}
           {expandedTreeNodes}
           {ontoggleexpand}
@@ -154,5 +160,30 @@
   .node-label {
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  .tree-node-row.phantom {
+    font-style: italic;
+    opacity: 0.6;
+  }
+
+  .tree-node-row.phantom.selected {
+    opacity: 0.8;
+  }
+
+  .phantom-icon {
+    font-size: 0.65rem;
+    font-style: normal;
+    font-weight: bold;
+    background: var(--warn, #cc8800);
+    color: #fff;
+    border-radius: 50%;
+    width: 14px;
+    height: 14px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    margin-right: 2px;
   }
 </style>

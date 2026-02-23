@@ -7,9 +7,14 @@
   interface Props {
     graph: CytoscapeGraph | null;
     theme: "dark" | "light";
+    totalNodeCount?: number;
+    currentDepth?: number;
   }
 
-  let { graph, theme }: Props = $props();
+  let { graph, theme, totalNodeCount = 0, currentDepth = 0 }: Props = $props();
+
+  let visibleNodeCount = $derived(graph?.elements.nodes.length ?? 0);
+  let hasHiddenNodes = $derived(totalNodeCount > 0 && visibleNodeCount < totalNodeCount);
 
   let renderContainer = $state<HTMLDivElement>();
   let mermaidReady = $state(false);
@@ -61,6 +66,7 @@
       startOnLoad: false,
       theme: isDark ? "dark" : "default",
       securityLevel: "loose",
+      maxTextSize: 200_000,
       // Let diagrams render at natural width so they aren't compressed
       flowchart: { useMaxWidth: false, htmlLabels: true },
       sequence: { useMaxWidth: false },
@@ -190,6 +196,12 @@
       <button class="copy-btn" onclick={copySource} title="Copy Mermaid source">Copy</button>
     </div>
   </div>
+
+  {#if hasHiddenNodes}
+    <div class="info-bar">
+      Showing {visibleNodeCount} of {totalNodeCount} nodes at depth {currentDepth}. Use depth controls or scope for more detail.
+    </div>
+  {/if}
 
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="view-content" onwheel={handleWheel}>
@@ -330,5 +342,14 @@
     text-align: center;
     color: var(--text-muted);
     font-size: 0.85rem;
+  }
+
+  .info-bar {
+    padding: 0.3rem 0.75rem;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    flex-shrink: 0;
   }
 </style>

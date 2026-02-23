@@ -7,11 +7,12 @@
   interface Props {
     traversalIndex: TraversalIndex | null;
     labelMap: Map<string, string>;
+    phantomIds?: Set<string>;
     onselectnode?: (nodeId: string) => void;
     onscopenode?: (nodeId: string) => void;
   }
 
-  let { traversalIndex, labelMap, onselectnode, onscopenode }: Props = $props();
+  let { traversalIndex, labelMap, phantomIds = new Set(), onselectnode, onscopenode }: Props = $props();
 </script>
 
 <aside class="nav-panel" class:collapsed={navigationStore.collapsed}>
@@ -48,6 +49,7 @@
           <NavigationTree
             {traversalIndex}
             {labelMap}
+            {phantomIds}
             {onselectnode}
             {onscopenode}
           />

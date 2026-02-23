@@ -20,6 +20,7 @@
   import { scopeStore } from "./stores/scope.svelte";
   import { mermaidStore } from "./stores/mermaid.svelte";
   import { extractSubtree } from "./lib/scope";
+  import { computeVisibleElements } from "./lib/expansion";
   import MermaidView from "./components/MermaidView.svelte";
 
   let showConformance = $state(false);
@@ -52,6 +53,19 @@
     return map;
   });
 
+  // Derive phantom node IDs from graph (nodes with sub_kind === "phantom")
+  let phantomIds = $derived.by(() => {
+    const ids = new Set<string>();
+    if (graphStore.graph) {
+      for (const node of graphStore.graph.elements.nodes) {
+        if (node.data.sub_kind === "phantom") {
+          ids.add(node.data.id);
+        }
+      }
+    }
+    return ids;
+  });
+
   // Build a traversal index from the full graph for scope and navigation tree
   let fullTraversalIndex = $derived.by(() => {
     if (!graphStore.graph) return null;
@@ -64,6 +78,19 @@
       return graphStore.graph;
     }
     return extractSubtree(graphStore.graph, scopeStore.scopeNodeId, fullTraversalIndex);
+  });
+
+  // Build a traversal index for the scoped graph (reuses fullTraversalIndex when unscoped)
+  let scopedTraversalIndex = $derived.by(() => {
+    if (!scopedGraph) return null;
+    if (scopedGraph === graphStore.graph && fullTraversalIndex) return fullTraversalIndex;
+    return buildTraversalIndex(scopedGraph);
+  });
+
+  // Apply depth-based visibility filtering to constrain MermaidView rendering
+  let visibleGraph = $derived.by(() => {
+    if (!scopedGraph || !scopedTraversalIndex) return scopedGraph;
+    return computeVisibleElements(scopedGraph, expansionStore.expandedNodes, scopedTraversalIndex);
   });
 
   /** Select a node: expand ancestors so it's visible, then select it. */
@@ -527,6 +554,7 @@
     <NavigationPanel
       traversalIndex={fullTraversalIndex}
       {labelMap}
+      {phantomIds}
       onselectnode={(nodeId) => selectNode(nodeId)}
       onscopenode={(nodeId) => {
         scopeStore.setScope(nodeId);
@@ -542,7 +570,12 @@
         </div>
       {:else if scopedGraph}
         <ErrorBoundary name="Mermaid View">
-          <MermaidView graph={scopedGraph} {theme} />
+          <MermaidView
+            graph={visibleGraph}
+            {theme}
+            totalNodeCount={scopedGraph?.elements.nodes.length ?? 0}
+            currentDepth={expansionStore.currentDepth}
+          />
         </ErrorBoundary>
       {:else}
         <div class="center-message">
