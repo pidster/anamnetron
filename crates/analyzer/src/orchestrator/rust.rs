@@ -64,6 +64,7 @@ impl LanguageOrchestrator for RustOrchestrator {
                 parent_qualified_name: None,
                 source_ref: layout.workspace_root.display().to_string(),
                 language: "rust".to_string(),
+                metadata: None,
             });
         }
         items

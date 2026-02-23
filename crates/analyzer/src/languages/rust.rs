@@ -243,6 +243,7 @@ fn visit_node(
                     let qualified_name = format!("{type_qn}::{name}");
                     let line = node.start_position().row + 1;
                     let source_ref = format!("{}:{line}", file_path.display());
+                    let loc = node.end_position().row - node.start_position().row + 1;
                     items.push(AnalysisItem {
                         qualified_name,
                         kind: NodeKind::Unit,
@@ -250,6 +251,7 @@ fn visit_node(
                         parent_qualified_name: Some(type_qn.to_string()),
                         source_ref,
                         language: "rust".to_string(),
+                        metadata: Some(serde_json::json!({"loc": loc})),
                     });
                 }
             } else {
@@ -340,6 +342,7 @@ fn extract_named_item(
     let qualified_name = format!("{parent_qualified_name}::{name}");
     let line = node.start_position().row + 1;
     let source_ref = format!("{}:{line}", file_path.display());
+    let loc = node.end_position().row - node.start_position().row + 1;
 
     items.push(AnalysisItem {
         qualified_name,
@@ -348,6 +351,7 @@ fn extract_named_item(
         parent_qualified_name: Some(parent_qualified_name),
         source_ref,
         language: "rust".to_string(),
+        metadata: Some(serde_json::json!({"loc": loc})),
     });
 }
 
@@ -380,6 +384,7 @@ fn visit_enum_variants(
         if child.kind() == "enum_variant" {
             if let Some(variant_name) = item_name(child, source) {
                 let line = child.start_position().row + 1;
+                let loc = child.end_position().row - child.start_position().row + 1;
                 items.push(AnalysisItem {
                     qualified_name: format!("{enum_qn}::{variant_name}"),
                     kind: NodeKind::Unit,
@@ -387,6 +392,7 @@ fn visit_enum_variants(
                     parent_qualified_name: Some(enum_qn.clone()),
                     source_ref: format!("{}:{line}", file_path.display()),
                     language: "rust".to_string(),
+                    metadata: Some(serde_json::json!({"loc": loc})),
                 });
             }
         }
@@ -416,6 +422,7 @@ fn visit_mod_item(
     let qualified_name = format!("{parent_qualified_name}::{name}");
     let line = node.start_position().row + 1;
     let source_ref = format!("{}:{line}", file_path.display());
+    let loc = node.end_position().row - node.start_position().row + 1;
 
     items.push(AnalysisItem {
         qualified_name: qualified_name.clone(),
@@ -424,6 +431,7 @@ fn visit_mod_item(
         parent_qualified_name: Some(parent_qualified_name),
         source_ref,
         language: "rust".to_string(),
+        metadata: Some(serde_json::json!({"loc": loc})),
     });
 
     // If the module has a body (inline module), descend into its declarations.
@@ -2145,5 +2153,24 @@ mod tests {
             Some("my_crate::Foo".to_string()),
             "inherent impl method should still be parented under its type"
         );
+    }
+
+    #[test]
+    fn loc_computed_for_struct() {
+        let result = parse_source(
+            "my_crate",
+            r#"pub struct Foo {
+    field_a: u32,
+    field_b: String,
+}"#,
+        );
+        let item = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name == "my_crate::Foo")
+            .expect("should find struct Foo");
+        let meta = item.metadata.as_ref().expect("should have metadata");
+        let loc = meta["loc"].as_u64().expect("loc should be a number");
+        assert_eq!(loc, 4, "struct spanning 4 lines should have loc=4");
     }
 }

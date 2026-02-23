@@ -266,6 +266,7 @@ fn extract_export(
 
         let line = child.start_position().row + 1 + line_offset;
         let source_ref = format!("{}:{line}", file_path.display());
+        let loc = child.end_position().row - child.start_position().row + 1;
 
         items.push(AnalysisItem {
             qualified_name: format!("{module_context}::{name}"),
@@ -274,6 +275,7 @@ fn extract_export(
             parent_qualified_name: Some(module_context.to_string()),
             source_ref,
             language: "typescript".to_string(),
+            metadata: Some(serde_json::json!({"loc": loc})),
         });
     }
 }
@@ -346,6 +348,7 @@ pub(crate) fn emit_ts_module_items(
                         parent_qualified_name: Some(parent_qn),
                         source_ref: file.parent().unwrap_or(source_root).display().to_string(),
                         language: "typescript".to_string(),
+                        metadata: None,
                     });
                 }
             }
@@ -375,6 +378,7 @@ pub(crate) fn emit_ts_module_items(
                 parent_qualified_name: Some(current_qn),
                 source_ref: file.display().to_string(),
                 language: lang.to_string(),
+                metadata: None,
             });
         }
     }

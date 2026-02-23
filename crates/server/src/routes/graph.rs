@@ -39,6 +39,9 @@ pub struct CyNodeData {
     /// Source reference.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_ref: Option<String>,
+    /// Extensible metadata properties.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
 }
 
 /// A Cytoscape.js edge element.
@@ -59,6 +62,9 @@ pub struct CyEdgeData {
     pub target: String,
     /// Edge kind.
     pub kind: String,
+    /// Extensible metadata properties.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
 }
 
 /// Full Cytoscape.js graph payload.
@@ -147,6 +153,7 @@ pub async fn get_graph(
                 parent: phantom_parent,
                 language: None,
                 source_ref: None,
+                metadata: None,
             },
         });
     }
@@ -166,6 +173,7 @@ pub async fn get_graph(
                 parent: parent_map.get(node.id.as_str()).map(|s| s.to_string()),
                 language: node.language.clone(),
                 source_ref: node.source_ref.clone(),
+                metadata: node.metadata.clone(),
             },
         })
         .collect();
@@ -186,6 +194,7 @@ pub async fn get_graph(
                     .ok()
                     .and_then(|v| v.as_str().map(|s| s.to_string()))
                     .unwrap_or_default(),
+                metadata: edge.metadata.clone(),
             },
         })
         .collect();
@@ -388,5 +397,140 @@ mod tests {
             .find(|n| n.data.id == "child1")
             .unwrap();
         assert_eq!(child.data.parent, Some("phantom-parent".to_string()));
+    }
+
+    #[tokio::test]
+    async fn node_metadata_survives_pipeline() {
+        let mut store = CozoStore::new_in_memory().unwrap();
+        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+
+        let mut node = make_node("n1", "/app/service", NodeKind::Service);
+        node.metadata = Some(serde_json::json!({"loc": 42, "fan_out": 3}));
+        store.add_node(v, &node).unwrap();
+
+        let state = Arc::new(AppState {
+            store,
+            design_version: Some(v),
+            analysis_version: None,
+        });
+        let app = test_app(state);
+        let resp = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/snapshots/1/graph")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let graph: CytoscapeGraph = serde_json::from_slice(&body).unwrap();
+
+        let n1 = graph
+            .elements
+            .nodes
+            .iter()
+            .find(|n| n.data.id == "n1")
+            .expect("node n1 should exist");
+        let meta = n1
+            .data
+            .metadata
+            .as_ref()
+            .expect("metadata should be present");
+        assert_eq!(meta["loc"], 42);
+        assert_eq!(meta["fan_out"], 3);
+    }
+
+    #[tokio::test]
+    async fn edge_metadata_survives_pipeline() {
+        let mut store = CozoStore::new_in_memory().unwrap();
+        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+
+        store
+            .add_node(v, &make_node("n1", "/app/a", NodeKind::Service))
+            .unwrap();
+        store
+            .add_node(v, &make_node("n2", "/app/b", NodeKind::Service))
+            .unwrap();
+
+        store
+            .add_edge(
+                v,
+                &Edge {
+                    id: "e1".to_string(),
+                    source: "n1".to_string(),
+                    target: "n2".to_string(),
+                    kind: EdgeKind::Depends,
+                    provenance: Provenance::Design,
+                    metadata: Some(serde_json::json!({"weight": 5})),
+                },
+            )
+            .unwrap();
+
+        let state = Arc::new(AppState {
+            store,
+            design_version: Some(v),
+            analysis_version: None,
+        });
+        let app = test_app(state);
+        let resp = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/snapshots/1/graph")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let graph: CytoscapeGraph = serde_json::from_slice(&body).unwrap();
+
+        let e1 = graph
+            .elements
+            .edges
+            .iter()
+            .find(|e| e.data.id == "e1")
+            .expect("edge e1 should exist");
+        let meta = e1
+            .data
+            .metadata
+            .as_ref()
+            .expect("edge metadata should be present");
+        assert_eq!(meta["weight"], 5);
+    }
+
+    #[tokio::test]
+    async fn node_without_metadata_omits_field() {
+        let mut store = CozoStore::new_in_memory().unwrap();
+        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        store
+            .add_node(v, &make_node("n1", "/app", NodeKind::System))
+            .unwrap();
+
+        let state = Arc::new(AppState {
+            store,
+            design_version: Some(v),
+            analysis_version: None,
+        });
+        let app = test_app(state);
+        let resp = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/snapshots/1/graph")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        // When metadata is None, skip_serializing_if should omit it from JSON
+        let raw: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let node_data = &raw["elements"]["nodes"][0]["data"];
+        assert!(
+            !node_data.as_object().unwrap().contains_key("metadata"),
+            "metadata key should be omitted when None"
+        );
     }
 }

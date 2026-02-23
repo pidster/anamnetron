@@ -19,9 +19,14 @@
   import { expansionStore } from "./stores/expansion.svelte";
   import { scopeStore } from "./stores/scope.svelte";
   import { mermaidStore } from "./stores/mermaid.svelte";
+  import { viewStore, type ViewMode } from "./stores/view.svelte";
   import { extractSubtree } from "./lib/scope";
   import { computeVisibleElements } from "./lib/expansion";
   import MermaidView from "./components/MermaidView.svelte";
+  import GraphView from "./components/GraphView.svelte";
+  import TreemapView from "./components/TreemapView.svelte";
+  import ChordView from "./components/ChordView.svelte";
+  import SunburstView from "./components/SunburstView.svelte";
 
   let showConformance = $state(false);
   let conformanceDesign = $state<Version | null>(null);
@@ -130,6 +135,9 @@
       if (state.mermaid) {
         mermaidStore.diagramType = state.mermaid as "flowchart" | "dataflow" | "sequence" | "c4";
       }
+      if (state.view) {
+        viewStore.setMode(state.view as ViewMode);
+      }
       suppressHashWrite = false;
     }
     window.addEventListener("hashchange", onHashChange);
@@ -155,6 +163,9 @@
         }
         if (initial.mermaid) {
           mermaidStore.diagramType = initial.mermaid as "flowchart" | "dataflow" | "sequence" | "c4";
+        }
+        if (initial.view) {
+          viewStore.setMode(initial.view as ViewMode);
         }
 
         if (initialVersion) {
@@ -236,6 +247,7 @@
       diff: graphStore.diffVersion ?? undefined,
       scope: scopeStore.scopeNodeId ?? undefined,
       mermaid: mermaidStore.diagramType,
+      view: viewStore.mode !== "mermaid" ? viewStore.mode : undefined,
     });
     if (hash !== window.location.hash) {
       history.replaceState(null, "", hash || window.location.pathname);
@@ -468,6 +480,23 @@
           aria-label="Expand all"
         >All</button>
       </span>
+      <span class="view-switcher">
+        {#each [
+          { mode: "mermaid" as ViewMode, label: "Mermaid", disabled: false },
+          { mode: "graph" as ViewMode, label: "Graph", disabled: false },
+          { mode: "treemap" as ViewMode, label: "Treemap", disabled: false },
+          { mode: "chord" as ViewMode, label: "Chord", disabled: false },
+          { mode: "sunburst" as ViewMode, label: "Sunburst", disabled: false },
+        ] as item}
+          <button
+            class="view-btn"
+            class:view-btn-active={viewStore.mode === item.mode}
+            disabled={item.disabled}
+            onclick={() => viewStore.setMode(item.mode)}
+            aria-label="Switch to {item.label} view"
+          >{item.label}</button>
+        {/each}
+      </span>
       <button
         class="filter-toggle"
         onclick={() => {
@@ -569,14 +598,48 @@
           <p>Loading graph data...</p>
         </div>
       {:else if scopedGraph}
-        <ErrorBoundary name="Mermaid View">
-          <MermaidView
-            graph={visibleGraph}
-            {theme}
-            totalNodeCount={scopedGraph?.elements.nodes.length ?? 0}
-            currentDepth={expansionStore.currentDepth}
-          />
-        </ErrorBoundary>
+        {#if viewStore.mode === "mermaid"}
+          <ErrorBoundary name="Mermaid View">
+            <MermaidView
+              graph={visibleGraph}
+              {theme}
+              totalNodeCount={scopedGraph?.elements.nodes.length ?? 0}
+              currentDepth={expansionStore.currentDepth}
+            />
+          </ErrorBoundary>
+        {:else if viewStore.mode === "graph"}
+          <ErrorBoundary name="Graph View">
+            <GraphView
+              graph={scopedGraph}
+              expandedNodes={expansionStore.expandedNodes}
+              onToggleExpand={(nodeId) => expansionStore.toggle(nodeId)}
+              onFocusNode={(nodeId) => selectNode(nodeId)}
+              onScopeNode={(nodeId) => {
+                scopeStore.setScope(nodeId);
+                if (fullTraversalIndex) expansionStore.expandToDepth(2, fullTraversalIndex);
+              }}
+              conformance={graphStore.conformanceReport}
+              diff={graphStore.diffReport}
+              {theme}
+              filterNodeKinds={filterStore.nodeKinds}
+              filterEdgeKinds={filterStore.edgeKinds}
+              filterSubKinds={filterStore.subKinds}
+              filterLanguages={filterStore.languages}
+            />
+          </ErrorBoundary>
+        {:else if viewStore.mode === "treemap"}
+          <ErrorBoundary name="Treemap View">
+            <TreemapView graph={scopedGraph} />
+          </ErrorBoundary>
+        {:else if viewStore.mode === "chord"}
+          <ErrorBoundary name="Chord View">
+            <ChordView graph={scopedGraph} />
+          </ErrorBoundary>
+        {:else if viewStore.mode === "sunburst"}
+          <ErrorBoundary name="Sunburst View">
+            <SunburstView graph={scopedGraph} />
+          </ErrorBoundary>
+        {/if}
       {:else}
         <div class="center-message">
           <p>No data loaded</p>
@@ -793,5 +856,48 @@
     color: var(--accent);
     font-weight: bold;
     margin-left: 0.15rem;
+  }
+
+  .view-switcher {
+    display: flex;
+    align-items: center;
+    gap: 0;
+  }
+
+  .view-btn {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    font-size: 0.8rem;
+    padding: 0.25rem 0.5rem;
+    cursor: pointer;
+    border-radius: 0;
+  }
+
+  .view-btn:first-child {
+    border-radius: 4px 0 0 4px;
+  }
+
+  .view-btn:last-child {
+    border-radius: 0 4px 4px 0;
+  }
+
+  .view-btn + .view-btn {
+    border-left: none;
+  }
+
+  .view-btn-active {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+  }
+
+  .view-btn-active + .view-btn {
+    border-left: 1px solid var(--border);
+  }
+
+  .view-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
   }
 </style>

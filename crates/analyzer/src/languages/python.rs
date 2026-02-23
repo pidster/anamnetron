@@ -186,6 +186,7 @@ fn extract_function(
     }
 
     let line = node.start_position().row + 1;
+    let loc = node.end_position().row - node.start_position().row + 1;
     let (qn, sub_kind, parent_qn) = if let Some(cls) = class_name {
         (
             format!("{package_name}::{cls}::{name}"),
@@ -207,6 +208,7 @@ fn extract_function(
         parent_qualified_name: parent_qn,
         source_ref: format!("{source_ref_base}:{line}"),
         language: "python".to_string(),
+        metadata: Some(serde_json::json!({"loc": loc})),
     });
 }
 
@@ -226,6 +228,7 @@ fn extract_class(
     };
 
     let line = node.start_position().row + 1;
+    let loc = node.end_position().row - node.start_position().row + 1;
     result.items.push(AnalysisItem {
         qualified_name: format!("{package_name}::{name}"),
         kind: NodeKind::Unit,
@@ -233,6 +236,7 @@ fn extract_class(
         parent_qualified_name: Some(package_name.to_string()),
         source_ref: format!("{source_ref_base}:{line}"),
         language: "python".to_string(),
+        metadata: Some(serde_json::json!({"loc": loc})),
     });
 
     // Extract methods from class body

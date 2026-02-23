@@ -24,6 +24,8 @@ pub struct AnalysisItem {
     pub source_ref: String,
     /// Source language.
     pub language: String,
+    /// Extensible metadata from analysis (e.g., LOC, metrics).
+    pub metadata: Option<serde_json::Value>,
 }
 
 /// A relationship between code elements.
@@ -125,6 +127,7 @@ mod tests {
                 parent_qualified_name: Some("my_crate".to_string()),
                 source_ref: "src/lib.rs:10".to_string(),
                 language: "rust".to_string(),
+                metadata: None,
             }],
             relations: vec![AnalysisRelation {
                 source_qualified_name: "my_crate::Foo".to_string(),
@@ -178,6 +181,7 @@ mod tests {
                     parent_qualified_name: Some(unit_name.to_string()),
                     source_ref: "src/Main.java:1".to_string(),
                     language: "java".to_string(),
+                    metadata: None,
                 }],
                 relations: vec![],
                 warnings: vec![],

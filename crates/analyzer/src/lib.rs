@@ -97,6 +97,7 @@ pub fn analyze_project_with_registry(
                 parent_qualified_name: unit.parent_qualified_name.clone(),
                 source_ref: unit.source_ref.clone(),
                 language: unit.language.clone(),
+                metadata: None,
             });
 
             // Phase 4: emit structural items.
@@ -277,6 +278,7 @@ pub fn analyze_project_incremental_with_registry(
                 parent_qualified_name: unit.parent_qualified_name.clone(),
                 source_ref: unit.source_ref.clone(),
                 language: unit.language.clone(),
+                metadata: None,
             });
             all_items.extend(orchestrator.emit_structural_items(unit));
 

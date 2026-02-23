@@ -70,6 +70,8 @@ export interface CyNodeData {
   parent?: string;
   language?: string;
   source_ref?: string;
+  /** Extensible metadata properties from analysis. */
+  metadata?: Record<string, unknown>;
   /** Number of descendants when the node is in collapsed state. Set by expansion logic. */
   _childCount?: number;
 }
@@ -80,6 +82,8 @@ export interface CyEdgeData {
   source: string;
   target: string;
   kind: string;
+  /** Extensible metadata properties. */
+  metadata?: Record<string, unknown>;
   /** True for aggregated meta-edges created by collapse logic. */
   _isMeta?: boolean;
   /** Number of real edges aggregated into this meta-edge. */

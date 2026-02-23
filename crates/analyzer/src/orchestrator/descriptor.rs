@@ -241,6 +241,7 @@ mod tests {
                         parent_qualified_name: Some(unit_name.to_string()),
                         source_ref: f.display().to_string(),
                         language: "mock".to_string(),
+                        metadata: None,
                     })
                     .collect(),
                 relations: vec![],

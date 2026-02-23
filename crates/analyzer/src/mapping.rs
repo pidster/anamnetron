@@ -76,7 +76,7 @@ pub fn map_to_graph(
             language: Some(item.language.clone()),
             provenance: Provenance::Analysis,
             source_ref: Some(item.source_ref.clone()),
-            metadata: None,
+            metadata: item.metadata.clone(),
         });
 
         // Generate Contains edge from parent
@@ -132,6 +132,27 @@ pub fn map_to_graph(
         });
     }
 
+    // Compute fan-in/fan-out from non-Contains edges.
+    let mut fan_out_counts: HashMap<String, usize> = HashMap::new();
+    let mut fan_in_counts: HashMap<String, usize> = HashMap::new();
+    for edge in &edges {
+        if edge.kind != EdgeKind::Contains {
+            *fan_out_counts.entry(edge.source.clone()).or_default() += 1;
+            *fan_in_counts.entry(edge.target.clone()).or_default() += 1;
+        }
+    }
+
+    // Merge fan counts into node metadata.
+    for node in &mut nodes {
+        let fan_out = fan_out_counts.get(&node.id).copied().unwrap_or(0);
+        let fan_in = fan_in_counts.get(&node.id).copied().unwrap_or(0);
+        let meta = node.metadata.get_or_insert_with(|| serde_json::json!({}));
+        if let Some(obj) = meta.as_object_mut() {
+            obj.insert("fan_in".to_string(), serde_json::json!(fan_in));
+            obj.insert("fan_out".to_string(), serde_json::json!(fan_out));
+        }
+    }
+
     (nodes, edges, warnings)
 }
 
@@ -153,6 +174,7 @@ mod tests {
             parent_qualified_name: parent.map(|s| s.to_string()),
             source_ref: "test.rs:1".to_string(),
             language: "rust".to_string(),
+            metadata: None,
         }
     }
 
@@ -274,5 +296,76 @@ mod tests {
             qualified_name_to_canonical("svt_core::store::CozoStore"),
             "/svt-core/store/cozo-store"
         );
+    }
+
+    #[test]
+    fn fan_in_fan_out_computed_from_edges() {
+        let items = vec![
+            make_item("a", NodeKind::Service, "crate", None),
+            make_item("b", NodeKind::Service, "crate", None),
+            make_item("c", NodeKind::Service, "crate", None),
+        ];
+        // a -> b (Depends), a -> c (Depends), b -> c (Depends)
+        let relations = vec![
+            AnalysisRelation {
+                source_qualified_name: "a".to_string(),
+                target_qualified_name: "b".to_string(),
+                kind: EdgeKind::Depends,
+            },
+            AnalysisRelation {
+                source_qualified_name: "a".to_string(),
+                target_qualified_name: "c".to_string(),
+                kind: EdgeKind::Depends,
+            },
+            AnalysisRelation {
+                source_qualified_name: "b".to_string(),
+                target_qualified_name: "c".to_string(),
+                kind: EdgeKind::Depends,
+            },
+        ];
+        let (nodes, _, _) = map_to_graph(&items, &relations);
+
+        let node_a = nodes.iter().find(|n| n.canonical_path == "/a").unwrap();
+        let node_b = nodes.iter().find(|n| n.canonical_path == "/b").unwrap();
+        let node_c = nodes.iter().find(|n| n.canonical_path == "/c").unwrap();
+
+        let meta_a = node_a.metadata.as_ref().unwrap();
+        assert_eq!(meta_a["fan_out"], 2, "a has 2 outgoing Depends edges");
+        assert_eq!(meta_a["fan_in"], 0, "a has 0 incoming Depends edges");
+
+        let meta_b = node_b.metadata.as_ref().unwrap();
+        assert_eq!(meta_b["fan_out"], 1, "b has 1 outgoing Depends edge");
+        assert_eq!(meta_b["fan_in"], 1, "b has 1 incoming Depends edge");
+
+        let meta_c = node_c.metadata.as_ref().unwrap();
+        assert_eq!(meta_c["fan_out"], 0, "c has 0 outgoing Depends edges");
+        assert_eq!(meta_c["fan_in"], 2, "c has 2 incoming Depends edges");
+    }
+
+    #[test]
+    fn loc_metadata_preserved_through_mapping() {
+        let item = AnalysisItem {
+            qualified_name: "my_crate::Foo".to_string(),
+            kind: NodeKind::Unit,
+            sub_kind: "struct".to_string(),
+            parent_qualified_name: Some("my_crate".to_string()),
+            source_ref: "test.rs:1".to_string(),
+            language: "rust".to_string(),
+            metadata: Some(serde_json::json!({"loc": 42})),
+        };
+        let items = vec![
+            make_item("my_crate", NodeKind::Service, "crate", None),
+            item,
+        ];
+        let (nodes, _, _) = map_to_graph(&items, &[]);
+        let foo_node = nodes
+            .iter()
+            .find(|n| n.canonical_path == "/my-crate/foo")
+            .expect("should find Foo node");
+        let meta = foo_node.metadata.as_ref().expect("should have metadata");
+        assert_eq!(meta["loc"], 42, "LOC should be preserved through mapping");
+        // fan_in/fan_out should also be present
+        assert_eq!(meta["fan_in"], 0);
+        assert_eq!(meta["fan_out"], 0);
     }
 }

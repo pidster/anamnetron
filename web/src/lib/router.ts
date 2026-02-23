@@ -5,6 +5,7 @@ export interface HashState {
   diff?: number;
   scope?: string;
   mermaid?: string;
+  view?: string;
 }
 
 /** Parse the URL hash into state. */
@@ -30,6 +31,9 @@ export function parseHash(hash: string): HashState {
   const mermaid = params.get("mermaid");
   if (mermaid) state.mermaid = mermaid;
 
+  const view = params.get("view");
+  if (view) state.view = view;
+
   return state;
 }
 
@@ -41,6 +45,7 @@ export function buildHash(state: HashState): string {
   if (state.diff !== undefined) params.set("diff", String(state.diff));
   if (state.scope !== undefined) params.set("scope", state.scope);
   if (state.mermaid !== undefined) params.set("mermaid", state.mermaid);
+  if (state.view !== undefined) params.set("view", state.view);
   const str = params.toString();
   return str ? `#${str}` : "";
 }

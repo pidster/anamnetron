@@ -45,6 +45,12 @@
         {/if}
         <dt>Provenance</dt>
         <dd>{node.provenance}</dd>
+        {#if node.metadata && Object.keys(node.metadata).length > 0}
+          {#each Object.entries(node.metadata) as [key, value]}
+            <dt class="metric-key">{key}</dt>
+            <dd class="metric-value">{value}</dd>
+          {/each}
+        {/if}
       </dl>
     </section>
 
@@ -167,6 +173,17 @@
   code {
     font-size: 0.8rem;
     color: var(--accent);
+  }
+
+  .metric-key {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    font-style: italic;
+  }
+
+  .metric-value {
+    font-size: 0.8rem;
+    font-variant-numeric: tabular-nums;
   }
 
   .loading {

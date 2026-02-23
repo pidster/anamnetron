@@ -130,6 +130,7 @@ fn parse_go_file(
                 if let Some(name_node) = child.child_by_field_name("name") {
                     if let Ok(name) = name_node.utf8_text(source.as_bytes()) {
                         let line = child.start_position().row + 1;
+                        let loc = child.end_position().row - child.start_position().row + 1;
                         result.items.push(AnalysisItem {
                             qualified_name: format!("{module_name}::{name}"),
                             kind: NodeKind::Unit,
@@ -137,6 +138,7 @@ fn parse_go_file(
                             parent_qualified_name: Some(module_name.to_string()),
                             source_ref: format!("{source_ref_base}:{line}"),
                             language: "go".to_string(),
+                            metadata: Some(serde_json::json!({"loc": loc})),
                         });
                     }
                 }
@@ -146,6 +148,7 @@ fn parse_go_file(
                     if let Ok(name) = name_node.utf8_text(source.as_bytes()) {
                         let receiver_type = extract_receiver_type(&child, source);
                         let line = child.start_position().row + 1;
+                        let loc = child.end_position().row - child.start_position().row + 1;
                         let qn = if let Some(ref recv) = receiver_type {
                             format!("{module_name}::{recv}::{name}")
                         } else {
@@ -160,6 +163,7 @@ fn parse_go_file(
                                 .or_else(|| Some(module_name.to_string())),
                             source_ref: format!("{source_ref_base}:{line}"),
                             language: "go".to_string(),
+                            metadata: Some(serde_json::json!({"loc": loc})),
                         });
                     }
                 }
@@ -202,6 +206,7 @@ fn extract_type_spec(
     };
 
     let line = spec.start_position().row + 1;
+    let loc = spec.end_position().row - spec.start_position().row + 1;
     result.items.push(AnalysisItem {
         qualified_name: format!("{module_name}::{name}"),
         kind: NodeKind::Unit,
@@ -209,6 +214,7 @@ fn extract_type_spec(
         parent_qualified_name: Some(module_name.to_string()),
         source_ref: format!("{source_ref_base}:{line}"),
         language: "go".to_string(),
+        metadata: Some(serde_json::json!({"loc": loc})),
     });
 }
 
