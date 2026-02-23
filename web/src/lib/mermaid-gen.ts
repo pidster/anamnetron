@@ -227,10 +227,15 @@ export function generateC4(graph: CytoscapeGraph): string {
     renderC4Node(root, "    ");
   }
 
-  // Render relationships
+  // Render relationships — only between leaf components, not boundaries.
+  // Mermaid C4 Rel() cannot reference Boundary aliases, only Component/Container/System.
+  const boundaryIds = new Set(children.keys());
+
   for (const edge of graph.elements.edges) {
     if (edge.data.kind === "contains") continue;
     if (edge.data._isMeta) continue;
+    // Skip edges referencing boundary nodes — Mermaid C4 cannot draw Rel to/from a Boundary
+    if (boundaryIds.has(edge.data.source) || boundaryIds.has(edge.data.target)) continue;
     const src = sanitizeId(edge.data.source);
     const tgt = sanitizeId(edge.data.target);
     lines.push(`    Rel(${src}, ${tgt}, "${edge.data.kind}")`);

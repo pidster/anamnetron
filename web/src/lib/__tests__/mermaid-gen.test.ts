@@ -197,7 +197,7 @@ describe("generateC4", () => {
     expect(result).toContain('Component(comp, "Component")');
   });
 
-  it("renders relationships", () => {
+  it("renders relationships between leaf components", () => {
     const graph = makeGraph(
       [
         { id: "a", label: "A", kind: "component" },
@@ -208,5 +208,25 @@ describe("generateC4", () => {
 
     const result = generateC4(graph);
     expect(result).toContain('Rel(a, b, "depends")');
+  });
+
+  it("skips relationships referencing boundary nodes", () => {
+    const graph = makeGraph(
+      [
+        { id: "sys", label: "System", kind: "system" },
+        { id: "a", label: "A", kind: "component", parent: "sys" },
+        { id: "b", label: "B", kind: "component" },
+      ],
+      [
+        { id: "e1", source: "sys", target: "b", kind: "depends" },
+        { id: "e2", source: "a", target: "b", kind: "calls" },
+      ],
+    );
+
+    const result = generateC4(graph);
+    // sys is a boundary (has child a), so Rel(sys, b) should be skipped
+    expect(result).not.toContain('Rel(sys, b');
+    // a is a leaf component, so Rel(a, b) should be kept
+    expect(result).toContain('Rel(a, b, "calls")');
   });
 });
