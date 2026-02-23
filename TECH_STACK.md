@@ -8,7 +8,9 @@
 | **Graph store** | CozoDB (primary), SurrealDB (fallback) | CozoDB: Rust-native, WASM-compatible, Datalog maps naturally to conformance rules. SurrealDB: proven at scale, fallback if CozoDB struggles with large datasets |
 | **Shared core (WASM)** | Rust → wasm-bindgen | Same conformance/validation logic in CLI, API, and browser |
 | **Frontend framework** | Svelte | Lightweight rendering layer, minimal overhead around graph visualization |
-| **Graph visualization** | Cytoscape.js | Multi-layout, compound nodes for drill-down, conditional styling for conformance, canvas-based performance |
+| **Interactive graph** | Cytoscape.js | Multi-layout (ELK, Dagre, fCOSE), compound nodes, conformance/diff overlays, minimap, canvas-based performance |
+| **Diagram generation** | Mermaid | Flowchart, data flow, sequence, C4 diagrams; text-based, exportable, primary visualization view |
+| **Analytical charts** | D3.js (planned) | Chord diagrams, treemaps, sunburst charts — visualization types that require custom layout algorithms |
 | **API service** | Axum | Rust-native async web framework |
 | **Export formats** | SVG/PNG, Markdown+Mermaid, JSON | Interoperability principle — pluggable, core set ships built-in |
 
@@ -21,7 +23,7 @@ crates/
   cli/         — CLI entry point, export (Mermaid/SVG/PNG)
   server/      — Axum API service, serves web UI
 
-web/           — Svelte frontend + Cytoscape.js + WASM core
+web/           — Svelte frontend + Mermaid + Cytoscape.js + D3.js (planned) + WASM core
 ```
 
 ## Dependency Flow

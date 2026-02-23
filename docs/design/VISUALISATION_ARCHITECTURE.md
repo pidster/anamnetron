@@ -31,6 +31,53 @@ Visualisations that depend on evidence that may be absent must indicate this cle
 
 All visualisations are projections of the underlying graph. The graph schema should be designed for query flexibility, not for any specific visualisation's needs. Visualisations consume query results; they do not drive the data model.
 
+The platform uses **CozoDB** — a transactional, relational-graph-vector database with Datalog queries. This choice has significant architectural implications:
+
+- **Relational model, not labelled-property graph.** Data is stored in relations (tables), and graph structure is implicit — derived through Datalog joins and recursion. This is more composable than the property graph model and means the schema can evolve without the rigidity of predefined node/edge labels.
+- **Datalog for queries.** Recursive Datalog is naturally suited to graph traversal (dependency chains, transitive closures, cycle detection) and composes cleanly — queries can be built from reusable rules. This directly benefits conformance checking, where queries like "find all dependency paths that violate a design rule" are naturally recursive.
+- **Built-in graph algorithms.** CozoDB provides efficient implementations of PageRank, community detection, shortest path, and other whole-graph algorithms within Datalog. This eliminates the need for external algorithm libraries for the force-directed graph's community detection and the dependency analysis's hub identification.
+- **Native time travel.** CozoDB supports timestamped assertions and retractions of facts, enabling point-in-time queries. This is the foundation for trend analysis (evolution dimension) and conformance drift tracking — the platform can reconstruct the state of the codebase graph at any historical point without maintaining separate snapshots.
+- **Embeddable or client-server.** The prototype's "launch against a file path" model uses CozoDB in embedded mode (like SQLite). The future service variant uses client-server mode. Same database, same queries, different deployment topology.
+- **Vector search (HNSW).** CozoDB's integrated vector search within Datalog enables semantic similarity queries. This is directly applicable to AI-assisted design-to-code mapping: embed design component descriptions and code module summaries, then use vector proximity to propose mappings.
+
+---
+
+## Current State
+
+Before defining the target architecture, it is important to establish what already exists. The platform has a working visualization stack that new work should build upon, not replace.
+
+### Existing visualization layers
+
+**Mermaid diagrams (primary view):** `MermaidView.svelte` renders four diagram types — flowchart, data flow, sequence, and C4 — from the graph store. It supports 0.25x–4x zoom (keyboard and mouse wheel), dark/light theming, source copying, and was deliberately promoted as the primary visualization (commit `c51db65`). Mermaid excels at exportable, human-readable diagrams and requires no additional rendering infrastructure.
+
+**Cytoscape.js interactive graph:** `GraphView.svelte` provides an interactive graph exploration view with three layout algorithms (ELK layered, Dagre, fCOSE force-directed), compound node support for hierarchical nesting, a minimap/navigator, context menus (expand/collapse, focus neighbourhood, set scope), Tippy.js tooltips, and per-kind node colouring and edge styling. It includes conformance overlay (pass/fail/unimplemented/undocumented classes) and diff overlay (added/removed/changed). Performance thresholds are built in: texture mode above 300 nodes, edge hiding above 500 nodes.
+
+**Navigation and filtering:** A tree navigation panel with single-click selection supports scoping (restricting the view to a subtree) and depth filtering. Node kind, sub-kind, edge kind, and language filters are available.
+
+### Existing data model
+
+The graph store uses six CozoDB relations: `metadata`, `snapshots`, `nodes`, `edges`, `constraints`, and `file_manifest`. Key design decisions:
+
+- **Generic schema:** Nodes have `kind` (System/Service/Component/Unit) and `sub_kind` (domain-specific string) columns. Edges have `kind` (Contains/Depends/Calls/Implements/Extends/DataFlow/Exports). New kinds do not require schema changes.
+- **Provenance tracking:** Both nodes and edges carry a `provenance` column (Design/Analysis/Import/Inferred) that distinguishes prescriptive from descriptive data.
+- **Extensible metadata:** Nodes, edges, and constraints have a `metadata: Json?` column for arbitrary key-value properties.
+- **Versioned snapshots:** Composite keys `(id, version)` enable multiple analysis snapshots.
+
+### Existing conformance infrastructure
+
+`crates/core/src/conformance.rs` provides a trait-based constraint evaluation system with four built-in evaluators: `must_not_depend`, `boundary`, `must_contain`, and `max_fan_in`. The `ConformanceReport` includes violation details, unimplemented design nodes, undocumented analysis nodes, and a summary with pass/fail/warn/not-evaluable counts. The `GraphView` already renders conformance results as visual overlays.
+
+### Existing analyzer capabilities
+
+The analyzer extracts **structure only** — module/package hierarchy, dependency edges (import/use), and type relationships (implements, extends) — for Rust, TypeScript/JavaScript, Go, and Python via tree-sitter. It supports incremental analysis (only re-analyzing changed units). **No metrics are currently extracted** — no LOC, no cyclomatic complexity, no fan-in/fan-out counts, no code age. The `Node.metadata` field is available but unpopulated.
+
+### Installed frontend libraries
+
+- Cytoscape.js `^3.33.1` with six plugins (dagre, fcose, elk, navigator, context-menus, popper)
+- Mermaid `^11.12.3`
+- Tippy.js `^6.3.7`, Popper.js `^2.11.8`, ELK.js `^0.11.0`
+- **D3.js is not currently installed**
+
 ---
 
 ## Comprehension Dimensions and Data Sources
@@ -132,7 +179,7 @@ All visualisations are projections of the underlying graph. The graph schema sho
 
 **When to hide this view:** Fewer than 3 entities (nothing to compare), or more than ~30 entities (becomes unreadable — suggest the force-directed graph instead).
 
-**Implementation notes:** D3 `d3-chord` for maximum control. ECharts chord if rapid development is prioritised. The key implementation challenge is the dual-layer (static + change coupling) overlay; consider a toggle rather than simultaneous display to avoid visual overload.
+**Implementation notes:** D3 `d3-chord` for the interactive chord diagram (new D3.js dependency required). ECharts chord if rapid development is prioritised. The key implementation challenge is the dual-layer (static + change coupling) overlay; consider a toggle rather than simultaneous display to avoid visual overload. Note: the existing Mermaid flowchart view already shows dependency structure in diagram form — the chord diagram adds a quantitative coupling-magnitude view that Mermaid cannot express.
 
 ---
 
@@ -170,7 +217,7 @@ All visualisations are projections of the underlying graph. The graph schema sho
 
 **When to hide specific presets:** If test coverage data is unavailable, grey out that preset rather than showing an empty or misleading view. Same for git-dependent presets on projects without history.
 
-**Implementation notes:** D3 `d3-hierarchy` treemap or ECharts treemap. The switchable metric pairs are the key UX challenge — pre-compute all metric values on the graph side so switching is instantaneous (no re-query). Consider WebGL rendering (e.g., via deck.gl) for very large codebases (100k+ files) where SVG performance degrades.
+**Implementation notes:** D3 `d3-hierarchy` for layout computation, rendered as Svelte SVG `{#each}` blocks. Alternatively, ECharts treemap for faster implementation. The switchable metric pairs are the key UX challenge — pre-compute all metric values in the Datalog query so that switching presets is instantaneous in the Svelte store (no re-query to CozoDB). A single query returns all leaf nodes with all metric columns; the Svelte component selects which columns map to area and colour. Consider WebGL rendering (e.g., via deck.gl) for very large codebases (100k+ files) where SVG performance degrades.
 
 ---
 
@@ -207,11 +254,11 @@ All visualisations are projections of the underlying graph. The graph schema sho
 
 **When to hide this view:** Very flat projects with minimal hierarchy (e.g., a single-directory script collection). In such cases, the treemap alone suffices.
 
-**Implementation notes:** D3 zoomable sunburst (Observable example is the reference implementation). The `vasturiano/sunburst-chart` web component is a solid alternative with React bindings. The critical challenge is the design-overlay mode, which requires a mapping function between designed components and actual code paths — this is part of the conformance model specification below.
+**Implementation notes:** D3 zoomable sunburst (Observable example is the reference implementation). The `vasturiano/sunburst-chart` web component is a solid alternative — it is framework-agnostic and can be used in Svelte via a wrapper component with `bind:this`. Alternatively, compute the sunburst layout with `d3.partition()` and render arcs using Svelte's `{#each}` blocks with `transition:` directives for smooth zoom animations. The critical challenge is the design-overlay mode, which requires a mapping function between designed components and actual code paths — this is part of the conformance model specification below.
 
 ---
 
-### V4: Force-Directed Dependency Graph (recommended addition)
+### V4: Force-Directed Dependency Graph (partially exists)
 
 **Comprehension dimension:** Structure (topology and clustering)
 
@@ -219,18 +266,20 @@ All visualisations are projections of the underlying graph. The graph schema sho
 
 **Why it complements the chord diagram:** The chord diagram shows coupling magnitude between known groups. The force-directed graph discovers groups you didn't know existed. It answers "is this system actually modular?" rather than "how coupled are the modules I already defined?"
 
+**Current state:** The existing `GraphView.svelte` already provides a force-directed layout via Cytoscape.js fCOSE, with compound node support, neighbourhood highlighting, context menus, and conformance overlays. The enhancements below add community detection and richer colouring modes to the existing infrastructure rather than replacing it.
+
 **Data source (graph query):** Same dependency edge data as the chord diagram, but at a finer granularity (file-to-file or class-to-class). Community detection algorithm labels each node with a cluster ID.
 
-**Interaction model:**
-- Nodes positioned by force simulation; edges as lines.
-- Colour by detected community (auto-assigned) or by designed component (if available).
-- Toggle between community colouring and designed-component colouring — discrepancies between these two views are a primary conformance signal.
-- Click a node: highlight its immediate dependencies (1-hop), with option to expand to 2-hop.
-- Hull rendering: toggle convex hulls around detected communities to see cluster boundaries.
-- Search: find a specific file/class and centre the view on it.
-- Filter: show/hide edges below a weight threshold, show/hide external dependencies.
+**Interaction model (existing + enhancements):**
+- Nodes positioned by fCOSE force simulation (existing); edges as lines (existing).
+- Colour by detected community (auto-assigned, **new**) or by designed component (if available, **new**).
+- Toggle between community colouring and designed-component colouring — discrepancies between these two views are a primary conformance signal (**new**).
+- Click a node: highlight its immediate dependencies via neighbourhood focus (existing context menu action).
+- Hull rendering: toggle convex hulls around detected communities to see cluster boundaries (**new**).
+- Search: find a specific file/class and centre the view on it (enhancement of existing filter).
+- Filter: show/hide edges below a weight threshold, show/hide external dependencies (extends existing kind filter).
 
-**Implementation notes:** D3 force simulation, or for large graphs (1000+ nodes) consider WebCoLa or a WebGL-based renderer (sigma.js, Graphology with rendering adapter). The Emerge tool's approach is a good reference. Community detection should run server-side (graph DB query or dedicated algorithm) and provide cluster labels as node properties.
+**Implementation notes:** Use the existing Cytoscape.js fCOSE layout — do not replace with D3 force simulation. Community detection runs within CozoDB using its built-in Louvain algorithm via Datalog — cluster labels are returned as part of the query result and passed to `GraphView` as node properties for colouring. For very large graphs (1000+ nodes), the existing GraphView already applies performance mitigations (texture mode, edge hiding). Evaluate sigma.js only if these prove insufficient.
 
 ---
 
@@ -248,7 +297,7 @@ All visualisations are projections of the underlying graph. The graph schema sho
 
 **Module-level activity stream:** For each major module, a horizontal timeline bar showing periods of activity vs. dormancy. Stacked or aligned to show which modules are being worked on in parallel. Reveals whether development is focused (one module at a time) or scattered (many modules touched per sprint).
 
-**Implementation notes:** ECharts calendar heatmap for the activity view. Recharts or Plotly for metric trends. These are simpler visualisations but critical for the "evolution" comprehension dimension, which the three original diagram types don't cover well.
+**Implementation notes:** ECharts calendar heatmap for the activity view. LayerCake with D3 scales, or Plotly, for metric trend lines. These are simpler visualisations but critical for the "evolution" comprehension dimension, which the three original diagram types don't cover well.
 
 ---
 
@@ -256,7 +305,7 @@ All visualisations are projections of the underlying graph. The graph schema sho
 
 ### Overview
 
-Conformance checking is a first-class analytical capability, not a bolted-on feature. The model works by maintaining two parallel representations in the graph DB — the **designed architecture** and the **actual architecture** — and continuously computing the delta between them.
+Conformance checking is a first-class analytical capability, not a bolted-on feature. The model works by maintaining two parallel representations in CozoDB — the **designed architecture** and the **actual architecture** — and continuously computing the delta between them via Datalog queries.
 
 ### Design Document Ingestion
 
@@ -268,23 +317,76 @@ Conformance checking is a first-class analytical capability, not a bolted-on fea
 
 **Later additions:** ArchiMate, UML (XMI), OpenAPI specs (for service contract conformance), formal architecture models (AADL, SysML).
 
-### Graph Representation
+### Graph Representation (CozoDB Relations)
 
+The conformance model builds on the **existing** generic graph schema rather than defining parallel relations. Design intent and actual structure coexist in the same `nodes` and `edges` relations, distinguished by the `provenance` column. Conformance is computed by Datalog queries that join across provenance boundaries — it is not stored statically, so results are always current.
+
+**Existing relations used by the conformance model:**
+
+```datalog
+# These relations already exist (see crates/core/src/store/cozo.rs):
+# nodes { id, version => canonical_path, qualified_name?, kind, sub_kind, name,
+#          language?, provenance, source_ref?, metadata? }
+# edges { id, version => source, target, kind, provenance, metadata? }
+# constraints { id, version => kind, name, scope, target?, params?, message, severity }
 ```
-Design subgraph:
-  (DesignComponent)-[:DESIGN_CONTAINS]->(DesignComponent)
-  (DesignComponent)-[:DESIGN_DEPENDS_ON]->(DesignComponent)
-  (DesignComponent)-[:DESIGN_FORBIDS_DEPENDENCY]->(DesignComponent)
-  (DesignComponent {name, responsibility, layer, owner, source_doc})
 
-Mapping layer:
-  (DesignComponent)-[:MAPS_TO]->(ActualModule)
-  (ActualModule)-[:UNMAPPED]  // no corresponding design element
+- **Design components** are `nodes` entries with `provenance: "design"`. The `kind` column uses the same C4-aligned levels: System, Service, Component, Unit. Design-specific attributes (responsibility, layer, owner, source document) are stored in the `metadata` JSON column.
+- **Design dependencies** are `edges` entries with `provenance: "design"` and `kind: "depends"`.
+- **Forbidden dependencies** are `constraints` entries with `kind: "must_not_depend"`, evaluated by the existing `MustNotDependEvaluator`.
+- **Boundary rules** are `constraints` entries with `kind: "boundary"`, evaluated by the existing `BoundaryEvaluator`.
 
-Conformance edges (computed):
-  (ActualModule)-[:CONFORMS {score, details}]->(DesignComponent)
-  (ActualModule)-[:VIOLATES {rule, severity, details}]->(DesignComponent)
+**Mapping layer (new relation):**
+
+The one additional relation needed is the design-to-code mapping, which connects design nodes to analysis nodes:
+
+```datalog
+:create design_code_mapping {
+    design_node: String, analysis_node: String, version: Int
+    =>
+    mapping_method: String,   # "explicit", "convention", "ai_suggested"
+    confidence: Float,        # 0.0–1.0
+    confirmed_by: String?,    # human reviewer, if AI-suggested
+    confirmed_at: String?
+}
 ```
+
+**Conformance queries using the actual schema:**
+
+```datalog
+# Structural conformance: design nodes with no mapped analysis code (missing implementations)
+missing_impl[design_id, name, path] :=
+    *nodes{ id: design_id, version: v, name, canonical_path: path, provenance: "design" },
+    not *design_code_mapping{ design_node: design_id, version: v }
+
+# Structural conformance: analysis nodes with no design mapping (undocumented growth)
+unmapped_code[analysis_id, name, path] :=
+    *nodes{ id: analysis_id, version: v, name, canonical_path: path, provenance: "analysis" },
+    not *design_code_mapping{ analysis_node: analysis_id, version: v }
+
+# Dependency conformance: actual dependencies that violate a must_not_depend constraint
+# (This is what the existing MustNotDependEvaluator computes programmatically;
+#  the Datalog equivalent for ad-hoc queries:)
+dependency_violations[src_path, tgt_path, constraint_name, sev] :=
+    *edges{ version: v, source: src_id, target: tgt_id, kind: "depends", provenance: "analysis" },
+    *nodes{ id: src_id, version: v, canonical_path: src_path },
+    *nodes{ id: tgt_id, version: v, canonical_path: tgt_path },
+    *constraints{ version: v, kind: "must_not_depend", name: constraint_name,
+                  scope: scope_pat, target: tgt_pat, severity: sev },
+    # scope_pat and tgt_pat are glob patterns matched in application code
+    # (CozoDB Datalog does not natively support glob matching)
+
+# Aggregate conformance score per design component
+component_conformance[design_id, name, score] :=
+    *nodes{ id: design_id, version: v, name, provenance: "design" },
+    violation_count[design_id, v_count],
+    mapping_count[design_id, m_count],
+    score = if(m_count == 0, 0.0, 1.0 - (v_count / m_count))
+```
+
+**Note on constraint evaluation:** The existing `ConstraintRegistry` in `crates/core/src/conformance.rs` provides four built-in evaluators (`must_not_depend`, `boundary`, `must_contain`, `max_fan_in`) that operate programmatically via the `GraphStore` trait. The Datalog queries above show the equivalent logic for ad-hoc analysis. In practice, conformance checking should use the Rust evaluators for correctness (they handle glob pattern matching and edge traversal that Datalog cannot express natively) and reserve Datalog for exploratory queries and reporting aggregation.
+
+The key advantage of the generic schema is composability: new node kinds, edge kinds, and constraint types can be added without schema changes. The `metadata` JSON column accommodates domain-specific attributes without relation proliferation.
 
 ### Mapping: Design to Code
 
@@ -303,8 +405,8 @@ The platform should support all three, with (1) as the source of truth when pres
 Each check produces a conformance score (0.0–1.0) and a set of specific violations with severity and location.
 
 **Structural conformance:**
-- For each DesignComponent, does a corresponding ActualModule exist? (Missing implementation)
-- For each ActualModule, does a corresponding DesignComponent exist? (Undocumented growth)
+- For each `design_component`, does a corresponding mapped module exist? (Missing implementation — see `missing_impl` query above)
+- For each `module`, does a corresponding `design_code_mapping` entry exist? (Undocumented growth — see `unmapped_code` query above)
 - Does the actual nesting match the designed containment hierarchy?
 
 **Dependency conformance:**
@@ -321,7 +423,9 @@ Each check produces a conformance score (0.0–1.0) and a set of specific violat
 
 ---
 
-## Persona Views
+## Persona Views (Future Consideration)
+
+> **Note:** The persona views described below are aspirational design guidance for when a configurable dashboard framework exists. The current UI is a single-view application with a navigation tree, diagram panel, and detail panel. These descriptions inform the eventual dashboard design but are not near-term deliverables.
 
 Each persona needs a different entry point into the same underlying data. These are not different dashboards but different **default configurations** of the same dashboard, with full ability to reconfigure.
 
@@ -365,7 +469,9 @@ Each persona needs a different entry point into the same underlying data. These 
 
 ---
 
-## Static Report Variant
+## Static Report Variant (Phase 3+, Future)
+
+> **Note:** This section describes infrastructure that does not yet exist and represents a significant engineering effort orthogonal to the core visualization work. It depends on the visualization components being complete first. **Near-term alternative:** Mermaid's built-in SVG export already provides basic static diagram output and can serve as a starting point for static reports without the full pipeline described below.
 
 The CI-generated periodic report should be a **snapshot** of the dashboard state, not a separate system. Key design decisions:
 
@@ -386,7 +492,7 @@ The CI-generated periodic report should be a **snapshot** of the dashboard state
 
 5. **Trend charts:** Key metrics over the last N reports, showing trajectory.
 
-**Generation pipeline:** The data collectors (running periodically or triggered by CI) update the graph DB. The report generator queries the graph DB, renders visualisations server-side (e.g., using Puppeteer for headless chart rendering, or server-side D3/node-canvas), and assembles the report. The report is versioned and stored, enabling historical comparison.
+**Generation pipeline:** The data collectors (running periodically or triggered by CI) update CozoDB. The report generator queries CozoDB via Datalog, renders visualisations server-side (e.g., using Puppeteer for headless chart rendering, or server-side D3/node-canvas), and assembles the report. The report is versioned and stored, enabling historical comparison. CozoDB's time travel means the report can include "state at last report" vs. "state now" comparisons without the report generator maintaining its own history.
 
 ---
 
@@ -394,21 +500,22 @@ The CI-generated periodic report should be a **snapshot** of the dashboard state
 
 ### Collectors
 
-Each data source has a dedicated collector that extracts data and writes it to the graph DB via the platform API.
+Each data source has a dedicated collector that extracts data and writes it to CozoDB via the platform API.
 
-| Collector              | Input                        | Nodes created               | Edges created                     | Frequency         |
-|:-----------------------|:-----------------------------|:----------------------------|:----------------------------------|:-------------------|
-| Structure analyser     | Source code (AST parsing)    | File, Module, Class, Func   | IMPORTS, CALLS, CONTAINS          | On code change     |
-| Dependency analyser    | Manifest files               | Package, ExternalDep        | DEPENDS_ON (external)             | On manifest change |
-| Complexity analyser    | Source code                  | (Properties on existing)    | —                                 | On code change     |
-| Git history analyser   | Git log                      | Author, Commit              | AUTHORED, CHANGED, CO_CHANGED     | Periodic (daily)   |
-| Coverage analyser      | Coverage reports (lcov etc.) | (Properties on existing)    | —                                 | On CI run          |
-| Design doc parser      | Mermaid, C4, YAML, ADR       | DesignComponent, DesignRule | DESIGN_CONTAINS, DESIGN_DEPENDS_ON| On doc change      |
-| Conformance calculator | Graph DB (internal)          | (Edges)                     | CONFORMS, VIOLATES                | After any update   |
+| Collector              | Input                        | Relations populated                              | Status | Frequency         |
+|:-----------------------|:-----------------------------|:-------------------------------------------------|:-------|:-------------------|
+| Structure analyser     | Source code (AST parsing)    | `nodes` (kind: Component/Unit), `edges` (kind: Contains/Depends/Calls/Implements/Extends) | **Exists** — Rust, TS, Go, Python | On code change     |
+| Dependency analyser    | Manifest files               | `nodes` (sub_kind: "external_dep"), `edges` (kind: Depends) | **Exists** — via cargo metadata, package.json | On manifest change |
+| Metrics analyser       | Source code                  | Updates `nodes.metadata` with LOC, complexity, fan-in/fan-out | **Not yet built** — Phase 0 prerequisite | On code change     |
+| Git history analyser   | Git log                      | `nodes` (sub_kind: "author", "commit"), `edges` (kind: DataFlow for authorship) | **Not yet built** | Periodic (daily)   |
+| Coverage analyser      | Coverage reports (lcov etc.) | Updates `nodes.metadata` with coverage data      | **Not yet built** | On CI run          |
+| Design doc parser      | Mermaid, C4, YAML, ADR       | `nodes` (provenance: Design), `edges` (provenance: Design), `constraints` | **Partially exists** — YAML design model ingestion works | On doc change   |
+| Design-code mapper     | Design + analysis nodes      | `design_code_mapping` relation                   | **Not yet built** | On analysis run    |
+| Conformance calculator | GraphStore (Rust evaluators) | Computed at query time via `ConstraintRegistry` — no separate storage | **Exists** — 4 evaluators | On-demand          |
 
 ### Incremental Updates
 
-For the service variant (periodic data collection), collectors must support incremental updates — not full re-analysis on every run. The graph DB should support temporal versioning so that historical states can be reconstructed for trend analysis.
+For the service variant (periodic data collection), collectors must support incremental updates — not full re-analysis on every run. CozoDB's native time travel (timestamped assertions and retractions) handles historical state reconstruction without maintaining separate snapshots. Collectors assert new facts and retract stale ones with timestamps; any Datalog query can then be scoped to a point in time for trend analysis.
 
 ### API Design Consideration
 
@@ -418,46 +525,56 @@ The platform API should accept collector output as a standardised event format (
 
 ## Implementation Priorities
 
-### Phase 1: Core comprehension (no design docs required)
+These phases build incrementally on the existing system (see **Current State** section above). The structure analyzer, dependency analyzer, Mermaid diagrams, and Cytoscape.js graph already exist and are working.
 
-1. Structure analyser + dependency analyser → **chord diagram** (static dependencies)
-2. Complexity analyser → **treemap** (complexity landscape preset)
-3. File system hierarchy → **sunburst** (Mode A, actual structure)
-4. Metric pair switching on treemap (complexity, LOC, fan-in/fan-out — all statically derivable)
+### Phase 0: Metrics Foundation (prerequisite for new visualizations)
 
-This phase works for *any* project with source code. No git history, no design docs, no CI integration required.
+The new visualization types (treemap, chord, sunburst) require quantitative data that the analyzer does not yet extract.
+
+1. **LOC extraction** — Compute lines of code per file/module from tree-sitter byte ranges (trivially derivable from existing AST parsing). Populate `nodes.metadata` with `{ "loc": N }`.
+2. **Fan-in / fan-out counts** — Count incoming and outgoing `Depends` edges per node. Populate `nodes.metadata` with `{ "fan_in": N, "fan_out": N }`.
+3. **API endpoint for metrics** — Expose per-node metrics via the server API so the web frontend can query them.
+4. **Verify metadata round-trip** — Ensure `nodes.metadata` JSON survives CozoDB storage → API → frontend pipeline.
+
+This phase works for *any* project with source code. No git history, no design docs, no CI integration required. LOC alone unlocks the treemap; fan-in/fan-out enriches the chord diagram.
+
+### Phase 1: New analytical visualizations
+
+5. **Treemap** (D3 `d3-hierarchy`) — area = LOC, colour = fan-out or depth. Highest new-information-per-effort ratio. Requires D3.js as a new frontend dependency.
+6. **Chord diagram** (D3 `d3-chord`) — dependency coupling between top-level modules. Can use unweighted edge counts initially; LOC-weighted arcs when metrics are available.
+7. **Sunburst** (D3 `d3-hierarchy` + `d3.partition()`) — hierarchical navigation with arc size proportional to LOC (or child count as fallback). Mode A (actual structure) only.
+8. **Metric pair switching** on treemap — switchable presets using LOC, fan-in, fan-out, depth.
 
 ### Phase 2: Evolution and risk (add git history)
 
-5. Git history analyser → treemap hotspots preset (churn × complexity)
-6. Change coupling extraction → chord diagram toggle (static vs. change coupling)
-7. Ownership extraction → sunburst coloured by author/team
-8. Evolution timeline views
-9. Knowledge risk treemap preset
+9. Git history analyser → treemap hotspots preset (churn × complexity)
+10. Change coupling extraction → chord diagram toggle (static vs. change coupling)
+11. Ownership extraction → sunburst coloured by author/team
+12. Evolution timeline views (evaluate ECharts for calendar heatmap, LayerCake or D3 for trend lines)
+13. Knowledge risk treemap preset
 
 ### Phase 3: Quality integration (add CI/test data)
 
-10. Coverage analyser → treemap coverage preset
-11. CI integration for periodic report generation
-12. Static report generator
+14. Cyclomatic complexity extraction in analyzer → treemap complexity preset
+15. Coverage analyser → treemap coverage preset
+16. Static report generation (start with Mermaid SVG export; full Puppeteer pipeline is a later effort)
 
-### Phase 4: Design conformance
+### Phase 4: Conformance visualization overlays
 
-13. Design document parser (Mermaid first, then C4, then structured text)
-14. Design-to-code mapping (convention-based + explicit mapping file)
-15. Conformance calculator
-16. Sunburst Mode B (design structure navigation)
-17. Chord diagram conformance overlay
-18. Treemap conformance preset
-19. Conformance trend tracking
+17. Design-to-code mapping relation and UI
+18. Sunburst Mode B (design structure navigation)
+19. Chord diagram conformance overlay (violation arcs, ghost arcs for missing dependencies)
+20. Treemap conformance preset (colour = conformance score)
+21. Conformance trend tracking over time
 
 ### Phase 5: Advanced
 
-20. Force-directed graph with community detection
-21. AI-assisted design-to-code mapping
-22. Responsibility conformance (AI-assisted)
-23. Runtime telemetry integration
-24. Cross-project/cross-service views
+22. Community detection via CozoDB's built-in Louvain algorithm → force-directed graph community colouring (complements existing Cytoscape.js fCOSE layout)
+23. AI-assisted design-to-code mapping (vector search via CozoDB HNSW)
+24. Responsibility conformance (AI-assisted)
+25. CI integration for periodic report generation (full pipeline)
+26. Runtime telemetry integration
+27. Cross-project/cross-service views
 
 ---
 
@@ -465,22 +582,104 @@ This phase works for *any* project with source code. No git history, no design d
 
 ### Visualisation layer
 
-**Primary library:** D3.js — provides the required control for all five visualisation types and handles the interactive behaviours (zoom, drill-down, toggle, hover) that are central to the comprehension model.
+The platform uses a **layered visualization approach** with three complementary libraries, each serving a distinct purpose:
 
-**Consider ECharts** for the evolution timeline views (calendar heatmap, line charts) where D3's lower-level API adds unnecessary implementation cost.
+**Layer 1 — Mermaid (diagram generation, exists):** Mermaid is the current primary visualization and handles static, exportable diagrams: flowcharts, data flow, sequence, and C4 diagrams. It requires no custom rendering code — diagrams are generated from text descriptions derived from the graph store. Mermaid excels at producing human-readable, version-control-friendly, and easily exportable output. It is the right tool for structured architectural diagrams and will continue to serve this role.
 
-**For very large codebases (100k+ files):** Evaluate WebGL rendering via deck.gl (for the treemap) or sigma.js (for the force-directed graph). SVG-based D3 will degrade above ~10k rendered elements.
+**Layer 2 — Cytoscape.js (interactive graph exploration, exists):** Cytoscape.js is the existing interactive graph engine with compound node support, multiple layout algorithms (ELK, Dagre, fCOSE), a minimap, context menus, and conformance/diff overlays. It handles the force-directed dependency graph view (V4) — the fCOSE layout already provides force simulation. Cytoscape.js should remain the tool for interactive graph exploration where users need to navigate, filter, focus, and drill into graph topology.
 
-**React integration:** If the dashboard is React-based, use D3 for computation (layouts, scales, force simulations) but React for rendering (DOM management). This avoids the D3-vs-React DOM conflict. Alternatively, use dedicated React wrappers: `nivo` (treemap, sunburst), `vasturiano/sunburst-chart` (sunburst), `recharts` (timelines).
+**Layer 3 — D3.js (analytical visualizations, new):** D3.js is recommended for the **new** visualization types that Mermaid and Cytoscape.js are not designed for: chord diagrams (`d3-chord`), treemaps (`d3-hierarchy`), and sunburst charts (`d3-hierarchy` + `d3.partition()`). D3 provides the layout algorithms and scales; Svelte handles the rendering.
 
-### Graph DB
+| Visualization | Library | Rationale |
+|:-------------|:--------|:----------|
+| Flowchart, C4, Sequence, Data Flow | Mermaid | Already built, exportable, text-based |
+| Interactive dependency graph (V4) | Cytoscape.js | Already built, compound nodes, layouts, overlays |
+| Dependency chord diagram (V1) | D3.js | `d3-chord` layout, no Cytoscape equivalent |
+| Quality/risk treemap (V2) | D3.js | `d3-hierarchy` squarified layout |
+| Architecture sunburst (V3) | D3.js | `d3-hierarchy` partition layout |
+| Evolution timeline (V5) | D3.js or ECharts | Evaluate both — see notes below |
 
-The prototype already uses a graph DB, which is the right foundation. Ensure the schema supports:
-- Temporal versioning (for trend analysis and historical state reconstruction).
-- Efficient hierarchical traversal (for treemap and sunburst data extraction).
-- Community detection algorithms (for the force-directed graph — Neo4j GDS, TigerGraph, or run Louvain externally).
-- Sub-graph pattern matching (for conformance checking — "find all paths that violate this dependency rule").
+**Svelte + D3 integration pattern:** Svelte and D3 coexist far more naturally than most frameworks. The key patterns:
+
+- **D3 for computation, Svelte for rendering.** Use D3's layout algorithms (`d3-hierarchy` for treemap/sunburst, `d3-chord` for chord diagram) and scales, but render the resulting geometry using Svelte's `{#each}` blocks over SVG elements. This gives you Svelte-managed reactivity, transitions (`transition:` directives), and event handling on individual chart elements without fighting D3's selection/enter/exit model.
+- **D3 for direct DOM manipulation when needed.** For complex interactive behaviours (zoom/pan via `d3-zoom`, brush selections via `d3-brush`), D3 can operate directly on a container element obtained via `bind:this`. Svelte does not use a virtual DOM, so there is no reconciliation conflict — D3's mutations are the ground truth. This is the right approach for the zoomable sunburst.
+- **Reactive data flow.** Svelte stores (`writable`, `derived`) or Svelte 5 runes (`$state`, `$derived`) drive the data pipeline: raw query results → derived/transformed data → D3 layout computation → rendered SVG. When the user switches a treemap metric pair, the store updates, D3 recomputes the layout, and Svelte's reactivity re-renders the affected elements with transitions.
+
+**Libraries to evaluate (not yet decided):**
+
+- **LayerCake** — Svelte-native data visualisation framework. Potentially useful for simpler chart types (evolution timeline, metric trend lines). Needs evaluation against the project's Vite + Svelte 5 (runes) build setup before adoption.
+- **ECharts** — framework-agnostic charting library. Worth evaluating for evolution timeline views (calendar heatmap, line charts) where D3's lower-level API adds unnecessary implementation cost. Works in Svelte via `bind:this`.
+- **`vasturiano/sunburst-chart`** — framework-agnostic web component for sunburst charts. Needs evaluation for compatibility with Svelte 5 runes model before recommending over native D3 `d3.partition()`.
+- **sigma.js / deck.gl** — WebGL rendering for very large codebases (100k+ files, 10k+ rendered elements). Evaluate only if SVG performance becomes a bottleneck.
+
+**Component architecture:** Each visualisation should be a self-contained Svelte component that accepts data via props and emits interaction events (e.g., `dispatch('segment-click', { moduleId })`). A dashboard layout component orchestrates cross-visualisation interactions (clicking a module in the sunburst highlights it in the treemap, etc.) via shared Svelte stores. This keeps visualisation logic decoupled from coordination logic.
+
+### Graph DB — CozoDB
+
+CozoDB is the data layer. Its capabilities map directly to platform requirements:
+
+| Platform requirement               | CozoDB capability                                                     |
+|:------------------------------------|:----------------------------------------------------------------------|
+| Dependency chain traversal          | Recursive Datalog with transitive closure                             |
+| Cycle detection                     | Recursive queries with cycle-safe aggregation                         |
+| Hub/authority identification        | Built-in PageRank algorithm                                           |
+| Community detection (force graph)   | Built-in community detection algorithms (Louvain) within Datalog      |
+| Trend analysis / historical state   | Native time travel (timestamped assertions and retractions)           |
+| Conformance rule checking           | Datalog pattern matching across design and actual subgraphs           |
+| AI-assisted design-to-code mapping  | HNSW vector search integrated with Datalog joins                      |
+| Prototype (local file path)         | Embedded mode (RocksDB or in-memory backend)                          |
+| Service (multi-project)             | Client-server mode with MVCC for concurrent writes                    |
+
+**Schema approach:** CozoDB uses a relational model, not a labelled-property graph. Data is stored in relations (tables) with defined columns. Graph structure emerges from joins across relations. The platform uses a **generic schema** (see Current State section) where node and edge *kinds* are column values, not separate relations. This means new kinds can be added without schema changes.
+
+```datalog
+# Actual relations (from crates/core/src/store/cozo.rs):
+# :create nodes { id: String, version: Int => canonical_path: String,
+#     qualified_name?: String, kind: String, sub_kind: String, name: String,
+#     language?: String, provenance: String, source_ref?: String, metadata?: Json }
+# :create edges { id: String, version: Int => source: String, target: String,
+#     kind: String, provenance: String, metadata?: Json }
+# :create constraints { id: String, version: Int => kind: String, name: String,
+#     scope: String, target?: String, params?: Json, message: String, severity: String }
+
+# Example query: find all dependency edges between analysis nodes
+?[src_name, tgt_name, src_path, tgt_path] :=
+    *edges{ version: v, source: src_id, target: tgt_id, kind: "depends", provenance: "analysis" },
+    *nodes{ id: src_id, version: v, name: src_name, canonical_path: src_path },
+    *nodes{ id: tgt_id, version: v, name: tgt_name, canonical_path: tgt_path }
+
+# Example query: transitive dependency chain
+reachable[from_id, to_id] :=
+    *edges{ version: v, source: from_id, target: to_id, kind: "depends" }
+reachable[from_id, to_id] :=
+    *edges{ version: v, source: from_id, target: mid_id, kind: "depends" },
+    reachable[mid_id, to_id]
+
+# Example query: PageRank for hub identification
+?[node_name, rank] <~ PageRank(*edges[source, target], weight: 1)
+```
+
+**Time travel for evolution tracking:** Rather than maintaining separate historical snapshots, use CozoDB's timestamped fact assertions. When a collector runs, it asserts new facts and retracts stale ones with timestamps. Queries can specify a point in time to reconstruct historical state:
+
+```datalog
+# Metrics at a point in time (conceptual — exact syntax depends on CozoDB time travel API)
+?[name, loc] := *nodes{ name, metadata } @ '2025-01-15T00:00:00Z',
+    loc = get(metadata, "loc")
+```
+
+This enables the evolution timeline views and conformance trend tracking without duplicating the entire graph per collection run.
+
+**Vector search for design mapping:** Store vector embeddings of design component descriptions and code module summaries (generated by an LLM) in a relation with an HNSW index. The AI-assisted mapping bootstrap can then query:
+
+```datalog
+# Find code modules most similar to a design component description
+# (Assumes a future 'node_embeddings' relation with HNSW index)
+?[module_name, dist] :=
+    *nodes{ name: "AuthenticationService", provenance: "design", metadata: m },
+    design_vec = get(m, "embedding"),
+    ~node_embeddings:semantic{ module_name | query: design_vec, k: 5, ef: 50, bind_distance: dist }
+```
 
 ### Report generation
 
-Server-side rendering of D3 visualisations via Puppeteer (headless Chrome) or node-canvas. Alternatively, generate static SVGs server-side using D3 in Node.js without a browser. Assemble into HTML or PDF (via Puppeteer print-to-PDF or a dedicated PDF library).
+Server-side rendering of D3 visualisations via Puppeteer (headless Chrome) or node-canvas. Alternatively, generate static SVGs server-side using D3 in Node.js without a browser. If using SvelteKit for the dashboard, its SSR capabilities can render chart components server-side — LayerCake's SSR support is particularly useful here. Assemble into HTML or PDF (via Puppeteer print-to-PDF or a dedicated PDF library).
