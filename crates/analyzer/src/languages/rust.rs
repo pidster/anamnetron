@@ -465,9 +465,9 @@ fn visit_impl_item(
     let type_node = node.child_by_field_name("type");
 
     if let (Some(trait_n), Some(type_n)) = (trait_node, type_node) {
-        if let (Ok(trait_name), Ok(type_name)) = (
+        if let (Ok(trait_name), Some(type_name)) = (
             trait_n.utf8_text(source.as_ref()),
-            type_n.utf8_text(source.as_ref()),
+            type_name_without_generics(type_n, source),
         ) {
             let module_qn = build_qualified_name(module_context);
             let source_qn = format!("{module_qn}::{type_name}");
@@ -484,13 +484,12 @@ fn visit_impl_item(
     // Find the body of the impl block and extract function items from it.
     if let Some(body) = node.child_by_field_name("body") {
         // Extract the type being impl'd to enable self.method() resolution.
-        let resolved_impl_type =
-            type_node
-                .and_then(|tn| tn.utf8_text(source).ok())
-                .map(|type_name| {
-                    let module_qn = build_qualified_name(module_context);
-                    format!("{module_qn}::{type_name}")
-                });
+        let resolved_impl_type = type_node
+            .and_then(|tn| type_name_without_generics(tn, source))
+            .map(|type_name| {
+                let module_qn = build_qualified_name(module_context);
+                format!("{module_qn}::{type_name}")
+            });
 
         visit_children(
             body,
@@ -608,6 +607,29 @@ fn collect_let_declarations(
         } else {
             // Recurse into child nodes (e.g., blocks within the function body)
             collect_let_declarations(child, source, module_context, type_map);
+        }
+    }
+}
+
+/// Extract the base type name from a type node, stripping generic parameters.
+///
+/// For `Result<T, E>` returns `"Result"`. For `Foo` returns `"Foo"`.
+/// For `std::io::Result<T>` returns `"std::io::Result"`.
+fn type_name_without_generics(node: tree_sitter::Node<'_>, source: &[u8]) -> Option<String> {
+    match node.kind() {
+        "type_identifier" => node.utf8_text(source).ok().map(String::from),
+        "generic_type" => {
+            let base = node.child_by_field_name("type")?;
+            type_name_without_generics(base, source)
+        }
+        "scoped_type_identifier" => {
+            // e.g., path::to::Type — get full text, already no generics at this level
+            node.utf8_text(source).ok().map(|s| s.replace(' ', ""))
+        }
+        _ => {
+            // Fallback: strip anything from first '<' onward
+            let text = node.utf8_text(source).ok()?;
+            Some(text.split('<').next().unwrap_or(text).trim().to_string())
         }
     }
 }
@@ -1840,6 +1862,80 @@ mod tests {
         assert_eq!(
             resolve_scoped_call("module::func", &ctx, impl_type),
             "module::func"
+        );
+    }
+
+    // --- Generic type parameter stripping tests ---
+
+    #[test]
+    fn generic_impl_methods_have_correct_parent() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub struct Wrapper<T> { val: T }
+            impl<T> Wrapper<T> {
+                pub fn get(&self) -> &T { &self.val }
+            }
+        "#,
+        );
+        let method = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name.ends_with("get"))
+            .expect("should find method get");
+        assert_eq!(
+            method.parent_qualified_name,
+            Some("my_crate::Wrapper".to_string()),
+            "method parent should be Wrapper, not Wrapper<T>"
+        );
+        assert_eq!(
+            method.qualified_name, "my_crate::Wrapper::get",
+            "method qualified name should not contain generics"
+        );
+    }
+
+    #[test]
+    fn generic_trait_impl_strips_generics_from_source() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub trait MyTrait {}
+            pub struct MyResult<T, E> { ok: T, err: E }
+            impl<T, E> MyTrait for MyResult<T, E> {}
+        "#,
+        );
+        let impls: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Implements)
+            .collect();
+        assert!(!impls.is_empty(), "should generate Implements relation");
+        assert_eq!(
+            impls[0].source_qualified_name, "my_crate::MyResult",
+            "Implements source should be MyResult, not MyResult<T, E>"
+        );
+    }
+
+    #[test]
+    fn lifetime_generics_stripped_from_impl() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub struct Guard<'a> { data: &'a str }
+            impl<'a> Guard<'a> {
+                pub fn new(data: &'a str) -> Self { Guard { data } }
+            }
+        "#,
+        );
+        let method = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name.ends_with("new"))
+            .expect("should find method new");
+        assert_eq!(
+            method.parent_qualified_name,
+            Some("my_crate::Guard".to_string()),
+            "method parent should be Guard, not Guard<'a>"
         );
     }
 }
