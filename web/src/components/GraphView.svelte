@@ -27,6 +27,7 @@
     expandedNodes?: Set<string>;
     onToggleExpand?: (nodeId: string) => void;
     onFocusNode?: (nodeId: string) => void;
+    onScopeNode?: (nodeId: string) => void;
     conformance?: ConformanceReport | null;
     diff?: SnapshotDiff | null;
     layout?: LayoutType;
@@ -44,6 +45,7 @@
     expandedNodes,
     onToggleExpand,
     onFocusNode,
+    onScopeNode,
     conformance = null,
     diff = null,
     layout = "fcose",
@@ -457,6 +459,15 @@
         onClickFunction: (event: { target: cytoscape.SingularElementReturnValue }) => {
           const cp = event.target.data("canonical_path") as string;
           if (cp) void globalThis.navigator.clipboard?.writeText(cp).catch(() => {});
+        },
+      },
+      {
+        id: "scope-to-node",
+        content: "Set as Scope",
+        selector: "node",
+        onClickFunction: (event: { target: cytoscape.SingularElementReturnValue }) => {
+          const nodeId = event.target.id();
+          if (onScopeNode) onScopeNode(nodeId);
         },
       },
       {

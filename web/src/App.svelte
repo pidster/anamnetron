@@ -13,11 +13,16 @@
   import ErrorBoundary from "./components/ErrorBoundary.svelte";
   import SnapshotSelector from "./components/SnapshotSelector.svelte";
   import SearchBar from "./components/SearchBar.svelte";
-  import FilterSidebar from "./components/FilterSidebar.svelte";
+  import NavigationPanel from "./components/NavigationPanel.svelte";
   import Breadcrumb from "./components/Breadcrumb.svelte";
   import { filterStore } from "./stores/filter.svelte";
+  import { navigationStore } from "./stores/navigation.svelte";
   import { expansionStore } from "./stores/expansion.svelte";
   import { focusStore } from "./stores/focus.svelte";
+  import { scopeStore } from "./stores/scope.svelte";
+  import { mermaidStore } from "./stores/mermaid.svelte";
+  import { extractSubtree } from "./lib/scope";
+  import MermaidDrawer from "./components/MermaidDrawer.svelte";
 
   function migrateLayout(saved: string | null): LayoutType {
     if (saved === "dagre") return "dagre";
@@ -60,16 +65,24 @@
     return map;
   });
 
+  // Build a traversal index from the full graph for scope and navigation tree
+  let fullTraversalIndex = $derived.by(() => {
+    if (!graphStore.graph) return null;
+    return buildTraversalIndex(graphStore.graph);
+  });
+
+  // When scope is active, extract the subtree; otherwise pass through the full graph
+  let scopedGraph = $derived.by(() => {
+    if (!graphStore.graph || !scopeStore.scopeNodeId || !fullTraversalIndex) {
+      return graphStore.graph;
+    }
+    return extractSubtree(graphStore.graph, scopeStore.scopeNodeId, fullTraversalIndex);
+  });
+
   // Hash routing: suppress writes during reads to avoid loops
   let suppressHashWrite = false;
 
   onMount(async () => {
-    // Restore sidebar state from localStorage
-    const savedSidebar = typeof localStorage !== "undefined" ? localStorage.getItem("svt-filter-sidebar") : null;
-    if (savedSidebar === "true") {
-      filterStore.sidebarOpen = true;
-    }
-
     try {
       graphStore.loading = true;
       // Initialize WASM and load snapshots in parallel
@@ -88,6 +101,14 @@
       const initialVersion = initial.version && snapshots.some((s) => s.version === initial.version)
         ? initial.version
         : snapshots.length > 0 ? snapshots[0].version : null;
+
+      if (initial.scope) {
+        scopeStore.setScope(initial.scope);
+      }
+      if (initial.mermaid) {
+        mermaidStore.diagramType = initial.mermaid as "flowchart" | "dataflow" | "sequence" | "c4";
+        mermaidStore.open = true;
+      }
 
       if (initialVersion) {
         suppressHashWrite = true;
@@ -127,6 +148,17 @@
       }
       if (state.diff && state.diff !== graphStore.diffVersion) {
         compareVersion = state.diff;
+      }
+      if (state.scope) {
+        scopeStore.setScope(state.scope);
+      } else {
+        scopeStore.clear();
+      }
+      if (state.mermaid) {
+        mermaidStore.diagramType = state.mermaid as "flowchart" | "dataflow" | "sequence" | "c4";
+        mermaidStore.open = true;
+      } else {
+        mermaidStore.close();
       }
       suppressHashWrite = false;
     }
@@ -180,9 +212,10 @@
     localStorage.setItem("svt-layout", layoutChoice);
   });
 
-  // Persist filter sidebar state
+  // Persist navigation panel state
   $effect(() => {
-    localStorage.setItem("svt-filter-sidebar", String(filterStore.sidebarOpen));
+    localStorage.setItem("svt-nav-tab", navigationStore.activeTab);
+    localStorage.setItem("svt-nav-collapsed", String(navigationStore.collapsed));
   });
 
   // Sync state to URL hash
@@ -193,6 +226,8 @@
       node: selectionStore.selectedNodeId ?? undefined,
       layout: layoutChoice,
       diff: graphStore.diffVersion ?? undefined,
+      scope: scopeStore.scopeNodeId ?? undefined,
+      mermaid: mermaidStore.open ? mermaidStore.diagramType : undefined,
     });
     if (hash !== window.location.hash) {
       history.replaceState(null, "", hash || window.location.pathname);
@@ -319,10 +354,16 @@
   }
 
   function handleKeydown(e: KeyboardEvent) {
-    // Escape: close any open panel
+    // Escape: close panels, drawer, scope
     if (e.key === "Escape") {
-      if (selectionStore.panelOpen) {
+      if (mermaidStore.open) {
+        mermaidStore.close();
+        e.preventDefault();
+      } else if (selectionStore.panelOpen) {
         selectionStore.clear();
+        e.preventDefault();
+      } else if (scopeStore.active) {
+        scopeStore.clear();
         e.preventDefault();
       } else if (showConformance) {
         clearConformance();
@@ -376,9 +417,21 @@
       e.preventDefault();
     }
 
-    // g: toggle filter sidebar
+    // g: toggle navigation panel
     if (e.key === "g") {
-      filterStore.sidebarOpen = !filterStore.sidebarOpen;
+      navigationStore.toggle();
+      e.preventDefault();
+    }
+
+    // m: toggle Mermaid drawer
+    if (e.key === "m") {
+      mermaidStore.toggle();
+      e.preventDefault();
+    }
+
+    // s: scope to selected node
+    if (e.key === "s" && selectionStore.selectedNodeId) {
+      scopeStore.setScope(selectionStore.selectedNodeId);
       e.preventDefault();
     }
 
@@ -438,7 +491,15 @@
       </span>
       <button
         class="filter-toggle"
-        onclick={() => filterStore.sidebarOpen = !filterStore.sidebarOpen}
+        onclick={() => {
+          if (navigationStore.collapsed) {
+            navigationStore.setTab("filters");
+          } else if (navigationStore.activeTab === "filters") {
+            navigationStore.collapse();
+          } else {
+            navigationStore.setTab("filters");
+          }
+        }}
         aria-label="Toggle filters"
       >Filters{#if filterStore.hasActiveFilters}<span class="filter-indicator">*</span>{/if}</button>
       {#if graphStore.snapshots.length > 1 && graphStore.selectedVersion}
@@ -470,6 +531,11 @@
       {#if focusStore.active}
         <button class="focus-btn" onclick={() => focusStore.clear()}>Clear Focus</button>
       {/if}
+      <button
+        class="mermaid-btn"
+        onclick={() => mermaidStore.toggle()}
+        aria-label="Toggle Mermaid diagram"
+      >{mermaidStore.open ? "Close Diagram" : "Mermaid"}</button>
       <select bind:value={layoutChoice} onchange={() => graphView?.relayout(layoutChoice)}>
         <option value="fcose">Force-directed</option>
         <option value="dagre">Hierarchical</option>
@@ -522,42 +588,62 @@
     selectedNodeId={selectionStore.selectedNodeId}
     traversalIndex={graphView?.getTraversalIndex() ?? null}
     {labelMap}
+    scopeNodeId={scopeStore.scopeNodeId}
     onnavigate={(nodeId) => graphView?.selectAndCenter(nodeId)}
+    onclearscope={() => scopeStore.clear()}
   />
 
   <div class="main-content">
-    <FilterSidebar />
-    {#if graphStore.loading && !graphStore.graph}
-      <div class="center-message">
-        <div class="spinner"></div>
-        <p>Loading graph data...</p>
-      </div>
-    {:else if graphStore.graph}
-      <ErrorBoundary name="Graph View">
-        <GraphView
-          bind:this={graphView}
-          graph={graphStore.graph}
-          expandedNodes={expansionStore.expandedNodes}
-          onToggleExpand={(nodeId) => expansionStore.toggle(nodeId)}
-          onFocusNode={(nodeId) => focusStore.focus(nodeId)}
-          conformance={graphStore.conformanceReport}
-          diff={graphStore.diffReport}
-          layout={layoutChoice}
-          {theme}
-          filterNodeKinds={filterStore.nodeKinds}
-          filterEdgeKinds={filterStore.edgeKinds}
-          filterSubKinds={filterStore.subKinds}
-          filterLanguages={filterStore.languages}
-          focusNodeId={focusStore.focusNodeId}
-          focusDegrees={focusStore.focusDegrees}
-        />
-      </ErrorBoundary>
-    {:else}
-      <div class="center-message">
-        <p>No data loaded</p>
-        <p class="hint">Start the server with <code>--design</code> or <code>--project</code> flags.</p>
-      </div>
-    {/if}
+    <NavigationPanel
+      traversalIndex={fullTraversalIndex}
+      {labelMap}
+      onselectnode={(nodeId) => {
+        const index = graphView?.getTraversalIndex();
+        if (index) expansionStore.expandAncestors(nodeId, index);
+        graphView?.selectAndCenter(nodeId);
+      }}
+      onscopenode={(nodeId) => {
+        scopeStore.setScope(nodeId);
+        // Reset expansion for the new scope
+        const index = graphView?.getTraversalIndex();
+        if (index) expansionStore.expandToDepth(2, index);
+      }}
+    />
+    <div class="graph-area">
+      {#if graphStore.loading && !graphStore.graph}
+        <div class="center-message">
+          <div class="spinner"></div>
+          <p>Loading graph data...</p>
+        </div>
+      {:else if scopedGraph}
+        <ErrorBoundary name="Graph View">
+          <GraphView
+            bind:this={graphView}
+            graph={scopedGraph}
+            expandedNodes={expansionStore.expandedNodes}
+            onToggleExpand={(nodeId) => expansionStore.toggle(nodeId)}
+            onFocusNode={(nodeId) => focusStore.focus(nodeId)}
+            onScopeNode={(nodeId) => scopeStore.setScope(nodeId)}
+            conformance={graphStore.conformanceReport}
+            diff={graphStore.diffReport}
+            layout={layoutChoice}
+            {theme}
+            filterNodeKinds={filterStore.nodeKinds}
+            filterEdgeKinds={filterStore.edgeKinds}
+            filterSubKinds={filterStore.subKinds}
+            filterLanguages={filterStore.languages}
+            focusNodeId={focusStore.focusNodeId}
+            focusDegrees={focusStore.focusDegrees}
+          />
+        </ErrorBoundary>
+      {:else}
+        <div class="center-message">
+          <p>No data loaded</p>
+          <p class="hint">Start the server with <code>--design</code> or <code>--project</code> flags.</p>
+        </div>
+      {/if}
+      <MermaidDrawer graph={scopedGraph} />
+    </div>
 
     {#if selectionStore.panelOpen}
       <ErrorBoundary name="Node Detail">
@@ -662,6 +748,14 @@
     min-height: 0;
   }
 
+  .graph-area {
+    flex: 1;
+    position: relative;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
   .center-message {
     flex: 1;
     display: flex;
@@ -762,6 +856,14 @@
   }
 
   .focus-btn {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    font-size: 0.8rem;
+    padding: 0.25rem 0.5rem;
+  }
+
+  .mermaid-btn {
     background: var(--bg);
     color: var(--text);
     border: 1px solid var(--border);

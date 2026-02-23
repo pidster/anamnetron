@@ -6,10 +6,14 @@
     selectedNodeId: string | null;
     traversalIndex: TraversalIndex | null;
     labelMap: Map<string, string>;
+    scopeNodeId?: string | null;
     onnavigate?: (nodeId: string) => void;
+    onclearscope?: () => void;
   }
 
-  let { selectedNodeId, traversalIndex, labelMap, onnavigate }: Props = $props();
+  let { selectedNodeId, traversalIndex, labelMap, scopeNodeId = null, onnavigate, onclearscope }: Props = $props();
+
+  let scopeLabel = $derived(scopeNodeId ? (labelMap.get(scopeNodeId) ?? scopeNodeId) : null);
 
   let crumbs = $derived.by(() => {
     if (!selectedNodeId || !traversalIndex) return [];
@@ -21,8 +25,17 @@
   });
 </script>
 
-{#if crumbs.length > 0}
+{#if crumbs.length > 0 || scopeLabel}
   <nav class="breadcrumb" aria-label="Node path">
+    {#if scopeLabel}
+      <span class="scope-chip">
+        Scope: {scopeLabel}
+        <button class="scope-clear" onclick={() => onclearscope?.()} aria-label="Clear scope">&times;</button>
+      </span>
+      {#if crumbs.length > 0}
+        <span class="separator">|</span>
+      {/if}
+    {/if}
     {#each crumbs as crumb, i}
       {#if i > 0}<span class="separator">&gt;</span>{/if}
       {#if i < crumbs.length - 1}
@@ -76,5 +89,33 @@
 
   .crumb.current:hover {
     background: none;
+  }
+
+  .scope-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    background: var(--accent);
+    color: #fff;
+    padding: 0.1rem 0.4rem;
+    border-radius: 3px;
+    font-size: 0.78rem;
+    font-weight: 600;
+  }
+
+  .scope-clear {
+    background: none;
+    border: none;
+    color: rgba(255, 255, 255, 0.8);
+    cursor: pointer;
+    font-size: 0.9rem;
+    padding: 0 0.1rem;
+    line-height: 1;
+    border-radius: 2px;
+  }
+
+  .scope-clear:hover {
+    color: #fff;
+    background: rgba(255, 255, 255, 0.2);
   }
 </style>

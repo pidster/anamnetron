@@ -23,6 +23,7 @@
     "cytoscape-navigator": "^2.0.2",
     "cytoscape-popper": "^2.0.0",
     "elkjs": "^0.11.0",
+    "mermaid": "^11.12.3",
     "svelte": "^5.53.0",
     "tippy.js": "^6.3.7"
   },

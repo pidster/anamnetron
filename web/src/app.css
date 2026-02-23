@@ -13,6 +13,8 @@
   --kind-service: #53a8b6;
   --kind-component: #e67e22;
   --kind-unit: #9b59b6;
+  --nav-width: 260px;
+  --nav-collapsed-width: 32px;
 }
 
 [data-theme="light"] {
@@ -30,6 +32,8 @@
   --kind-service: #0969da;
   --kind-component: #c35e0a;
   --kind-unit: #7c3aad;
+  --nav-width: 260px;
+  --nav-collapsed-width: 32px;
 }
 
 * {

@@ -37,6 +37,22 @@ describe("parseHash", () => {
   it("parses diff parameter", () => {
     expect(parseHash("#v=2&diff=1")).toEqual({ version: 2, diff: 1 });
   });
+
+  it("parses scope parameter", () => {
+    expect(parseHash("#v=1&scope=myNode")).toEqual({ version: 1, scope: "myNode" });
+  });
+
+  it("parses mermaid parameter", () => {
+    expect(parseHash("#v=1&mermaid=flowchart")).toEqual({ version: 1, mermaid: "flowchart" });
+  });
+
+  it("parses scope and mermaid together", () => {
+    expect(parseHash("#v=1&scope=root&mermaid=c4")).toEqual({
+      version: 1,
+      scope: "root",
+      mermaid: "c4",
+    });
+  });
 });
 
 describe("buildHash", () => {
@@ -76,6 +92,21 @@ describe("buildHash", () => {
 
   it("round-trips diff parameter", () => {
     const state = { version: 3, diff: 1, layout: "dagre" };
+    expect(parseHash(buildHash(state))).toEqual(state);
+  });
+
+  it("includes scope when present", () => {
+    const hash = buildHash({ version: 1, scope: "myNode" });
+    expect(hash).toContain("scope=myNode");
+  });
+
+  it("includes mermaid when present", () => {
+    const hash = buildHash({ version: 1, mermaid: "flowchart" });
+    expect(hash).toContain("mermaid=flowchart");
+  });
+
+  it("round-trips scope and mermaid", () => {
+    const state = { version: 2, scope: "/svt/core", mermaid: "c4" };
     expect(parseHash(buildHash(state))).toEqual(state);
   });
 });
