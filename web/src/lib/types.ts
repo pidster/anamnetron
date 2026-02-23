@@ -77,6 +77,10 @@ export interface CyEdgeData {
   source: string;
   target: string;
   kind: string;
+  /** True for aggregated meta-edges created by collapse logic. */
+  _isMeta?: boolean;
+  /** Number of real edges aggregated into this meta-edge. */
+  _count?: number;
 }
 
 /** GET /api/snapshots/{v}/graph response. */

@@ -13,10 +13,18 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@popperjs/core": "^2.11.8",
     "cytoscape": "^3.33.1",
+    "cytoscape-context-menus": "^4.2.1",
     "cytoscape-cose-bilkent": "^4.1.0",
     "cytoscape-dagre": "^2.5.0",
-    "svelte": "^5.53.0"
+    "cytoscape-elk": "^2.3.0",
+    "cytoscape-fcose": "^2.2.0",
+    "cytoscape-navigator": "^2.0.2",
+    "cytoscape-popper": "^2.0.0",
+    "elkjs": "^0.11.0",
+    "svelte": "^5.53.0",
+    "tippy.js": "^6.3.7"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^6.2.4",

@@ -165,6 +165,117 @@ describe("computeVisibleElements", () => {
   });
 });
 
+describe("meta-edge aggregation", () => {
+  it("cross-cutting edges become meta-edges when endpoints are hidden", () => {
+    // Custom graph where collapse produces cross-subtree meta-edges
+    const graph = makeGraph(
+      [
+        { id: "sys", label: "System" },
+        { id: "svc1", label: "Service 1", parent: "sys" },
+        { id: "svc2", label: "Service 2", parent: "sys" },
+        { id: "u1", label: "U1", parent: "svc1" },
+        { id: "u2", label: "U2", parent: "svc2" },
+      ],
+      [
+        { id: "e1", source: "u1", target: "u2", kind: "calls" },
+      ],
+    );
+    const index = buildTraversalIndex(graph);
+    // Expand only sys — svc1 and svc2 are visible but collapsed
+    // u1 resolves to svc1, u2 resolves to svc2
+    const result = computeVisibleElements(graph, new Set(["sys"]), index);
+    const metaEdges = result.elements.edges.filter((e) => e.data._isMeta);
+    expect(metaEdges.length).toBeGreaterThan(0);
+    const crossEdge = metaEdges.find(
+      (e) => e.data.source === "svc1" && e.data.target === "svc2" && e.data.kind === "calls",
+    );
+    expect(crossEdge).toBeDefined();
+    expect(crossEdge?.data._count).toBe(1);
+  });
+
+  it("meta-edges have correct id format", () => {
+    const graph = makeHierarchy();
+    const index = buildTraversalIndex(graph);
+    const result = computeVisibleElements(graph, new Set(["sys", "svc1"]), index);
+    const metaEdges = result.elements.edges.filter((e) => e.data._isMeta);
+    for (const edge of metaEdges) {
+      expect(edge.data.id).toMatch(/^meta:/);
+    }
+  });
+
+  it("edges internal to same collapsed subtree are dropped", () => {
+    const graph = makeHierarchy();
+    const index = buildTraversalIndex(graph);
+    // Only root expanded — e1 (unit1 -> unit2) both inside comp1 inside svc1
+    // Both resolve to svc1 (same) -> dropped
+    const result = computeVisibleElements(graph, new Set(["sys"]), index);
+    const metaEdges = result.elements.edges.filter((e) => e.data._isMeta);
+    const internal = metaEdges.find(
+      (e) => e.data.source === e.data.target,
+    );
+    expect(internal).toBeUndefined();
+  });
+
+  it("multiple edges of same kind between same ancestors accumulate count", () => {
+    // Two edges from different units in comp1 to different units in comp3
+    const graph = makeGraph(
+      [
+        { id: "sys", label: "System" },
+        { id: "svc1", label: "Service 1", parent: "sys" },
+        { id: "svc2", label: "Service 2", parent: "sys" },
+        { id: "u1", label: "U1", parent: "svc1" },
+        { id: "u2", label: "U2", parent: "svc1" },
+        { id: "u3", label: "U3", parent: "svc2" },
+        { id: "u4", label: "U4", parent: "svc2" },
+      ],
+      [
+        { id: "e1", source: "u1", target: "u3", kind: "depends" },
+        { id: "e2", source: "u2", target: "u4", kind: "depends" },
+      ],
+    );
+    const index = buildTraversalIndex(graph);
+    // Expand only root — u1/u2 resolve to svc1, u3/u4 resolve to svc2
+    const result = computeVisibleElements(graph, new Set(["sys"]), index);
+    const metaEdges = result.elements.edges.filter((e) => e.data._isMeta);
+    const cross = metaEdges.find(
+      (e) => e.data.source === "svc1" && e.data.target === "svc2" && e.data.kind === "depends",
+    );
+    expect(cross).toBeDefined();
+    expect(cross?.data._count).toBe(2);
+  });
+
+  it("different edge kinds produce separate meta-edges", () => {
+    const graph = makeGraph(
+      [
+        { id: "sys", label: "System" },
+        { id: "svc1", label: "Service 1", parent: "sys" },
+        { id: "svc2", label: "Service 2", parent: "sys" },
+        { id: "u1", label: "U1", parent: "svc1" },
+        { id: "u2", label: "U2", parent: "svc2" },
+      ],
+      [
+        { id: "e1", source: "u1", target: "u2", kind: "depends" },
+        { id: "e2", source: "u1", target: "u2", kind: "calls" },
+      ],
+    );
+    const index = buildTraversalIndex(graph);
+    const result = computeVisibleElements(graph, new Set(["sys"]), index);
+    const metaEdges = result.elements.edges.filter((e) => e.data._isMeta);
+    expect(metaEdges).toHaveLength(2);
+    const kinds = metaEdges.map((e) => e.data.kind).sort();
+    expect(kinds).toEqual(["calls", "depends"]);
+  });
+
+  it("fully expanded graph has no meta-edges", () => {
+    const graph = makeHierarchy();
+    const index = buildTraversalIndex(graph);
+    const expanded = new Set(["sys", "svc1", "svc2", "comp1", "comp2", "comp3"]);
+    const result = computeVisibleElements(graph, expanded, index);
+    const metaEdges = result.elements.edges.filter((e) => e.data._isMeta);
+    expect(metaEdges).toHaveLength(0);
+  });
+});
+
 describe("getAncestorChain", () => {
   it("returns empty array for root node", () => {
     const graph = makeHierarchy();

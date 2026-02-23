@@ -1,4 +1,4 @@
-import type { CytoscapeGraph } from "./types";
+import type { CytoscapeGraph, CyEdgeData } from "./types";
 import type { TraversalIndex } from "./traversal";
 
 /**
@@ -48,12 +48,62 @@ export function computeVisibleElements(
       return { data: { ...n.data } };
     });
 
-  // Edges: include only when both endpoints are visible
-  const edges = fullGraph.elements.edges.filter(
-    (e) => visibleIds.has(e.data.source) && visibleIds.has(e.data.target),
-  );
+  // Edges: include as-is when both endpoints visible, otherwise aggregate into meta-edges
+  const edges: Array<{ data: CyEdgeData }> = [];
+  const metaAccum = new Map<string, { source: string; target: string; kind: string; count: number }>();
+
+  for (const e of fullGraph.elements.edges) {
+    const src = e.data.source;
+    const tgt = e.data.target;
+
+    if (visibleIds.has(src) && visibleIds.has(tgt)) {
+      // Both endpoints visible — include as-is
+      edges.push({ data: { ...e.data } });
+    } else {
+      // Resolve to nearest visible ancestor
+      const visSrc = visibleIds.has(src) ? src : findVisibleAncestor(src, visibleIds, index);
+      const visTgt = visibleIds.has(tgt) ? tgt : findVisibleAncestor(tgt, visibleIds, index);
+      if (!visSrc || !visTgt || visSrc === visTgt) continue; // internal to same subtree
+
+      const metaKey = `${visSrc}\0${visTgt}\0${e.data.kind}`;
+      const existing = metaAccum.get(metaKey);
+      if (existing) {
+        existing.count++;
+      } else {
+        metaAccum.set(metaKey, { source: visSrc, target: visTgt, kind: e.data.kind, count: 1 });
+      }
+    }
+  }
+
+  // Emit accumulated meta-edges
+  for (const [, meta] of metaAccum) {
+    edges.push({
+      data: {
+        id: `meta:${meta.source}:${meta.target}:${meta.kind}`,
+        source: meta.source,
+        target: meta.target,
+        kind: meta.kind,
+        _isMeta: true,
+        _count: meta.count,
+      },
+    });
+  }
 
   return { elements: { nodes, edges } };
+}
+
+/** Walk up the containment tree to find the nearest visible ancestor, or null if none. */
+function findVisibleAncestor(
+  nodeId: string,
+  visibleIds: Set<string>,
+  index: TraversalIndex,
+): string | null {
+  let current = index.parentMap.get(nodeId);
+  while (current !== undefined) {
+    if (visibleIds.has(current)) return current;
+    current = index.parentMap.get(current);
+  }
+  return null;
 }
 
 /** Check whether every ancestor of a node is expanded. */

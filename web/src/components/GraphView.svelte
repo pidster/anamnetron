@@ -3,47 +3,70 @@
   import cytoscape from "cytoscape";
   import coseBilkent from "cytoscape-cose-bilkent";
   import dagre from "cytoscape-dagre";
+  import fcose from "cytoscape-fcose";
+  import elk from "cytoscape-elk";
+  import navigator from "cytoscape-navigator";
+  import contextMenus from "cytoscape-context-menus";
+  import popper from "cytoscape-popper";
+  import tippy, { type Instance as TippyInstance } from "tippy.js";
   import type { CytoscapeGraph, ConformanceReport, SnapshotDiff } from "../lib/types";
   import { selectionStore } from "../stores/selection.svelte";
   import { buildTraversalIndex, type TraversalIndex } from "../lib/traversal";
   import { computeVisibleElements } from "../lib/expansion";
+  import { KIND_COLORS, SUB_KIND_SHAPES, EDGE_STYLES } from "../lib/visual-encoding";
 
-  // Register layout extensions once
+  // Register layout and interaction extensions once
   cytoscape.use(coseBilkent);
   cytoscape.use(dagre);
+  cytoscape.use(fcose);
+  cytoscape.use(elk);
+  cytoscape.use(navigator);
+  cytoscape.use(contextMenus);
+  cytoscape.use(popper);
+
+  type LayoutType = "fcose" | "dagre" | "elk";
 
   interface Props {
     graph: CytoscapeGraph | null;
     expandedNodes?: Set<string>;
     onToggleExpand?: (nodeId: string) => void;
+    onFocusNode?: (nodeId: string) => void;
     conformance?: ConformanceReport | null;
     diff?: SnapshotDiff | null;
-    layout?: "cose-bilkent" | "dagre";
+    layout?: LayoutType;
     theme?: "dark" | "light";
     filterNodeKinds?: Set<string>;
     filterEdgeKinds?: Set<string>;
     filterSubKinds?: Set<string>;
     filterLanguages?: Set<string>;
+    focusNodeId?: string | null;
+    focusDegrees?: number;
   }
 
   let {
     graph,
     expandedNodes,
     onToggleExpand,
+    onFocusNode,
     conformance = null,
     diff = null,
-    layout = "cose-bilkent",
+    layout = "fcose",
     theme = "dark",
     filterNodeKinds,
     filterEdgeKinds,
     filterSubKinds,
     filterLanguages,
+    focusNodeId = null,
+    focusDegrees = 1,
   }: Props = $props();
 
   let container: HTMLDivElement;
   let cy: cytoscape.Core | null = null;
   let traversalIndex: TraversalIndex | null = null;
   let pathIndex: Map<string, cytoscape.NodeSingular> = new Map();
+  let tapTimeout: ReturnType<typeof setTimeout> | null = null;
+  let activeTippy: TippyInstance | null = null;
+  let navInstance: unknown = null;
 
   function getCssVar(name: string): string {
     return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -61,7 +84,8 @@
     const parentBorder = isDark ? "#0f3460" : "#b0c4d8";
     const selectedBorder = isDark ? "#fff" : "#000";
 
-    return [
+    const styles: cytoscape.StylesheetStyle[] = [
+      // Base node style
       {
         selector: "node",
         style: {
@@ -69,7 +93,7 @@
           "text-valign": "center",
           "text-halign": "center",
           "background-color": accent,
-          color: isDark ? "#fff" : "#fff",
+          color: "#fff",
           "font-size": "12px",
           "text-wrap": "wrap",
           "text-max-width": "80px",
@@ -77,8 +101,11 @@
           height: "label",
           padding: "10px",
           shape: "roundrectangle",
+          "transition-property": "opacity",
+          "transition-duration": 200,
         },
       },
+      // Parent (compound) node style
       {
         selector: "node:parent",
         style: {
@@ -94,6 +121,7 @@
           padding: "20px",
         },
       },
+      // Collapsed parent (leaf with children)
       {
         selector: "node[_childCount]",
         style: {
@@ -104,29 +132,88 @@
             `${ele.data("label")} (${ele.data("_childCount")})`,
         },
       },
-      {
-        selector: "edge",
+    ];
+
+    // Node kind colors (leaf nodes)
+    for (const [kind, cssVarName] of Object.entries(KIND_COLORS)) {
+      const color = getCssVar(cssVarName) || accent;
+      styles.push({
+        selector: `node[kind = '${kind}']:childless`,
+        style: { "background-color": color },
+      });
+      // Parent border color per kind
+      styles.push({
+        selector: `node:parent[kind = '${kind}']`,
+        style: { "border-color": color },
+      });
+    }
+
+    // Sub-kind shapes (leaf nodes only — compound parents must stay rectangular)
+    for (const [subKind, shape] of Object.entries(SUB_KIND_SHAPES)) {
+      styles.push({
+        selector: `node[sub_kind = '${subKind}']:childless`,
+        style: { shape },
+      });
+    }
+
+    // Base edge style
+    styles.push({
+      selector: "edge",
+      style: {
+        width: 2,
+        "line-color": muted,
+        "target-arrow-color": muted,
+        "target-arrow-shape": "triangle",
+        "curve-style": "bezier",
+        "arrow-scale": 0.8,
+        "transition-property": "opacity",
+        "transition-duration": 200,
+      },
+    });
+
+    // Edge kind styles (all 6 non-contains kinds)
+    for (const [kind, def] of Object.entries(EDGE_STYLES)) {
+      const color = getCssVar(def.cssVar) || accent;
+      styles.push({
+        selector: `edge[kind = '${kind}']`,
         style: {
-          width: 2,
-          "line-color": muted,
-          "target-arrow-color": muted,
-          "target-arrow-shape": "triangle",
-          "curve-style": "bezier",
-          "arrow-scale": 0.8,
+          "line-style": def.lineStyle,
+          "line-color": color,
+          "target-arrow-color": color,
+          "target-arrow-shape": def.arrowShape,
         },
+      });
+    }
+
+    // Meta-edge style
+    styles.push({
+      selector: "edge[_isMeta]",
+      style: {
+        "line-style": "dashed",
+        width: 4,
+        label: "data(_count)",
+        "font-size": "10px",
+        "text-background-color": isDark ? "#132f4c" : "#ffffff",
+        "text-background-opacity": 0.8,
+        "text-background-padding": "2px",
+        color: text,
+      },
+    });
+
+    // Hover/focus highlight classes
+    styles.push(
+      {
+        selector: ".faded",
+        style: { opacity: 0.15 },
       },
       {
-        selector: "edge[kind = 'depends']",
-        style: { "line-style": "solid", "line-color": accent, "target-arrow-color": accent },
+        selector: ".highlighted",
+        style: { opacity: 1, "z-index": 10 },
       },
-      {
-        selector: "edge[kind = 'data_flow']",
-        style: { "line-style": "dashed", "line-color": warn, "target-arrow-color": warn },
-      },
-      {
-        selector: "edge[kind = 'implements']",
-        style: { "line-style": "dotted", "line-color": pass, "target-arrow-color": pass },
-      },
+    );
+
+    // Selection, conformance, and diff styles (unchanged from original)
+    styles.push(
       {
         selector: "node:selected",
         style: { "border-color": selectedBorder, "border-width": 3 },
@@ -167,11 +254,103 @@
         selector: "edge.diff-removed",
         style: { "line-color": fail, "target-arrow-color": fail, "line-style": "dashed", opacity: 0.5 },
       },
-    ];
+    );
+
+    return styles;
+  }
+
+  function destroyTooltip() {
+    if (activeTippy) {
+      activeTippy.destroy();
+      activeTippy = null;
+    }
+  }
+
+  function showTooltip(node: cytoscape.NodeSingular) {
+    destroyTooltip();
+    if (!cy) return;
+
+    const ref = node.popperRef();
+    const content = document.createElement("div");
+    const label = node.data("label") || node.id();
+    const kind = node.data("kind") || "";
+    const subKind = node.data("sub_kind") || "";
+    const cp = node.data("canonical_path") || "";
+    const lang = node.data("language") || "";
+    const childCount = node.data("_childCount");
+
+    let html = `<strong>${label}</strong>`;
+    if (kind) html += `<br/>${kind}`;
+    if (subKind) html += ` / ${subKind}`;
+    if (cp) html += `<br/><code>${cp}</code>`;
+    if (lang) html += `<br/>Language: ${lang}`;
+    if (childCount !== undefined) html += `<br/>${childCount} descendants`;
+    content.innerHTML = html;
+
+    activeTippy = tippy(document.createElement("div"), {
+      getReferenceClientRect: ref.getBoundingClientRect,
+      content,
+      allowHTML: true,
+      placement: "top",
+      arrow: true,
+      theme: theme === "dark" ? "dark-tooltip" : "light-tooltip",
+      appendTo: container,
+      showOnCreate: true,
+      interactive: false,
+      trigger: "manual",
+    });
+  }
+
+  function applyFocusDimming(targetNodeId: string, degrees: number) {
+    if (!cy) return;
+    const node = cy.getElementById(targetNodeId);
+    if (node.length === 0) return;
+    const neighborhood = node.closedNeighborhood();
+    let extended = neighborhood;
+    for (let i = 1; i < degrees; i++) {
+      extended = extended.closedNeighborhood();
+    }
+    cy.startBatch();
+    cy.elements().addClass("faded").removeClass("highlighted");
+    extended.removeClass("faded").addClass("highlighted");
+    cy.endBatch();
+  }
+
+  function clearFocusDimming() {
+    if (!cy) return;
+    cy.elements().removeClass("faded highlighted");
+  }
+
+  function getLayoutConfig(name: LayoutType, nodeCount: number): cytoscape.LayoutOptions {
+    const base = {
+      animate: nodeCount >= 200,
+      nodeDimensionsIncludeLabels: true,
+    };
+    switch (name) {
+      case "elk":
+        return {
+          name: "elk",
+          ...base,
+          elk: {
+            algorithm: "layered",
+            "elk.direction": "DOWN",
+            "elk.spacing.nodeNode": "50",
+            "elk.layered.spacing.nodeNodeBetweenLayers": "70",
+          },
+        } as unknown as cytoscape.LayoutOptions;
+      case "dagre":
+        return { name: "dagre", ...base } as cytoscape.LayoutOptions;
+      case "fcose":
+      default:
+        return { name: "fcose", ...base, quality: "proof" } as unknown as cytoscape.LayoutOptions;
+    }
   }
 
   function initCytoscape(elements: CytoscapeGraph["elements"]) {
-    if (cy) cy.destroy();
+    if (cy) {
+      destroyTooltip();
+      cy.destroy();
+    }
     pathIndex.clear();
 
     const nodeCount = elements.nodes.length;
@@ -183,34 +362,134 @@
         edges: elements.edges,
       },
       style: buildStyleSheet(),
-      layout: {
-        name: layout,
-        animate: nodeCount >= 200,
-        nodeDimensionsIncludeLabels: true,
-      } as cytoscape.LayoutOptions,
+      layout: getLayoutConfig(layout, nodeCount),
       textureOnViewport: nodeCount > 300,
       hideEdgesOnViewport: nodeCount > 500,
     } as cytoscape.CytoscapeOptions);
 
+    // --- Tap / double-tap with race-condition fix ---
     cy.on("tap", "node", (evt) => {
       const nodeId = evt.target.id();
-      selectionStore.selectedNodeId = nodeId;
-      selectionStore.panelOpen = true;
+      // Delay selection to allow dbltap to cancel it
+      if (tapTimeout) clearTimeout(tapTimeout);
+      tapTimeout = setTimeout(() => {
+        tapTimeout = null;
+        selectionStore.selectedNodeId = nodeId;
+        selectionStore.panelOpen = true;
+      }, 250);
     });
 
     cy.on("tap", (evt) => {
       if (evt.target === cy) {
+        if (tapTimeout) {
+          clearTimeout(tapTimeout);
+          tapTimeout = null;
+        }
         selectionStore.clear();
       }
     });
 
-    // Double-click to expand/collapse parent nodes
     cy.on("dbltap", "node", (evt) => {
+      // Cancel the pending tap selection
+      if (tapTimeout) {
+        clearTimeout(tapTimeout);
+        tapTimeout = null;
+      }
       const nodeId = evt.target.id();
       if (onToggleExpand && traversalIndex?.childrenMap.has(nodeId)) {
         onToggleExpand(nodeId);
       }
     });
+
+    // --- Hover: neighborhood highlighting + tooltips ---
+    cy.on("mouseover", "node", (evt) => {
+      const node = evt.target as cytoscape.NodeSingular;
+      if (!cy) return;
+
+      // Show tooltip
+      showTooltip(node);
+
+      // Highlight neighborhood
+      const neighborhood = node.closedNeighborhood();
+      cy.startBatch();
+      cy.elements().addClass("faded");
+      neighborhood.removeClass("faded").addClass("highlighted");
+      cy.endBatch();
+    });
+
+    cy.on("mouseout", "node", () => {
+      destroyTooltip();
+      if (!cy) return;
+      cy.startBatch();
+      cy.elements().removeClass("faded highlighted");
+      cy.endBatch();
+
+      // Re-apply focus dimming if focus mode is active
+      if (focusNodeId) {
+        applyFocusDimming(focusNodeId, focusDegrees);
+      }
+    });
+
+    // --- Context menu ---
+    const menuItems = [
+      {
+        id: "expand-collapse",
+        content: "Expand/Collapse",
+        selector: "node",
+        onClickFunction: (event: { target: cytoscape.SingularElementReturnValue }) => {
+          const nodeId = event.target.id();
+          if (onToggleExpand && traversalIndex?.childrenMap.has(nodeId)) {
+            onToggleExpand(nodeId);
+          }
+        },
+      },
+      {
+        id: "focus-neighborhood",
+        content: "Focus Neighborhood",
+        selector: "node",
+        onClickFunction: (event: { target: cytoscape.SingularElementReturnValue }) => {
+          const nodeId = event.target.id();
+          if (onFocusNode) onFocusNode(nodeId);
+        },
+      },
+      {
+        id: "copy-path",
+        content: "Copy Canonical Path",
+        selector: "node",
+        onClickFunction: (event: { target: cytoscape.SingularElementReturnValue }) => {
+          const cp = event.target.data("canonical_path") as string;
+          if (cp) void navigator.clipboard?.writeText(cp).catch(() => {});
+        },
+      },
+      {
+        id: "fit-selection",
+        content: "Fit to Neighborhood",
+        selector: "node",
+        onClickFunction: (event: { target: cytoscape.SingularElementReturnValue }) => {
+          if (!cy) return;
+          const neighborhood = (event.target as cytoscape.NodeSingular).closedNeighborhood();
+          cy.fit(neighborhood, 50);
+        },
+      },
+    ];
+
+    (cy as unknown as { contextMenus: (opts: unknown) => void }).contextMenus({
+      menuItems,
+      menuItemClasses: ["cy-context-menu-item"],
+      contextMenuClasses: ["cy-context-menu"],
+    });
+
+    // --- Minimap ---
+    const navContainer = container.querySelector(".cy-navigator");
+    if (navContainer) {
+      navInstance = (cy as unknown as { navigator: (opts: unknown) => unknown }).navigator({
+        container: navContainer,
+        viewLiveFramerate: 0,
+        thumbnailEventFramerate: 10,
+        thumbnailLiveFramerate: 0,
+        dblClickDelay: 200,
+      });
+    }
 
     // Build canonical path index for O(1) lookups in overlays
     cy.nodes().forEach((node) => {
@@ -303,6 +582,7 @@
     resizeObserver.observe(container);
     return () => {
       resizeObserver.disconnect();
+      destroyTooltip();
       if (cy) cy.destroy();
     };
   });
@@ -348,6 +628,27 @@
     const _ = theme;
     if (cy) {
       cy.style(buildStyleSheet() as unknown as cytoscape.StylesheetCSS[]);
+    }
+  });
+
+  // Apply focus mode dimming
+  $effect(() => {
+    const fid = focusNodeId;
+    const deg = focusDegrees;
+    if (!cy) return;
+    if (fid) {
+      applyFocusDimming(fid, deg);
+      // Fit to neighborhood
+      const node = cy.getElementById(fid);
+      if (node.length > 0) {
+        let neighborhood = node.closedNeighborhood();
+        for (let i = 1; i < deg; i++) {
+          neighborhood = neighborhood.closedNeighborhood();
+        }
+        cy.animate({ fit: { eles: neighborhood, padding: 50 }, duration: 300 });
+      }
+    } else {
+      clearFocusDimming();
     }
   });
 
@@ -417,22 +718,88 @@
   }
 
   /** Re-run layout. */
-  export function relayout(name?: "cose-bilkent" | "dagre") {
+  export function relayout(name?: LayoutType) {
     if (!cy) return;
-    cy.layout({
-      name: name || layout,
-      animate: true,
-      nodeDimensionsIncludeLabels: true,
-    } as cytoscape.LayoutOptions).run();
+    const layoutName = name || layout;
+    const nodeCount = cy.nodes().length;
+    cy.layout(getLayoutConfig(layoutName, nodeCount)).run();
   }
 </script>
 
-<div class="graph-container" bind:this={container}></div>
+<div class="graph-container" bind:this={container}>
+  <div class="cy-navigator"></div>
+</div>
 
 <style>
   .graph-container {
     flex: 1;
     min-height: 0;
     background: var(--bg);
+    position: relative;
+  }
+
+  .cy-navigator {
+    position: absolute;
+    bottom: 10px;
+    right: 10px;
+    width: 180px;
+    height: 120px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    opacity: 0.85;
+    z-index: 10;
+    overflow: hidden;
+  }
+
+  /* Context menu theming */
+  :global(.cy-context-menu) {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 0;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    z-index: 1000;
+  }
+
+  :global(.cy-context-menu-item) {
+    padding: 6px 16px;
+    color: var(--text);
+    font-size: 0.85rem;
+    cursor: pointer;
+  }
+
+  :global(.cy-context-menu-item:hover) {
+    background: var(--accent);
+    color: #fff;
+  }
+
+  /* Tooltip theming */
+  :global(.tippy-box[data-theme~='dark-tooltip']) {
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+    font-size: 0.8rem;
+    line-height: 1.4;
+  }
+
+  :global(.tippy-box[data-theme~='dark-tooltip'] .tippy-arrow) {
+    color: var(--surface);
+  }
+
+  :global(.tippy-box[data-theme~='light-tooltip']) {
+    background: #fff;
+    color: #1f2328;
+    border: 1px solid #d0d7de;
+    font-size: 0.8rem;
+    line-height: 1.4;
+  }
+
+  :global(.tippy-box[data-theme~='light-tooltip'] .tippy-arrow) {
+    color: #fff;
+  }
+
+  :global(.tippy-box code) {
+    font-size: 0.75rem;
+    color: var(--accent);
   }
 </style>

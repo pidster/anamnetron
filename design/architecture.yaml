@@ -212,7 +212,37 @@ nodes:
             sub_kind: directory
             name: graph
             metadata:
-              description: "Cytoscape.js graph rendering, layout, interaction"
+              description: "Cytoscape.js graph rendering, layout (fcose/dagre/elk), interaction, minimap, context menu, tooltips"
+
+            children:
+              - canonical_path: /svt/web/graph/visual-encoding
+                kind: unit
+                sub_kind: module
+                name: visual-encoding
+                metadata:
+                  description: "Pure data mappings: node kind colors, sub_kind shapes, edge kind styles"
+
+              - canonical_path: /svt/web/graph/expansion
+                kind: unit
+                sub_kind: module
+                name: expansion
+                metadata:
+                  description: "Collapse/expand logic with meta-edge aggregation for cross-cutting edges"
+
+          - canonical_path: /svt/web/stores
+            kind: component
+            sub_kind: directory
+            name: stores
+            metadata:
+              description: "Reactive state stores: selection, graph, filter, expansion, focus"
+
+            children:
+              - canonical_path: /svt/web/stores/focus
+                kind: unit
+                sub_kind: module
+                name: focus
+                metadata:
+                  description: "Neighborhood focus mode store: focus/clear/toggle on a node's N-degree neighborhood"
 
           - canonical_path: /svt/web/wasm
             kind: component
@@ -289,6 +319,19 @@ edges:
   # Server internal dependencies
   - source: /svt/server/api
     target: /svt/server/static
+    kind: depends
+
+  # Web internal dependencies
+  - source: /svt/web/graph
+    target: /svt/web/graph/visual-encoding
+    kind: depends
+
+  - source: /svt/web/graph
+    target: /svt/web/graph/expansion
+    kind: depends
+
+  - source: /svt/web/graph
+    target: /svt/web/stores/focus
     kind: depends
 
   # Data flows

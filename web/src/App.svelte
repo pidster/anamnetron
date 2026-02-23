@@ -17,11 +17,19 @@
   import Breadcrumb from "./components/Breadcrumb.svelte";
   import { filterStore } from "./stores/filter.svelte";
   import { expansionStore } from "./stores/expansion.svelte";
+  import { focusStore } from "./stores/focus.svelte";
+
+  type LayoutType = "fcose" | "dagre" | "elk";
+
+  function migrateLayout(saved: string | null): LayoutType {
+    if (saved === "dagre") return "dagre";
+    if (saved === "elk") return "elk";
+    // Migrate cose-bilkent to fcose
+    return "fcose";
+  }
 
   const savedLayout = typeof localStorage !== "undefined" ? localStorage.getItem("svt-layout") : null;
-  let layoutChoice = $state<"cose-bilkent" | "dagre">(
-    savedLayout === "dagre" ? "dagre" : "cose-bilkent"
-  );
+  let layoutChoice = $state<LayoutType>(migrateLayout(savedLayout));
   let graphView = $state<GraphView>();
   let showConformance = $state(false);
   let conformanceDesign = $state<Version | null>(null);
@@ -75,8 +83,8 @@
 
       // Apply initial state from hash
       const initial = parseHash(window.location.hash);
-      if (initial.layout === "dagre" || initial.layout === "cose-bilkent") {
-        layoutChoice = initial.layout;
+      if (initial.layout) {
+        layoutChoice = migrateLayout(initial.layout);
       }
 
       const initialVersion = initial.version && snapshots.some((s) => s.version === initial.version)
@@ -116,8 +124,8 @@
       } else {
         selectionStore.clear();
       }
-      if (state.layout === "dagre" || state.layout === "cose-bilkent") {
-        layoutChoice = state.layout;
+      if (state.layout) {
+        layoutChoice = migrateLayout(state.layout);
       }
       if (state.diff && state.diff !== graphStore.diffVersion) {
         compareVersion = state.diff;
@@ -375,6 +383,12 @@
       filterStore.sidebarOpen = !filterStore.sidebarOpen;
       e.preventDefault();
     }
+
+    // n: toggle focus mode on selected node
+    if (e.key === "n" && selectionStore.selectedNodeId) {
+      focusStore.toggle(selectionStore.selectedNodeId);
+      e.preventDefault();
+    }
   }
 </script>
 
@@ -447,9 +461,21 @@
       {/if}
     </div>
     <div class="toolbar-right">
+      {#if selectionStore.selectedNodeId}
+        <button
+          class="focus-btn"
+          onclick={() => {
+            if (selectionStore.selectedNodeId) focusStore.toggle(selectionStore.selectedNodeId);
+          }}
+        >{focusStore.active ? "Unfocus" : "Focus"}</button>
+      {/if}
+      {#if focusStore.active}
+        <button class="focus-btn" onclick={() => focusStore.clear()}>Clear Focus</button>
+      {/if}
       <select bind:value={layoutChoice} onchange={() => graphView?.relayout(layoutChoice)}>
-        <option value="cose-bilkent">Force-directed</option>
+        <option value="fcose">Force-directed</option>
         <option value="dagre">Hierarchical</option>
+        <option value="elk">Layered</option>
       </select>
 
       {#if graphStore.designSnapshots.length > 0}
@@ -515,6 +541,7 @@
           graph={graphStore.graph}
           expandedNodes={expansionStore.expandedNodes}
           onToggleExpand={(nodeId) => expansionStore.toggle(nodeId)}
+          onFocusNode={(nodeId) => focusStore.focus(nodeId)}
           conformance={graphStore.conformanceReport}
           diff={graphStore.diffReport}
           layout={layoutChoice}
@@ -523,6 +550,8 @@
           filterEdgeKinds={filterStore.edgeKinds}
           filterSubKinds={filterStore.subKinds}
           filterLanguages={filterStore.languages}
+          focusNodeId={focusStore.focusNodeId}
+          focusDegrees={focusStore.focusDegrees}
         />
       </ErrorBoundary>
     {:else}
@@ -732,5 +761,13 @@
     color: var(--accent);
     font-weight: bold;
     margin-left: 0.15rem;
+  }
+
+  .focus-btn {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    font-size: 0.8rem;
+    padding: 0.25rem 0.5rem;
   }
 </style>

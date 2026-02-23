@@ -9,6 +9,10 @@
   --fail: #f44336;
   --warn: #ff9800;
   --muted: #607d8b;
+  --kind-system: #7b68ee;
+  --kind-service: #53a8b6;
+  --kind-component: #e67e22;
+  --kind-unit: #9b59b6;
 }
 
 [data-theme="light"] {
@@ -22,6 +26,10 @@
   --fail: #cf222e;
   --warn: #bf8700;
   --muted: #6e7781;
+  --kind-system: #5b4abf;
+  --kind-service: #0969da;
+  --kind-component: #c35e0a;
+  --kind-unit: #7c3aad;
 }
 
 * {
