@@ -1,6 +1,6 @@
 [package]
 name = "svt-analyzer"
-description = "Tree-sitter based code analysis and discovery for software-visualizer-tool"
+description = "Tree-sitter based code analysis and discovery for Anamnetron"
 version.workspace = true
 edition.workspace = true
 

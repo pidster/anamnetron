@@ -1,6 +1,6 @@
 //! `svt-core` -- Core data model, CozoDB graph store, validation, and conformance logic.
 //!
-//! This crate is the foundation of software-visualizer-tool. It compiles to both
+//! This crate is the foundation of Anamnetron. It compiles to both
 //! native and WASM targets, enabling shared logic across CLI, server, and browser.
 
 #![warn(missing_docs)]

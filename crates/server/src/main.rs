@@ -1,4 +1,4 @@
-//! `svt-server` -- Axum API service for software-visualizer-tool.
+//! `svt-server` -- Axum API service for Anamnetron.
 
 #![warn(missing_docs)]
 
@@ -22,7 +22,7 @@ use svt_core::store::{CozoStore, GraphStore};
 
 use crate::state::AppState;
 
-/// Software Visualizer Tool — API server.
+/// Anamnetron — API server.
 #[derive(Parser, Debug)]
 #[command(name = "svt-server", version, about)]
 struct Args {

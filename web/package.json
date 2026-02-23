@@ -2,7 +2,7 @@
   "name": "software-visualizer-web",
   "version": "0.1.0",
   "private": true,
-  "description": "Svelte frontend for software-visualizer-tool",
+  "description": "Svelte frontend for Anamnetron",
   "type": "module",
   "scripts": {
     "dev": "vite",

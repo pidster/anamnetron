@@ -1,4 +1,4 @@
-//! `svt` -- CLI for software-visualizer-tool.
+//! `svt` -- CLI for Anamnetron.
 
 #![warn(missing_docs)]
 
@@ -15,7 +15,7 @@ use svt_core::interchange;
 use svt_core::interchange_store;
 use svt_core::store::{CozoStore, GraphStore};
 
-/// Software Visualizer Tool -- analyze, model, and visualize software architecture.
+/// Anamnetron -- analyze, model, and visualize software architecture.
 #[derive(Parser, Debug)]
 #[command(name = "svt", version, about)]
 struct Cli {

@@ -1,4 +1,4 @@
-# Software Visualizer Tool
+# Anamnetron
 
 A tool for designing, documenting, and validating software architecture. Rust backend with web GUI frontend.
 

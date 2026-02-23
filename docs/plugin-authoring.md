@@ -1,6 +1,6 @@
 # Plugin Authoring Guide
 
-This guide explains how to create, build, and install plugins for the Software Visualizer Tool (svt).
+This guide explains how to create, build, and install plugins for Anamnetron (svt).
 
 ## Overview
 

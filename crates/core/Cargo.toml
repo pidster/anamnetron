@@ -1,6 +1,6 @@
 [package]
 name = "svt-core"
-description = "Core data model, graph store, validation, and conformance logic for software-visualizer-tool"
+description = "Core data model, graph store, validation, and conformance logic for Anamnetron"
 version.workspace = true
 edition.workspace = true
 

@@ -1,6 +1,6 @@
 [package]
 name = "svt-cli"
-description = "CLI entry point for software-visualizer-tool"
+description = "CLI entry point for Anamnetron"
 version.workspace = true
 edition.workspace = true
 

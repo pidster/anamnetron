@@ -1,4 +1,4 @@
-# Software Visualizer Tool — Development Principles
+# Anamnetron — Development Principles
 
 ## 1. Usability
 

@@ -1,6 +1,6 @@
 [package]
 name = "svt-server"
-description = "Axum API service and web UI host for software-visualizer-tool"
+description = "Axum API service and web UI host for Anamnetron"
 version.workspace = true
 edition.workspace = true
 

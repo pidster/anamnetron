@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build all components of software-visualizer-tool in dependency order:
+# Build all components of Anamnetron in dependency order:
 #
 #   1. WASM   — wasm-pack compiles crates/wasm → crates/wasm/pkg/
 #   2. Web    — Vite bundles web/ (consumes WASM pkg) → web/dist/

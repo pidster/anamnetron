@@ -4,7 +4,7 @@ version: 1
 metadata:
   created_at: "2026-02-15"
   author: "pidster"
-  description: "Software Visualizer Tool — prescriptive architecture"
+  description: "Anamnetron — prescriptive architecture"
 
 nodes:
   # System level

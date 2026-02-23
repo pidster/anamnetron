@@ -1,4 +1,4 @@
-# Software Visualizer Tool (SVT)
+# Anamnetron
 
 A tool for designing, documenting, and validating software architecture. Define your intended architecture, analyze your actual codebase, and detect drift between the two.
 

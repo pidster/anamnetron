@@ -1,4 +1,4 @@
-# Software Visualizer Tool — Tech Stack
+# Anamnetron — Tech Stack
 
 ## Decisions
 
