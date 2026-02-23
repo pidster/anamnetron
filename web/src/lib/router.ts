@@ -2,7 +2,6 @@
 export interface HashState {
   version?: number;
   node?: string;
-  layout?: string;
   diff?: number;
   scope?: string;
   mermaid?: string;
@@ -22,9 +21,6 @@ export function parseHash(hash: string): HashState {
   const node = params.get("node");
   if (node) state.node = node;
 
-  const layout = params.get("layout");
-  if (layout) state.layout = layout;
-
   const diff = params.get("diff");
   if (diff) state.diff = parseInt(diff, 10);
 
@@ -42,7 +38,6 @@ export function buildHash(state: HashState): string {
   const params = new URLSearchParams();
   if (state.version !== undefined) params.set("v", String(state.version));
   if (state.node !== undefined) params.set("node", state.node);
-  if (state.layout !== undefined) params.set("layout", state.layout);
   if (state.diff !== undefined) params.set("diff", String(state.diff));
   if (state.scope !== undefined) params.set("scope", state.scope);
   if (state.mermaid !== undefined) params.set("mermaid", state.mermaid);

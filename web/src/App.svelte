@@ -1,13 +1,12 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import * as api from "./lib/api";
-  import type { Version, LayoutType } from "./lib/types";
+  import type { Version } from "./lib/types";
   import { graphStore } from "./stores/graph.svelte";
   import { selectionStore } from "./stores/selection.svelte";
   import { initWasm, getWasmStore } from "./lib/wasm";
   import { parseHash, buildHash } from "./lib/router";
   import { buildTraversalIndex, getParent, getFirstChild, getNextSibling, getPrevSibling } from "./lib/traversal";
-  import GraphView from "./components/GraphView.svelte";
   import NodeDetail from "./components/NodeDetail.svelte";
   import ConformanceReport from "./components/ConformanceReport.svelte";
   import ErrorBoundary from "./components/ErrorBoundary.svelte";
@@ -18,22 +17,11 @@
   import { filterStore } from "./stores/filter.svelte";
   import { navigationStore } from "./stores/navigation.svelte";
   import { expansionStore } from "./stores/expansion.svelte";
-  import { focusStore } from "./stores/focus.svelte";
   import { scopeStore } from "./stores/scope.svelte";
   import { mermaidStore } from "./stores/mermaid.svelte";
   import { extractSubtree } from "./lib/scope";
-  import MermaidDrawer from "./components/MermaidDrawer.svelte";
+  import MermaidView from "./components/MermaidView.svelte";
 
-  function migrateLayout(saved: string | null): LayoutType {
-    if (saved === "dagre") return "dagre";
-    if (saved === "elk") return "elk";
-    // Migrate cose-bilkent to fcose
-    return "fcose";
-  }
-
-  const savedLayout = typeof localStorage !== "undefined" ? localStorage.getItem("svt-layout") : null;
-  let layoutChoice = $state<LayoutType>(migrateLayout(savedLayout));
-  let graphView = $state<GraphView>();
   let showConformance = $state(false);
   let conformanceDesign = $state<Version | null>(null);
   let conformanceAnalysis = $state<Version | null>(null);
@@ -78,6 +66,15 @@
     return extractSubtree(graphStore.graph, scopeStore.scopeNodeId, fullTraversalIndex);
   });
 
+  /** Select a node: expand ancestors so it's visible, then select it. */
+  function selectNode(nodeId: string) {
+    if (fullTraversalIndex) {
+      expansionStore.expandAncestors(nodeId, fullTraversalIndex);
+    }
+    selectionStore.selectedNodeId = nodeId;
+    selectionStore.panelOpen = true;
+  }
+
   // Hash routing: suppress writes during reads to avoid loops
   let suppressHashWrite = false;
 
@@ -95,9 +92,6 @@
       } else {
         selectionStore.clear();
       }
-      if (state.layout) {
-        layoutChoice = migrateLayout(state.layout);
-      }
       if (state.diff && state.diff !== graphStore.diffVersion) {
         compareVersion = state.diff;
       }
@@ -108,9 +102,6 @@
       }
       if (state.mermaid) {
         mermaidStore.diagramType = state.mermaid as "flowchart" | "dataflow" | "sequence" | "c4";
-        mermaidStore.open = true;
-      } else {
-        mermaidStore.close();
       }
       suppressHashWrite = false;
     }
@@ -127,9 +118,6 @@
         graphStore.snapshots = snapshots;
 
         const initial = parseHash(window.location.hash);
-        if (initial.layout) {
-          layoutChoice = migrateLayout(initial.layout);
-        }
 
         const initialVersion = initial.version && snapshots.some((s) => s.version === initial.version)
           ? initial.version
@@ -140,14 +128,13 @@
         }
         if (initial.mermaid) {
           mermaidStore.diagramType = initial.mermaid as "flowchart" | "dataflow" | "sequence" | "c4";
-          mermaidStore.open = true;
         }
 
         if (initialVersion) {
           suppressHashWrite = true;
           await selectVersion(initialVersion);
           if (initial.node) {
-            const index = graphView?.getTraversalIndex();
+            const index = fullTraversalIndex;
             if (index) {
               expansionStore.expandAncestors(initial.node, index);
             }
@@ -207,11 +194,6 @@
     }
   }
 
-  // Persist layout choice
-  $effect(() => {
-    localStorage.setItem("svt-layout", layoutChoice);
-  });
-
   // Persist navigation panel state
   $effect(() => {
     localStorage.setItem("svt-nav-tab", navigationStore.activeTab);
@@ -224,10 +206,9 @@
     const hash = buildHash({
       version: graphStore.selectedVersion ?? undefined,
       node: selectionStore.selectedNodeId ?? undefined,
-      layout: layoutChoice,
       diff: graphStore.diffVersion ?? undefined,
       scope: scopeStore.scopeNodeId ?? undefined,
-      mermaid: mermaidStore.open ? mermaidStore.diagramType : undefined,
+      mermaid: mermaidStore.diagramType,
     });
     if (hash !== window.location.hash) {
       history.replaceState(null, "", hash || window.location.pathname);
@@ -296,13 +277,7 @@
         results = await api.searchNodes(query, graphStore.selectedVersion);
       }
       if (results.length > 0) {
-        // Expand ancestors so the found node becomes visible
-        const index = graphView?.getTraversalIndex();
-        if (index) {
-          expansionStore.expandAncestors(results[0].id, index);
-        }
-        selectionStore.selectedNodeId = results[0].id;
-        selectionStore.panelOpen = true;
+        selectNode(results[0].id);
       }
     } catch (e) {
       graphStore.error = e instanceof Error ? e.message : "Search failed";
@@ -354,12 +329,9 @@
   }
 
   function handleKeydown(e: KeyboardEvent) {
-    // Escape: close panels, drawer, scope
+    // Escape: close panels, scope
     if (e.key === "Escape") {
-      if (mermaidStore.open) {
-        mermaidStore.close();
-        e.preventDefault();
-      } else if (selectionStore.panelOpen) {
+      if (selectionStore.panelOpen) {
         selectionStore.clear();
         e.preventDefault();
       } else if (scopeStore.active) {
@@ -376,45 +348,37 @@
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
 
     // Arrow keys: navigate graph containment hierarchy
-    if (selectionStore.selectedNodeId && graphView) {
-      const index = graphView.getTraversalIndex();
-      if (index) {
-        let targetId: string | null = null;
-        if (e.key === "ArrowUp") {
-          targetId = getParent(index, selectionStore.selectedNodeId);
-        } else if (e.key === "ArrowDown") {
-          // If node is collapsed (has children but not expanded), expand it first
-          if (
-            index.childrenMap.has(selectionStore.selectedNodeId) &&
-            !expansionStore.isExpanded(selectionStore.selectedNodeId)
-          ) {
-            expansionStore.expand(selectionStore.selectedNodeId);
-            // After expansion, select first child on next tick
-            const firstChild = getFirstChild(index, selectionStore.selectedNodeId);
-            if (firstChild) {
-              requestAnimationFrame(() => graphView?.selectAndCenter(firstChild));
-            }
-            e.preventDefault();
-            return;
+    if (selectionStore.selectedNodeId && fullTraversalIndex) {
+      const index = fullTraversalIndex;
+      let targetId: string | null = null;
+      if (e.key === "ArrowUp") {
+        targetId = getParent(index, selectionStore.selectedNodeId);
+      } else if (e.key === "ArrowDown") {
+        // If node is collapsed (has children but not expanded), expand it first
+        if (
+          index.childrenMap.has(selectionStore.selectedNodeId) &&
+          !expansionStore.isExpanded(selectionStore.selectedNodeId)
+        ) {
+          expansionStore.expand(selectionStore.selectedNodeId);
+          // After expansion, select first child on next tick
+          const firstChild = getFirstChild(index, selectionStore.selectedNodeId);
+          if (firstChild) {
+            requestAnimationFrame(() => selectNode(firstChild));
           }
-          targetId = getFirstChild(index, selectionStore.selectedNodeId);
-        } else if (e.key === "ArrowLeft") {
-          targetId = getPrevSibling(index, selectionStore.selectedNodeId);
-        } else if (e.key === "ArrowRight") {
-          targetId = getNextSibling(index, selectionStore.selectedNodeId);
-        }
-        if (targetId) {
-          graphView.selectAndCenter(targetId);
           e.preventDefault();
           return;
         }
+        targetId = getFirstChild(index, selectionStore.selectedNodeId);
+      } else if (e.key === "ArrowLeft") {
+        targetId = getPrevSibling(index, selectionStore.selectedNodeId);
+      } else if (e.key === "ArrowRight") {
+        targetId = getNextSibling(index, selectionStore.selectedNodeId);
       }
-    }
-
-    // f: fit all elements in viewport
-    if (e.key === "f") {
-      graphView?.fitAll();
-      e.preventDefault();
+      if (targetId) {
+        selectNode(targetId);
+        e.preventDefault();
+        return;
+      }
     }
 
     // g: toggle navigation panel
@@ -423,21 +387,9 @@
       e.preventDefault();
     }
 
-    // m: toggle Mermaid drawer
-    if (e.key === "m") {
-      mermaidStore.toggle();
-      e.preventDefault();
-    }
-
     // s: scope to selected node
     if (e.key === "s" && selectionStore.selectedNodeId) {
       scopeStore.setScope(selectionStore.selectedNodeId);
-      e.preventDefault();
-    }
-
-    // n: toggle focus mode on selected node
-    if (e.key === "n" && selectionStore.selectedNodeId) {
-      focusStore.toggle(selectionStore.selectedNodeId);
       e.preventDefault();
     }
   }
@@ -462,7 +414,7 @@
         <button
           class="depth-btn"
           onclick={() => {
-            const index = graphView?.getTraversalIndex();
+            const index = fullTraversalIndex;
             if (index && expansionStore.currentDepth > 0)
               expansionStore.expandToDepth(expansionStore.currentDepth - 1, index);
           }}
@@ -473,7 +425,7 @@
         <button
           class="depth-btn"
           onclick={() => {
-            const index = graphView?.getTraversalIndex();
+            const index = fullTraversalIndex;
             if (index)
               expansionStore.expandToDepth(expansionStore.currentDepth + 1, index);
           }}
@@ -482,7 +434,7 @@
         <button
           class="depth-btn"
           onclick={() => {
-            const index = graphView?.getTraversalIndex();
+            const index = fullTraversalIndex;
             if (index)
               expansionStore.expandToDepth(10, index);
           }}
@@ -520,28 +472,6 @@
       {/if}
     </div>
     <div class="toolbar-right">
-      {#if selectionStore.selectedNodeId}
-        <button
-          class="focus-btn"
-          onclick={() => {
-            if (selectionStore.selectedNodeId) focusStore.toggle(selectionStore.selectedNodeId);
-          }}
-        >{focusStore.active ? "Unfocus" : "Focus"}</button>
-      {/if}
-      {#if focusStore.active}
-        <button class="focus-btn" onclick={() => focusStore.clear()}>Clear Focus</button>
-      {/if}
-      <button
-        class="mermaid-btn"
-        onclick={() => mermaidStore.toggle()}
-        aria-label="Toggle Mermaid diagram"
-      >{mermaidStore.open ? "Close Diagram" : "Mermaid"}</button>
-      <select bind:value={layoutChoice} onchange={() => graphView?.relayout(layoutChoice)}>
-        <option value="fcose">Force-directed</option>
-        <option value="dagre">Hierarchical</option>
-        <option value="elk">Layered</option>
-      </select>
-
       {#if graphStore.designSnapshots.length > 0}
         <select bind:value={conformanceDesign}>
           <option value={null}>Design...</option>
@@ -586,10 +516,10 @@
 
   <Breadcrumb
     selectedNodeId={selectionStore.selectedNodeId}
-    traversalIndex={graphView?.getTraversalIndex() ?? null}
+    traversalIndex={fullTraversalIndex}
     {labelMap}
     scopeNodeId={scopeStore.scopeNodeId}
-    onnavigate={(nodeId) => graphView?.selectAndCenter(nodeId)}
+    onnavigate={(nodeId) => selectNode(nodeId)}
     onclearscope={() => scopeStore.clear()}
   />
 
@@ -597,16 +527,11 @@
     <NavigationPanel
       traversalIndex={fullTraversalIndex}
       {labelMap}
-      onselectnode={(nodeId) => {
-        const index = graphView?.getTraversalIndex();
-        if (index) expansionStore.expandAncestors(nodeId, index);
-        graphView?.selectAndCenter(nodeId);
-      }}
+      onselectnode={(nodeId) => selectNode(nodeId)}
       onscopenode={(nodeId) => {
         scopeStore.setScope(nodeId);
         // Reset expansion for the new scope
-        const index = graphView?.getTraversalIndex();
-        if (index) expansionStore.expandToDepth(2, index);
+        if (fullTraversalIndex) expansionStore.expandToDepth(2, fullTraversalIndex);
       }}
     />
     <div class="graph-area">
@@ -616,25 +541,8 @@
           <p>Loading graph data...</p>
         </div>
       {:else if scopedGraph}
-        <ErrorBoundary name="Graph View">
-          <GraphView
-            bind:this={graphView}
-            graph={scopedGraph}
-            expandedNodes={expansionStore.expandedNodes}
-            onToggleExpand={(nodeId) => expansionStore.toggle(nodeId)}
-            onFocusNode={(nodeId) => focusStore.focus(nodeId)}
-            onScopeNode={(nodeId) => scopeStore.setScope(nodeId)}
-            conformance={graphStore.conformanceReport}
-            diff={graphStore.diffReport}
-            layout={layoutChoice}
-            {theme}
-            filterNodeKinds={filterStore.nodeKinds}
-            filterEdgeKinds={filterStore.edgeKinds}
-            filterSubKinds={filterStore.subKinds}
-            filterLanguages={filterStore.languages}
-            focusNodeId={focusStore.focusNodeId}
-            focusDegrees={focusStore.focusDegrees}
-          />
+        <ErrorBoundary name="Mermaid View">
+          <MermaidView graph={scopedGraph} {theme} />
         </ErrorBoundary>
       {:else}
         <div class="center-message">
@@ -642,7 +550,6 @@
           <p class="hint">Start the server with <code>--design</code> or <code>--project</code> flags.</p>
         </div>
       {/if}
-      <MermaidDrawer graph={scopedGraph} {theme} />
     </div>
 
     {#if selectionStore.panelOpen}
@@ -853,21 +760,5 @@
     color: var(--accent);
     font-weight: bold;
     margin-left: 0.15rem;
-  }
-
-  .focus-btn {
-    background: var(--bg);
-    color: var(--text);
-    border: 1px solid var(--border);
-    font-size: 0.8rem;
-    padding: 0.25rem 0.5rem;
-  }
-
-  .mermaid-btn {
-    background: var(--bg);
-    color: var(--text);
-    border: 1px solid var(--border);
-    font-size: 0.8rem;
-    padding: 0.25rem 0.5rem;
   }
 </style>

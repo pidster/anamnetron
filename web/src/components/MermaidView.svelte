@@ -14,7 +14,6 @@
   let renderContainer = $state<HTMLDivElement>();
   let mermaidReady = $state(false);
   let renderError = $state<string | null>(null);
-  let expanded = $state(false);
   let zoom = $state(1);
   let mermaidModule: typeof import("mermaid") | null = null;
 
@@ -160,10 +159,6 @@
     void globalThis.navigator.clipboard?.writeText(source).catch(() => {});
   }
 
-  function toggleExpand() {
-    expanded = !expanded;
-  }
-
   const DIAGRAM_OPTIONS: Array<{ value: DiagramType; label: string }> = [
     { value: "flowchart", label: "Flowchart" },
     { value: "dataflow", label: "Data Flow" },
@@ -172,80 +167,63 @@
   ];
 </script>
 
-{#if mermaidStore.open}
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="mermaid-drawer" class:expanded onkeydown={handleKeydown}>
-    <div class="drawer-header">
-      <span class="drawer-title">Mermaid Diagram</span>
-      <div class="drawer-controls">
-        <select
-          bind:value={mermaidStore.diagramType}
-          aria-label="Diagram type"
-        >
-          {#each DIAGRAM_OPTIONS as opt}
-            <option value={opt.value}>{opt.label}</option>
-          {/each}
-        </select>
-        <button class="icon-btn" onclick={() => applyZoom(-ZOOM_STEP)} title="Zoom out (-)">&#x2212;</button>
-        <button
-          class="zoom-label"
-          onclick={() => { zoom = 1; }}
-          title="Reset zoom (0)"
-        >{Math.round(zoom * 100)}%</button>
-        <button class="icon-btn" onclick={() => applyZoom(ZOOM_STEP)} title="Zoom in (+)">+</button>
-        <button class="icon-btn" onclick={toggleExpand} title={expanded ? "Collapse drawer" : "Expand drawer"}>
-          {expanded ? "\u25B6" : "\u25C0"}
-        </button>
-        <button class="copy-btn" onclick={copySource} title="Copy Mermaid source">Copy</button>
-        <button class="close-btn" onclick={() => mermaidStore.close()} aria-label="Close drawer">&times;</button>
-      </div>
-    </div>
-
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="drawer-content" onwheel={handleWheel}>
-      {#if renderError}
-        <div class="render-error">
-          <p>{renderError}</p>
-          <details>
-            <summary>Source</summary>
-            <pre>{source}</pre>
-          </details>
-        </div>
-      {:else if !mermaidReady}
-        <div class="loading">Loading Mermaid...</div>
-      {/if}
-      <div
-        class="render-container"
-        bind:this={renderContainer}
-        style:transform="scale({zoom})"
-        style:transform-origin="top left"
-      ></div>
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="mermaid-view" onkeydown={handleKeydown}>
+  <div class="view-header">
+    <span class="view-title">Mermaid Diagram</span>
+    <div class="view-controls">
+      <select
+        bind:value={mermaidStore.diagramType}
+        aria-label="Diagram type"
+      >
+        {#each DIAGRAM_OPTIONS as opt}
+          <option value={opt.value}>{opt.label}</option>
+        {/each}
+      </select>
+      <button class="icon-btn" onclick={() => applyZoom(-ZOOM_STEP)} title="Zoom out (-)">&#x2212;</button>
+      <button
+        class="zoom-label"
+        onclick={() => { zoom = 1; }}
+        title="Reset zoom (0)"
+      >{Math.round(zoom * 100)}%</button>
+      <button class="icon-btn" onclick={() => applyZoom(ZOOM_STEP)} title="Zoom in (+)">+</button>
+      <button class="copy-btn" onclick={copySource} title="Copy Mermaid source">Copy</button>
     </div>
   </div>
-{/if}
+
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="view-content" onwheel={handleWheel}>
+    {#if renderError}
+      <div class="render-error">
+        <p>{renderError}</p>
+        <details>
+          <summary>Source</summary>
+          <pre>{source}</pre>
+        </details>
+      </div>
+    {:else if !mermaidReady}
+      <div class="loading">Loading Mermaid...</div>
+    {/if}
+    <div
+      class="render-container"
+      bind:this={renderContainer}
+      style:transform="scale({zoom})"
+      style:transform-origin="top left"
+    ></div>
+  </div>
+</div>
 
 <style>
-  .mermaid-drawer {
-    position: absolute;
-    top: 0;
-    right: 0;
-    width: 560px;
-    max-width: 100%;
-    height: 100%;
-    background: var(--surface);
-    border-left: 1px solid var(--border);
-    box-shadow: -4px 0 16px rgba(0, 0, 0, 0.2);
-    z-index: 20;
+  .mermaid-view {
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
     display: flex;
     flex-direction: column;
-    transition: width 200ms ease;
+    background: var(--surface);
   }
 
-  .mermaid-drawer.expanded {
-    width: 100%;
-  }
-
-  .drawer-header {
+  .view-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -254,19 +232,19 @@
     flex-shrink: 0;
   }
 
-  .drawer-title {
+  .view-title {
     font-size: 0.9rem;
     font-weight: 600;
     color: var(--text);
   }
 
-  .drawer-controls {
+  .view-controls {
     display: flex;
     align-items: center;
     gap: 0.4rem;
   }
 
-  .drawer-controls select {
+  .view-controls select {
     background: var(--bg);
     color: var(--text);
     border: 1px solid var(--border);
@@ -309,23 +287,7 @@
     background: var(--border);
   }
 
-  .close-btn {
-    background: none;
-    border: none;
-    color: var(--text-muted);
-    font-size: 1.2rem;
-    cursor: pointer;
-    padding: 0.1rem 0.3rem;
-    line-height: 1;
-    border-radius: 3px;
-  }
-
-  .close-btn:hover {
-    color: var(--text);
-    background: var(--bg);
-  }
-
-  .drawer-content {
+  .view-content {
     flex: 1;
     overflow: auto;
     padding: 0.5rem;

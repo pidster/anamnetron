@@ -18,15 +18,16 @@ describe("parseHash", () => {
     expect(parseHash("#v=1&node=abc")).toEqual({ version: 1, node: "abc" });
   });
 
-  it("parses layout", () => {
-    expect(parseHash("#v=1&layout=dagre")).toEqual({ version: 1, layout: "dagre" });
+  it("ignores unknown parameters like layout", () => {
+    expect(parseHash("#v=1&layout=dagre")).toEqual({ version: 1 });
   });
 
   it("parses all fields", () => {
-    expect(parseHash("#v=2&node=n1&layout=cose-bilkent")).toEqual({
+    expect(parseHash("#v=2&node=n1&scope=root&mermaid=flowchart")).toEqual({
       version: 2,
       node: "n1",
-      layout: "cose-bilkent",
+      scope: "root",
+      mermaid: "flowchart",
     });
   });
 
@@ -80,7 +81,7 @@ describe("buildHash", () => {
   });
 
   it("round-trips through parseHash", () => {
-    const state = { version: 3, node: "/svt/core", layout: "dagre" };
+    const state = { version: 3, node: "/svt/core", mermaid: "flowchart" };
     expect(parseHash(buildHash(state))).toEqual(state);
   });
 
@@ -91,7 +92,7 @@ describe("buildHash", () => {
   });
 
   it("round-trips diff parameter", () => {
-    const state = { version: 3, diff: 1, layout: "dagre" };
+    const state = { version: 3, diff: 1 };
     expect(parseHash(buildHash(state))).toEqual(state);
   });
 
