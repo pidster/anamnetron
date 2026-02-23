@@ -37,11 +37,13 @@ export function computeVisibleElements(
       const isExpanded = expandedNodes.has(id);
 
       if (hasChildren && !isExpanded) {
-        // Collapsed parent — attach descendant count, remove parent role
+        // Collapsed parent — attach descendant count and display label, remove parent role
+        const descendantCount = countDescendants(index, id);
         return {
           data: {
             ...n.data,
-            _childCount: countDescendants(index, id),
+            _childCount: descendantCount,
+            _displayLabel: `${n.data.label} (${descendantCount})`,
           },
         };
       }

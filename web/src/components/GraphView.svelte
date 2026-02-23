@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import cytoscape from "cytoscape";
   import dagre from "cytoscape-dagre";
   import fcose from "cytoscape-fcose";
@@ -123,8 +123,7 @@
           "border-style": "double",
           "border-width": 4,
           "border-color": parentBorder,
-          label: (ele: cytoscape.NodeSingular) =>
-            `${ele.data("label")} (${ele.data("_childCount")})`,
+          label: "data(_displayLabel)",
         },
       },
     ];
@@ -345,7 +344,7 @@
     }
   }
 
-  function initCytoscape(elements: CytoscapeGraph["elements"]) {
+  function initCytoscape(elements: CytoscapeGraph["elements"], layoutName: LayoutType) {
     if (cy) {
       destroyTooltip();
       cy.destroy();
@@ -361,7 +360,7 @@
         edges: elements.edges,
       },
       style: buildStyleSheet(),
-      layout: getLayoutConfig(layout, nodeCount),
+      layout: getLayoutConfig(layoutName, nodeCount),
       textureOnViewport: nodeCount > 300,
       hideEdgesOnViewport: nodeCount > 500,
     } as cytoscape.CytoscapeOptions);
@@ -479,16 +478,14 @@
     });
 
     // --- Minimap ---
-    const navContainer = container.querySelector(".cy-navigator");
-    if (navContainer) {
-      (cy as unknown as { navigator: (opts: unknown) => unknown }).navigator({
-        container: navContainer,
-        viewLiveFramerate: 0,
-        thumbnailEventFramerate: 10,
-        thumbnailLiveFramerate: 0,
-        dblClickDelay: 200,
-      });
-    }
+    (cy as unknown as { navigator: (opts: unknown) => unknown }).navigator({
+      container: ".cy-navigator",
+      viewLiveFramerate: 0,
+      thumbnailEventFramerate: 10,
+      thumbnailLiveFramerate: 0,
+      dblClickDelay: 200,
+      removeCustomContainer: false,
+    });
 
     // Build canonical path index for O(1) lookups in overlays
     cy.nodes().forEach((node) => {
@@ -607,7 +604,9 @@
 
   $effect(() => {
     if (visibleGraph && container) {
-      initCytoscape(visibleGraph.elements);
+      // Use untrack for layout so layout changes go through relayout(), not full reinit
+      const currentLayout = untrack(() => layout);
+      initCytoscape(visibleGraph.elements, currentLayout);
     }
   });
 
@@ -719,20 +718,33 @@
     if (!cy) return;
     const layoutName = name || layout;
     const nodeCount = cy.nodes().length;
-    cy.layout(getLayoutConfig(layoutName, nodeCount)).run();
+    try {
+      cy.layout(getLayoutConfig(layoutName, nodeCount)).run();
+    } catch (e) {
+      console.error(`Layout "${layoutName}" failed, falling back to fcose:`, e);
+      if (layoutName !== "fcose") {
+        cy.layout(getLayoutConfig("fcose", nodeCount)).run();
+      }
+    }
   }
 </script>
 
-<div class="graph-container" bind:this={container}>
+<div class="graph-wrapper">
+  <div class="graph-container" bind:this={container}></div>
   <div class="cy-navigator"></div>
 </div>
 
 <style>
-  .graph-container {
+  .graph-wrapper {
     flex: 1;
     min-height: 0;
-    background: var(--bg);
     position: relative;
+  }
+
+  .graph-container {
+    width: 100%;
+    height: 100%;
+    background: var(--bg);
   }
 
   .cy-navigator {
