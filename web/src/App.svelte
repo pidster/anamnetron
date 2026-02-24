@@ -454,16 +454,53 @@
 <div class="app">
   <nav class="toolbar">
     <div class="toolbar-left">
-      <span class="logo">SVT</span>
-      <button class="theme-toggle" onclick={toggleTheme} aria-label="Toggle theme">
-        {theme === "dark" ? "Light" : "Dark"}
-      </button>
-      <SnapshotSelector
-        snapshots={graphStore.snapshots}
-        selectedVersion={graphStore.selectedVersion}
-        onselect={selectVersion}
-      />
-      <SearchBar onsearch={handleSearch} />
+      <span class="logo">Anamnetron</span>
+      {#if graphStore.snapshots.length > 1 && graphStore.selectedVersion}
+        <select
+          bind:value={compareVersion}
+          aria-label="Compare to version"
+        >
+          <option value={null}>Compare to...</option>
+          {#each graphStore.snapshots.filter(s => s.version !== graphStore.selectedVersion) as s}
+            <option value={s.version}>
+              v{s.version} ({s.kind}{s.commit_ref ? ` - ${s.commit_ref}` : ""})
+            </option>
+          {/each}
+        </select>
+        {#if compareVersion}
+          <button onclick={clearDiff} class="clear-btn">Clear diff</button>
+        {/if}
+      {/if}
+      <button
+        class="filter-toggle"
+        onclick={() => {
+          if (navigationStore.collapsed) {
+            navigationStore.setTab("filters");
+          } else if (navigationStore.activeTab === "filters") {
+            navigationStore.collapse();
+          } else {
+            navigationStore.setTab("filters");
+          }
+        }}
+        aria-label="Toggle filters"
+      >Filters{#if filterStore.hasActiveFilters}<span class="filter-indicator">*</span>{/if}</button>
+      <span class="view-switcher">
+        {#each [
+          { mode: "treemap" as ViewMode, label: "Treemap", disabled: false },
+          { mode: "chord" as ViewMode, label: "Chord", disabled: false },
+          { mode: "sunburst" as ViewMode, label: "Sunburst", disabled: false },
+          { mode: "graph" as ViewMode, label: "Graph", disabled: false },
+          { mode: "mermaid" as ViewMode, label: "Mermaid", disabled: false },
+        ] as item}
+          <button
+            class="view-btn"
+            class:view-btn-active={viewStore.mode === item.mode}
+            disabled={item.disabled}
+            onclick={() => viewStore.setMode(item.mode)}
+            aria-label="Switch to {item.label} view"
+          >{item.label}</button>
+        {/each}
+      </span>
       <span class="depth-controls">
         <button
           class="depth-btn"
@@ -495,52 +532,15 @@
           aria-label="Expand all"
         >All</button>
       </span>
-      <span class="view-switcher">
-        {#each [
-          { mode: "mermaid" as ViewMode, label: "Mermaid", disabled: false },
-          { mode: "graph" as ViewMode, label: "Graph", disabled: false },
-          { mode: "treemap" as ViewMode, label: "Treemap", disabled: false },
-          { mode: "chord" as ViewMode, label: "Chord", disabled: false },
-          { mode: "sunburst" as ViewMode, label: "Sunburst", disabled: false },
-        ] as item}
-          <button
-            class="view-btn"
-            class:view-btn-active={viewStore.mode === item.mode}
-            disabled={item.disabled}
-            onclick={() => viewStore.setMode(item.mode)}
-            aria-label="Switch to {item.label} view"
-          >{item.label}</button>
-        {/each}
-      </span>
-      <button
-        class="filter-toggle"
-        onclick={() => {
-          if (navigationStore.collapsed) {
-            navigationStore.setTab("filters");
-          } else if (navigationStore.activeTab === "filters") {
-            navigationStore.collapse();
-          } else {
-            navigationStore.setTab("filters");
-          }
-        }}
-        aria-label="Toggle filters"
-      >Filters{#if filterStore.hasActiveFilters}<span class="filter-indicator">*</span>{/if}</button>
-      {#if graphStore.snapshots.length > 1 && graphStore.selectedVersion}
-        <select
-          bind:value={compareVersion}
-          aria-label="Compare to version"
-        >
-          <option value={null}>Compare to...</option>
-          {#each graphStore.snapshots.filter(s => s.version !== graphStore.selectedVersion) as s}
-            <option value={s.version}>
-              v{s.version} ({s.kind}{s.commit_ref ? ` - ${s.commit_ref}` : ""})
-            </option>
-          {/each}
-        </select>
-        {#if compareVersion}
-          <button onclick={clearDiff} class="clear-btn">Clear diff</button>
-        {/if}
-      {/if}
+      <SearchBar onsearch={handleSearch} />
+      <SnapshotSelector
+        snapshots={graphStore.snapshots}
+        selectedVersion={graphStore.selectedVersion}
+        onselect={selectVersion}
+      />
+      <button class="theme-toggle" onclick={toggleTheme} aria-label="Toggle theme">
+        {theme === "dark" ? "Light" : "Dark"}
+      </button>
     </div>
     <div class="toolbar-right">
       {#if graphStore.designSnapshots.length > 0}
