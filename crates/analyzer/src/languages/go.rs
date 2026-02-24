@@ -139,6 +139,7 @@ fn parse_go_file(
                             source_ref: format!("{source_ref_base}:{line}"),
                             language: "go".to_string(),
                             metadata: Some(serde_json::json!({"loc": loc})),
+                            tags: vec![],
                         });
                     }
                 }
@@ -164,6 +165,7 @@ fn parse_go_file(
                             source_ref: format!("{source_ref_base}:{line}"),
                             language: "go".to_string(),
                             metadata: Some(serde_json::json!({"loc": loc})),
+                            tags: vec![],
                         });
                     }
                 }
@@ -215,6 +217,7 @@ fn extract_type_spec(
         source_ref: format!("{source_ref_base}:{line}"),
         language: "go".to_string(),
         metadata: Some(serde_json::json!({"loc": loc})),
+        tags: vec![],
     });
 }
 

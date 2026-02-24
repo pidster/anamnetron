@@ -242,6 +242,7 @@ mod tests {
                         source_ref: f.display().to_string(),
                         language: "mock".to_string(),
                         metadata: None,
+                        tags: vec![],
                     })
                     .collect(),
                 relations: vec![],

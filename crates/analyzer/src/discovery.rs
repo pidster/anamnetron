@@ -124,6 +124,20 @@ fn detect_workspace_name(crates: &[CrateInfo]) -> Option<String> {
         }
     }
 
+    // If the prefix has no hyphen but is non-empty, check if the majority of
+    // crates use it as a hyphenated prefix (e.g. "aeon" + "aeon-core" + "aeon-rest").
+    if !prefix.is_empty() && !prefix.contains('-') {
+        let prefixed_pattern = format!("{prefix}-");
+        let prefixed_count = names
+            .iter()
+            .filter(|n| n.starts_with(&prefixed_pattern))
+            .count();
+        // The prefix is a workspace name if more than half the crates use it as a prefix
+        if prefixed_count > names.len() / 2 {
+            return Some(prefix.to_string());
+        }
+    }
+
     None
 }
 
@@ -879,5 +893,68 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let packages = discover_python_packages(dir.path()).unwrap();
         assert!(packages.is_empty());
+    }
+
+    #[test]
+    fn detects_workspace_name_when_prefix_is_workspace_name() {
+        // Simulates: aeon, aeon-core, aeon-rest — common prefix is "aeon", no hyphen.
+        let crates = vec![
+            CrateInfo {
+                name: "aeon".to_string(),
+                crate_type: CrateType::Lib,
+                root: PathBuf::from("/tmp/aeon"),
+                entry_point: PathBuf::from("/tmp/aeon/src/lib.rs"),
+                source_files: vec![],
+                workspace_dependencies: vec![],
+            },
+            CrateInfo {
+                name: "aeon-core".to_string(),
+                crate_type: CrateType::Lib,
+                root: PathBuf::from("/tmp/aeon-core"),
+                entry_point: PathBuf::from("/tmp/aeon-core/src/lib.rs"),
+                source_files: vec![],
+                workspace_dependencies: vec![],
+            },
+            CrateInfo {
+                name: "aeon-rest".to_string(),
+                crate_type: CrateType::Lib,
+                root: PathBuf::from("/tmp/aeon-rest"),
+                entry_point: PathBuf::from("/tmp/aeon-rest/src/lib.rs"),
+                source_files: vec![],
+                workspace_dependencies: vec![],
+            },
+        ];
+        assert_eq!(
+            detect_workspace_name(&crates),
+            Some("aeon".to_string()),
+            "should detect 'aeon' as workspace name when prefix has no hyphen but majority of crates use it as prefix"
+        );
+    }
+
+    #[test]
+    fn workspace_name_none_when_no_common_prefix_pattern() {
+        let crates = vec![
+            CrateInfo {
+                name: "alpha".to_string(),
+                crate_type: CrateType::Lib,
+                root: PathBuf::from("/tmp/alpha"),
+                entry_point: PathBuf::from("/tmp/alpha/src/lib.rs"),
+                source_files: vec![],
+                workspace_dependencies: vec![],
+            },
+            CrateInfo {
+                name: "beta".to_string(),
+                crate_type: CrateType::Lib,
+                root: PathBuf::from("/tmp/beta"),
+                entry_point: PathBuf::from("/tmp/beta/src/lib.rs"),
+                source_files: vec![],
+                workspace_dependencies: vec![],
+            },
+        ];
+        assert_eq!(
+            detect_workspace_name(&crates),
+            None,
+            "completely different crate names should not produce a workspace name"
+        );
     }
 }

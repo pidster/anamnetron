@@ -65,6 +65,7 @@ impl LanguageOrchestrator for RustOrchestrator {
                 source_ref: layout.workspace_root.display().to_string(),
                 language: "rust".to_string(),
                 metadata: None,
+                tags: vec![],
             });
         }
         items
@@ -140,6 +141,11 @@ impl LanguageOrchestrator for RustOrchestrator {
 /// Without a workspace prefix, `"svt-core"` becomes `"svt_core"`.
 fn workspace_qualified_name(package_name: &str, workspace_name: Option<&str>) -> String {
     if let Some(ws) = workspace_name {
+        // When the crate name exactly matches the workspace name, suffix with "::app"
+        // to avoid colliding with the workspace system node's qualified name.
+        if package_name == ws {
+            return format!("{}::app", ws.replace('-', "_"));
+        }
         let prefix = format!("{ws}-");
         if let Some(suffix) = package_name.strip_prefix(&prefix) {
             return format!("{}::{}", ws.replace('-', "_"), suffix.replace('-', "_"));
@@ -213,6 +219,15 @@ mod tests {
         assert_eq!(
             workspace_qualified_name("other-crate", Some("svt")),
             "other_crate"
+        );
+    }
+
+    #[test]
+    fn workspace_qualified_name_same_as_workspace_avoids_collision() {
+        assert_eq!(
+            workspace_qualified_name("aeon", Some("aeon")),
+            "aeon::app",
+            "crate name matching workspace should get '::app' suffix to avoid collision"
         );
     }
 

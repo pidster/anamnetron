@@ -66,6 +66,20 @@ pub fn map_to_graph(
 
         let name = cp.rsplit('/').next().unwrap_or(&cp).to_string();
 
+        // Start with existing metadata (or empty object), then merge tags if present.
+        let metadata = {
+            let mut meta = item.metadata.clone();
+            if !item.tags.is_empty() {
+                let obj = meta
+                    .get_or_insert_with(|| serde_json::json!({}))
+                    .as_object_mut();
+                if let Some(obj) = obj {
+                    obj.insert("tags".to_string(), serde_json::json!(item.tags));
+                }
+            }
+            meta
+        };
+
         nodes.push(Node {
             id: node_id(&cp),
             canonical_path: cp.clone(),
@@ -76,7 +90,7 @@ pub fn map_to_graph(
             language: Some(item.language.clone()),
             provenance: Provenance::Analysis,
             source_ref: Some(item.source_ref.clone()),
-            metadata: item.metadata.clone(),
+            metadata,
         });
 
         // Generate Contains edge from parent
@@ -175,6 +189,7 @@ mod tests {
             source_ref: "test.rs:1".to_string(),
             language: "rust".to_string(),
             metadata: None,
+            tags: vec![],
         }
     }
 
@@ -352,6 +367,7 @@ mod tests {
             source_ref: "test.rs:1".to_string(),
             language: "rust".to_string(),
             metadata: Some(serde_json::json!({"loc": 42})),
+            tags: vec![],
         };
         let items = vec![
             make_item("my_crate", NodeKind::Service, "crate", None),
@@ -367,5 +383,44 @@ mod tests {
         // fan_in/fan_out should also be present
         assert_eq!(meta["fan_in"], 0);
         assert_eq!(meta["fan_out"], 0);
+    }
+
+    #[test]
+    fn tags_merged_into_node_metadata() {
+        let item = AnalysisItem {
+            qualified_name: "my_crate::TestFoo".to_string(),
+            kind: NodeKind::Unit,
+            sub_kind: "function".to_string(),
+            parent_qualified_name: Some("my_crate".to_string()),
+            source_ref: "test.rs:1".to_string(),
+            language: "rust".to_string(),
+            metadata: None,
+            tags: vec!["test".to_string()],
+        };
+        let items = vec![
+            make_item("my_crate", NodeKind::Service, "crate", None),
+            item,
+        ];
+        let (nodes, _, _) = map_to_graph(&items, &[]);
+        let test_node = nodes
+            .iter()
+            .find(|n| n.canonical_path == "/my-crate/test-foo")
+            .expect("should find TestFoo node");
+        let meta = test_node.metadata.as_ref().expect("should have metadata");
+        let tags = meta["tags"].as_array().expect("tags should be an array");
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0], "test");
+    }
+
+    #[test]
+    fn empty_tags_not_added_to_metadata() {
+        let items = vec![make_item("my_crate", NodeKind::Service, "crate", None)];
+        let (nodes, _, _) = map_to_graph(&items, &[]);
+        let node = &nodes[0];
+        let meta = node.metadata.as_ref().expect("should have metadata");
+        assert!(
+            meta.get("tags").is_none(),
+            "empty tags should not appear in metadata"
+        );
     }
 }

@@ -276,6 +276,7 @@ fn extract_export(
             source_ref,
             language: "typescript".to_string(),
             metadata: Some(serde_json::json!({"loc": loc})),
+            tags: vec![],
         });
     }
 }
@@ -349,6 +350,7 @@ pub(crate) fn emit_ts_module_items(
                         source_ref: file.parent().unwrap_or(source_root).display().to_string(),
                         language: "typescript".to_string(),
                         metadata: None,
+                        tags: vec![],
                     });
                 }
             }
@@ -379,6 +381,7 @@ pub(crate) fn emit_ts_module_items(
                 source_ref: file.display().to_string(),
                 language: lang.to_string(),
                 metadata: None,
+                tags: vec![],
             });
         }
     }

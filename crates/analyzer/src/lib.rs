@@ -98,6 +98,7 @@ pub fn analyze_project_with_registry(
                 source_ref: unit.source_ref.clone(),
                 language: unit.language.clone(),
                 metadata: None,
+                tags: vec![],
             });
 
             // Phase 4: emit structural items.
@@ -279,6 +280,7 @@ pub fn analyze_project_incremental_with_registry(
                 source_ref: unit.source_ref.clone(),
                 language: unit.language.clone(),
                 metadata: None,
+                tags: vec![],
             });
             all_items.extend(orchestrator.emit_structural_items(unit));
 

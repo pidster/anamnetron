@@ -209,6 +209,7 @@ fn extract_function(
         source_ref: format!("{source_ref_base}:{line}"),
         language: "python".to_string(),
         metadata: Some(serde_json::json!({"loc": loc})),
+        tags: vec![],
     });
 }
 
@@ -237,6 +238,7 @@ fn extract_class(
         source_ref: format!("{source_ref_base}:{line}"),
         language: "python".to_string(),
         metadata: Some(serde_json::json!({"loc": loc})),
+        tags: vec![],
     });
 
     // Extract methods from class body
