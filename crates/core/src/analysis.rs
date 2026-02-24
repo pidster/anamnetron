@@ -26,6 +26,8 @@ pub struct AnalysisItem {
     pub language: String,
     /// Extensible metadata from analysis (e.g., LOC, metrics).
     pub metadata: Option<serde_json::Value>,
+    /// Classification tags (e.g., "test", "benchmark"). Orthogonal to kind/sub_kind.
+    pub tags: Vec<String>,
 }
 
 /// A relationship between code elements.
@@ -110,6 +112,15 @@ pub trait LanguageParser: Send + Sync {
     ///
     /// Default: no post-processing.
     fn post_process(&self, _source_root: &Path, _unit_name: &str, _result: &mut ParseResult) {}
+
+    /// Return names of well-known container/wrapper types for this language.
+    ///
+    /// When the analyzer encounters `impl WellKnown<InnerType>`, it resolves
+    /// methods to `InnerType` rather than creating a phantom node for the
+    /// well-known type.
+    fn well_known_container_types(&self) -> &[&str] {
+        &[]
+    }
 }
 
 #[cfg(test)]
@@ -128,6 +139,7 @@ mod tests {
                 source_ref: "src/lib.rs:10".to_string(),
                 language: "rust".to_string(),
                 metadata: None,
+                tags: vec![],
             }],
             relations: vec![AnalysisRelation {
                 source_qualified_name: "my_crate::Foo".to_string(),
@@ -182,6 +194,7 @@ mod tests {
                     source_ref: "src/Main.java:1".to_string(),
                     language: "java".to_string(),
                     metadata: None,
+                    tags: vec![],
                 }],
                 relations: vec![],
                 warnings: vec![],

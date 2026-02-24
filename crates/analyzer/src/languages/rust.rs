@@ -14,6 +14,56 @@ use crate::types::{AnalysisItem, AnalysisRelation, AnalysisWarning};
 
 use super::{LanguageAnalyzer, ParseResult};
 
+/// Well-known Rust container/wrapper types.
+///
+/// When the analyzer encounters `impl WellKnown<InnerType>`, it resolves
+/// methods to `InnerType` rather than creating a phantom node for the
+/// well-known type.
+const RUST_WELL_KNOWN_CONTAINERS: &[&str] = &[
+    // Smart pointers / wrappers
+    "Arc",
+    "Rc",
+    "Box",
+    "Cow",
+    "Cell",
+    "RefCell",
+    "Mutex",
+    "RwLock",
+    "MutexGuard",
+    "RwLockReadGuard",
+    "RwLockWriteGuard",
+    "Pin",
+    // Optional/Result
+    "Option",
+    "Result",
+    // Collections
+    "Vec",
+    "VecDeque",
+    "LinkedList",
+    "BTreeSet",
+    "HashSet",
+    // Iterators
+    "Iter",
+    "IntoIter",
+];
+
+/// Accumulated mutable state for parsing a single file.
+///
+/// Bundles all the per-file output collections and counters that were
+/// previously threaded through every `visit_*` function as separate
+/// mutable references.
+struct FileParseState<'a> {
+    source: &'a [u8],
+    file_path: &'a Path,
+    items: Vec<AnalysisItem>,
+    relations: Vec<AnalysisRelation>,
+    warnings: Vec<AnalysisWarning>,
+    unresolved_method_calls: usize,
+    resolved_method_calls: usize,
+    use_aliases: HashMap<String, String>,
+    well_known_containers: &'a [&'a str],
+}
+
 /// Rust source code analyzer using tree-sitter-rust.
 ///
 /// Extracts structural elements (modules, structs, enums, traits, functions)
@@ -41,6 +91,10 @@ impl Default for RustAnalyzer {
 impl CoreLanguageParser for RustAnalyzer {
     fn parse(&self, unit_name: &str, files: &[&Path]) -> ParseResult {
         self.analyze_crate(unit_name, files)
+    }
+
+    fn well_known_container_types(&self) -> &[&str] {
+        RUST_WELL_KNOWN_CONTAINERS
     }
 }
 
@@ -108,143 +162,114 @@ fn parse_file(
         return;
     };
 
-    let source_bytes = source.as_bytes();
     let root = tree.root_node();
-
     let module_context = vec![crate_name.to_string()];
-    let mut unresolved_method_calls: usize = 0;
-    let mut resolved_method_calls: usize = 0;
 
-    visit_children(
-        root,
-        source_bytes,
+    let mut state = FileParseState {
+        source: source.as_bytes(),
         file_path,
-        &module_context,
-        items,
-        relations,
-        warnings,
-        &mut unresolved_method_calls,
-        &mut resolved_method_calls,
-        None,
-    );
+        items: Vec::new(),
+        relations: Vec::new(),
+        warnings: Vec::new(),
+        unresolved_method_calls: 0,
+        resolved_method_calls: 0,
+        use_aliases: HashMap::new(),
+        well_known_containers: RUST_WELL_KNOWN_CONTAINERS,
+    };
 
-    let total = resolved_method_calls + unresolved_method_calls;
+    visit_children(root, &mut state, &module_context, None, false);
+
+    let total = state.resolved_method_calls + state.unresolved_method_calls;
     if total > 0 {
-        warnings.push(AnalysisWarning {
+        state.warnings.push(AnalysisWarning {
             source_ref: file_path.display().to_string(),
             message: format!(
-                "{total} method call(s): {resolved_method_calls} resolved, \
-                 {unresolved_method_calls} could not be resolved without type information"
+                "{total} method call(s): {} resolved, \
+                 {} could not be resolved without type information",
+                state.resolved_method_calls, state.unresolved_method_calls
             ),
         });
     }
+
+    items.extend(state.items);
+    relations.extend(state.relations);
+    warnings.extend(state.warnings);
 }
 
 /// Visit all named children of a node, extracting structural items and relationships.
-#[allow(clippy::too_many_arguments)]
 fn visit_children(
     node: tree_sitter::Node<'_>,
-    source: &[u8],
-    file_path: &Path,
+    state: &mut FileParseState<'_>,
     module_context: &[String],
-    items: &mut Vec<AnalysisItem>,
-    relations: &mut Vec<AnalysisRelation>,
-    warnings: &mut Vec<AnalysisWarning>,
-    unresolved_method_calls: &mut usize,
-    resolved_method_calls: &mut usize,
     impl_type: Option<&str>,
+    is_test_context: bool,
 ) {
     for i in 0..node.named_child_count() {
         if let Some(child) = node.named_child(i) {
-            visit_node(
-                child,
-                source,
-                file_path,
-                module_context,
-                items,
-                relations,
-                warnings,
-                unresolved_method_calls,
-                resolved_method_calls,
-                impl_type,
-            );
+            visit_node(child, state, module_context, impl_type, is_test_context);
         }
     }
 }
 
 /// Visit a single tree-sitter node and extract structural items and relationships.
-#[allow(clippy::too_many_arguments)]
 fn visit_node(
     node: tree_sitter::Node<'_>,
-    source: &[u8],
-    file_path: &Path,
+    state: &mut FileParseState<'_>,
     module_context: &[String],
-    items: &mut Vec<AnalysisItem>,
-    relations: &mut Vec<AnalysisRelation>,
-    warnings: &mut Vec<AnalysisWarning>,
-    unresolved_method_calls: &mut usize,
-    resolved_method_calls: &mut usize,
     impl_type: Option<&str>,
+    is_test_context: bool,
 ) {
     match node.kind() {
         "mod_item" => {
-            visit_mod_item(
-                node,
-                source,
-                file_path,
-                module_context,
-                items,
-                relations,
-                warnings,
-                unresolved_method_calls,
-                resolved_method_calls,
-                impl_type,
-            );
+            visit_mod_item(node, state, module_context, is_test_context);
         }
         "struct_item" => {
-            extract_named_item(
-                node,
-                source,
-                file_path,
-                module_context,
-                NodeKind::Unit,
-                "struct",
-                items,
-            );
+            let tags = if is_test_context {
+                vec!["test".to_string()]
+            } else {
+                vec![]
+            };
+            extract_named_item(node, state, module_context, NodeKind::Unit, "struct", tags);
         }
         "enum_item" => {
+            let tags = if is_test_context {
+                vec!["test".to_string()]
+            } else {
+                vec![]
+            };
             extract_named_item(
                 node,
-                source,
-                file_path,
+                state,
                 module_context,
                 NodeKind::Unit,
                 "enum",
-                items,
+                tags.clone(),
             );
-            // Extract enum variants as child Unit nodes.
-            visit_enum_variants(node, source, file_path, module_context, items);
+            visit_enum_variants(node, state, module_context, is_test_context);
         }
         "trait_item" => {
-            extract_named_item(
-                node,
-                source,
-                file_path,
-                module_context,
-                NodeKind::Unit,
-                "trait",
-                items,
-            );
+            let tags = if is_test_context {
+                vec!["test".to_string()]
+            } else {
+                vec![]
+            };
+            extract_named_item(node, state, module_context, NodeKind::Unit, "trait", tags);
         }
         "function_item" => {
+            let is_test_fn = is_test_context || has_attribute(node, state.source, "test");
+            let tags = if is_test_fn {
+                vec!["test".to_string()]
+            } else {
+                vec![]
+            };
             if let Some(type_qn) = impl_type {
                 // Method inside an impl block — parent under the type.
-                if let Some(name) = item_name(node, source) {
+                if let Some(name) = item_name(node, state.source) {
                     let qualified_name = format!("{type_qn}::{name}");
                     let line = node.start_position().row + 1;
-                    let source_ref = format!("{}:{line}", file_path.display());
+                    let source_ref = format!("{}:{line}", state.file_path.display());
                     let loc = node.end_position().row - node.start_position().row + 1;
-                    items.push(AnalysisItem {
+                    state.items.push(AnalysisItem {
                         qualified_name,
                         kind: NodeKind::Unit,
                         sub_kind: "function".to_string(),
@@ -252,74 +277,50 @@ fn visit_node(
                         source_ref,
                         language: "rust".to_string(),
                         metadata: Some(serde_json::json!({"loc": loc})),
+                        tags,
                     });
                 }
             } else {
                 extract_named_item(
                     node,
-                    source,
-                    file_path,
+                    state,
                     module_context,
                     NodeKind::Unit,
                     "function",
-                    items,
+                    tags,
                 );
             }
             // Build local type map from function parameters and body.
             let mut local_type_map = node
                 .child_by_field_name("parameters")
-                .map(|params| extract_param_types(params, source, module_context))
+                .map(|params| {
+                    extract_param_types(params, state.source, module_context, &state.use_aliases)
+                })
                 .unwrap_or_default();
             if let Some(body) = node.child_by_field_name("body") {
-                local_type_map.extend(build_local_type_map(body, source, module_context));
+                local_type_map.extend(build_local_type_map(
+                    body,
+                    state.source,
+                    module_context,
+                    &state.use_aliases,
+                ));
             }
 
             // Descend into the function body to find call expressions.
             if let Some(body) = node.child_by_field_name("body") {
-                visit_call_expressions(
-                    body,
-                    source,
-                    module_context,
-                    relations,
-                    unresolved_method_calls,
-                    resolved_method_calls,
-                    impl_type,
-                    &local_type_map,
-                );
+                visit_call_expressions(body, state, module_context, impl_type, &local_type_map);
             }
         }
         "impl_item" => {
-            visit_impl_item(
-                node,
-                source,
-                file_path,
-                module_context,
-                items,
-                relations,
-                warnings,
-                unresolved_method_calls,
-                resolved_method_calls,
-                impl_type,
-            );
+            visit_impl_item(node, state, module_context, is_test_context);
         }
         "use_declaration" => {
-            visit_use_declaration(node, source, module_context, relations);
+            visit_use_declaration(node, state, module_context);
         }
         _ => {
             // Recurse into children in case they contain items
             // (e.g., items inside cfg-gated blocks).
-            visit_children(
-                node,
-                source,
-                file_path,
-                module_context,
-                items,
-                relations,
-                warnings,
-                unresolved_method_calls,
-                resolved_method_calls,
-                impl_type,
-            );
+            visit_children(node, state, module_context, impl_type, is_test_context);
         }
     }
 }
@@ -327,24 +328,23 @@ fn visit_node(
 /// Extract a named structural item (struct, enum, trait, function).
 fn extract_named_item(
     node: tree_sitter::Node<'_>,
-    source: &[u8],
-    file_path: &Path,
+    state: &mut FileParseState<'_>,
     module_context: &[String],
     kind: NodeKind,
     sub_kind: &str,
-    items: &mut Vec<AnalysisItem>,
+    tags: Vec<String>,
 ) {
-    let Some(name) = item_name(node, source) else {
+    let Some(name) = item_name(node, state.source) else {
         return;
     };
 
     let parent_qualified_name = build_qualified_name(module_context);
     let qualified_name = format!("{parent_qualified_name}::{name}");
     let line = node.start_position().row + 1;
-    let source_ref = format!("{}:{line}", file_path.display());
+    let source_ref = format!("{}:{line}", state.file_path.display());
     let loc = node.end_position().row - node.start_position().row + 1;
 
-    items.push(AnalysisItem {
+    state.items.push(AnalysisItem {
         qualified_name,
         kind,
         sub_kind: sub_kind.to_string(),
@@ -352,6 +352,7 @@ fn extract_named_item(
         source_ref,
         language: "rust".to_string(),
         metadata: Some(serde_json::json!({"loc": loc})),
+        tags,
     });
 }
 
@@ -362,12 +363,11 @@ fn extract_named_item(
 /// constraints to detect specific enum variants (e.g., CLI subcommands).
 fn visit_enum_variants(
     node: tree_sitter::Node<'_>,
-    source: &[u8],
-    file_path: &Path,
+    state: &mut FileParseState<'_>,
     module_context: &[String],
-    items: &mut Vec<AnalysisItem>,
+    is_test_context: bool,
 ) {
-    let Some(enum_name) = item_name(node, source) else {
+    let Some(enum_name) = item_name(node, state.source) else {
         return;
     };
 
@@ -382,17 +382,23 @@ fn visit_enum_variants(
             continue;
         };
         if child.kind() == "enum_variant" {
-            if let Some(variant_name) = item_name(child, source) {
+            if let Some(variant_name) = item_name(child, state.source) {
                 let line = child.start_position().row + 1;
                 let loc = child.end_position().row - child.start_position().row + 1;
-                items.push(AnalysisItem {
+                let tags = if is_test_context {
+                    vec!["test".to_string()]
+                } else {
+                    vec![]
+                };
+                state.items.push(AnalysisItem {
                     qualified_name: format!("{enum_qn}::{variant_name}"),
                     kind: NodeKind::Unit,
                     sub_kind: "variant".to_string(),
                     parent_qualified_name: Some(enum_qn.clone()),
-                    source_ref: format!("{}:{line}", file_path.display()),
+                    source_ref: format!("{}:{line}", state.file_path.display()),
                     language: "rust".to_string(),
                     metadata: Some(serde_json::json!({"loc": loc})),
+                    tags,
                 });
             }
         }
@@ -401,30 +407,32 @@ fn visit_enum_variants(
 
 /// Handle a `mod_item` node. If it has a body (inline module), descend into it.
 /// Otherwise, it's a declaration-only module (`mod foo;`).
-#[allow(clippy::too_many_arguments)]
 fn visit_mod_item(
     node: tree_sitter::Node<'_>,
-    source: &[u8],
-    file_path: &Path,
+    state: &mut FileParseState<'_>,
     module_context: &[String],
-    items: &mut Vec<AnalysisItem>,
-    relations: &mut Vec<AnalysisRelation>,
-    warnings: &mut Vec<AnalysisWarning>,
-    unresolved_method_calls: &mut usize,
-    resolved_method_calls: &mut usize,
-    _impl_type: Option<&str>,
+    is_test_context: bool,
 ) {
-    let Some(name) = item_name(node, source) else {
+    let Some(name) = item_name(node, state.source) else {
         return;
+    };
+
+    // Check if this module has #[cfg(test)] — children inherit test context.
+    let mod_is_test = is_test_context || has_attribute(node, state.source, "cfg(test)");
+
+    let tags = if mod_is_test {
+        vec!["test".to_string()]
+    } else {
+        vec![]
     };
 
     let parent_qualified_name = build_qualified_name(module_context);
     let qualified_name = format!("{parent_qualified_name}::{name}");
     let line = node.start_position().row + 1;
-    let source_ref = format!("{}:{line}", file_path.display());
+    let source_ref = format!("{}:{line}", state.file_path.display());
     let loc = node.end_position().row - node.start_position().row + 1;
 
-    items.push(AnalysisItem {
+    state.items.push(AnalysisItem {
         qualified_name: qualified_name.clone(),
         kind: NodeKind::Component,
         sub_kind: "module".to_string(),
@@ -432,41 +440,32 @@ fn visit_mod_item(
         source_ref,
         language: "rust".to_string(),
         metadata: Some(serde_json::json!({"loc": loc})),
+        tags,
     });
 
     // If the module has a body (inline module), descend into its declarations.
     if let Some(body) = node.child_by_field_name("body") {
         let mut child_context = module_context.to_vec();
         child_context.push(name);
-        visit_children(
-            body,
-            source,
-            file_path,
-            &child_context,
-            items,
-            relations,
-            warnings,
-            unresolved_method_calls,
-            resolved_method_calls,
-            None,
-        );
+
+        // Scope use_aliases: inner module gets a fresh alias map; outer
+        // aliases are restored when we return from the module body.
+        let parent_aliases = std::mem::take(&mut state.use_aliases);
+        visit_children(body, state, &child_context, None, mod_is_test);
+        state.use_aliases = parent_aliases;
     }
 }
 
 /// Handle an `impl_item` node. Extract methods as functions scoped under the
 /// type being implemented, and emit `Implements` relations for trait impls.
-#[allow(clippy::too_many_arguments)]
+///
+/// When the impl target is a well-known container type (e.g., `Arc<Foo>`),
+/// the methods are parented under the inner type (`Foo`) instead.
 fn visit_impl_item(
     node: tree_sitter::Node<'_>,
-    source: &[u8],
-    file_path: &Path,
+    state: &mut FileParseState<'_>,
     module_context: &[String],
-    items: &mut Vec<AnalysisItem>,
-    relations: &mut Vec<AnalysisRelation>,
-    warnings: &mut Vec<AnalysisWarning>,
-    unresolved_method_calls: &mut usize,
-    resolved_method_calls: &mut usize,
-    _impl_type: Option<&str>,
+    is_test_context: bool,
 ) {
     // Check for `impl Trait for Type` — emit an Implements relation.
     let trait_node = node.child_by_field_name("trait");
@@ -474,19 +473,23 @@ fn visit_impl_item(
 
     // Extract type parameter names (e.g., T, E from `impl<T, E>`) so we can
     // detect blanket impls where the type IS a parameter.
-    let type_params = impl_type_param_names(node, source);
+    let type_params = impl_type_param_names(node, state.source);
 
-    // Resolve the impl target type to a qualified name, skipping type
-    // parameters and primitives that would produce phantom parent nodes.
-    let impl_type_qn = type_node
-        .and_then(|tn| type_name_without_generics(tn, source))
-        .and_then(|name| resolve_impl_type_qn(&name, &type_params, module_context));
+    // Resolve the impl target type, potentially unwrapping well-known containers.
+    let (impl_type_qn, wrapper_type) = resolve_impl_target(
+        type_node,
+        state.source,
+        &type_params,
+        module_context,
+        &state.use_aliases,
+        state.well_known_containers,
+    );
 
     // Emit an Implements relation for trait impls (only when the source type
     // resolves to a real node).
     if let (Some(trait_n), Some(source_qn)) = (trait_node, impl_type_qn.as_ref()) {
-        if let Ok(trait_name) = trait_n.utf8_text(source.as_ref()) {
-            relations.push(AnalysisRelation {
+        if let Ok(trait_name) = trait_n.utf8_text(state.source) {
+            state.relations.push(AnalysisRelation {
                 source_qualified_name: source_qn.clone(),
                 target_qualified_name: trait_name.to_string(),
                 kind: EdgeKind::Implements,
@@ -495,61 +498,259 @@ fn visit_impl_item(
     }
 
     // Find the body of the impl block and extract function items from it.
+    // If this was a well-known container unwrap, annotate methods with wrapper metadata.
     if let Some(body) = node.child_by_field_name("body") {
-        visit_children(
-            body,
-            source,
-            file_path,
-            module_context,
-            items,
-            relations,
-            warnings,
-            unresolved_method_calls,
-            resolved_method_calls,
-            impl_type_qn.as_deref(),
-        );
+        if let Some(ref wrapper) = wrapper_type {
+            visit_impl_body_with_wrapper(
+                body,
+                state,
+                module_context,
+                impl_type_qn.as_deref(),
+                is_test_context,
+                wrapper,
+            );
+        } else {
+            visit_children(
+                body,
+                state,
+                module_context,
+                impl_type_qn.as_deref(),
+                is_test_context,
+            );
+        }
     }
 }
 
-/// Handle a `use_declaration` node. Extract the use path and emit a `Depends` relation.
-///
-/// For simple uses like `use foo::bar;`, the argument is `foo::bar`.
-/// For grouped uses like `use foo::{bar, baz};`, emit a dependency on the parent path.
-fn visit_use_declaration(
-    node: tree_sitter::Node<'_>,
-    source: &[u8],
+/// Visit the body of an impl block that was unwrapped from a well-known container,
+/// annotating emitted methods with `wrapped_by` metadata.
+fn visit_impl_body_with_wrapper(
+    body: tree_sitter::Node<'_>,
+    state: &mut FileParseState<'_>,
     module_context: &[String],
-    relations: &mut Vec<AnalysisRelation>,
+    impl_type: Option<&str>,
+    is_test_context: bool,
+    wrapper_type: &str,
 ) {
-    let source_qn = build_qualified_name(module_context);
-
-    if let Some(argument) = node.child_by_field_name("argument") {
-        let target = argument.utf8_text(source).unwrap_or_default().to_string();
-        let target = target.replace(' ', "");
-
-        if target.is_empty() {
-            return;
-        }
-
-        // For grouped uses like `foo::{bar, baz}`, extract the parent path.
-        if target.contains('{') {
-            if let Some(parent_path) = target.split("::{").next() {
-                if !parent_path.is_empty() {
-                    relations.push(AnalysisRelation {
-                        source_qualified_name: source_qn,
-                        target_qualified_name: parent_path.to_string(),
-                        kind: EdgeKind::Depends,
-                    });
-                }
+    let items_before = state.items.len();
+    visit_children(body, state, module_context, impl_type, is_test_context);
+    // Annotate any newly emitted function items with the wrapper metadata.
+    for item in &mut state.items[items_before..] {
+        if item.sub_kind == "function" {
+            let meta = item.metadata.get_or_insert_with(|| serde_json::json!({}));
+            if let Some(obj) = meta.as_object_mut() {
+                obj.insert(
+                    "wrapped_by".to_string(),
+                    serde_json::Value::String(wrapper_type.to_string()),
+                );
             }
-        } else {
-            relations.push(AnalysisRelation {
-                source_qualified_name: source_qn,
-                target_qualified_name: target,
-                kind: EdgeKind::Depends,
-            });
         }
     }
+}
+
+/// Resolve the impl target type, unwrapping well-known containers if applicable.
+///
+/// Returns `(resolved_qn, wrapper_type_name)`. When the outer type is a
+/// well-known container (e.g., `Arc<Foo>`), `resolved_qn` points to the inner
+/// type (`Foo`) and `wrapper_type_name` is `Some("Arc")`.
+fn resolve_impl_target(
+    type_node: Option<tree_sitter::Node<'_>>,
+    source: &[u8],
+    type_params: &[String],
+    module_context: &[String],
+    use_aliases: &HashMap<String, String>,
+    well_known_containers: &[&str],
+) -> (Option<String>, Option<String>) {
+    let Some(tn) = type_node else {
+        return (None, None);
+    };
+
+    let base_name = match type_name_without_generics(tn, source) {
+        Some(n) => n,
+        None => return (None, None),
+    };
+
+    // Check if the base type is a well-known container.
+    if well_known_containers.contains(&base_name.as_str()) {
+        // Extract the first concrete type argument.
+        let type_args = extract_type_arguments(tn, source);
+        if let Some(inner) = type_args
+            .iter()
+            .find(|arg| !type_params.contains(arg) && !is_rust_primitive(arg))
+        {
+            let inner_qn = resolve_impl_type_qn(inner, type_params, module_context, use_aliases);
+            return (inner_qn, Some(base_name));
+        }
+        // All type args are params/primitives — skip entirely (no useful parent).
+        return (None, Some(base_name));
+    }
+
+    let qn = resolve_impl_type_qn(&base_name, type_params, module_context, use_aliases);
+    (qn, None)
+}
+
+/// Handle a `use_declaration` node using tree-sitter traversal.
+///
+/// Extracts individual use paths, populates `use_aliases`, emits `Depends`
+/// relations for each imported item, and emits `Exports` for `pub use`.
+fn visit_use_declaration(
+    node: tree_sitter::Node<'_>,
+    state: &mut FileParseState<'_>,
+    module_context: &[String],
+) {
+    let source_qn = build_qualified_name(module_context);
+    let is_pub = has_visibility_modifier(node);
+
+    if let Some(argument) = node.child_by_field_name("argument") {
+        parse_use_tree(argument, state.source, "", &source_qn, is_pub, state);
+    }
+}
+
+/// Recursively parse a use tree node, emitting `Depends`/`Exports` relations
+/// and populating `use_aliases`.
+fn parse_use_tree(
+    node: tree_sitter::Node<'_>,
+    source: &[u8],
+    prefix: &str,
+    source_qn: &str,
+    is_pub: bool,
+    state: &mut FileParseState<'_>,
+) {
+    match node.kind() {
+        "identifier" => {
+            let name = node.utf8_text(source).unwrap_or_default().trim();
+            if name.is_empty() {
+                return;
+            }
+            let full_path = if prefix.is_empty() {
+                name.to_string()
+            } else {
+                format!("{prefix}::{name}")
+            };
+            state
+                .use_aliases
+                .insert(name.to_string(), full_path.clone());
+            emit_use_relation(source_qn, &full_path, is_pub, state);
+        }
+        "scoped_identifier" => {
+            let text = node.utf8_text(source).unwrap_or_default().replace(' ', "");
+            if text.is_empty() {
+                return;
+            }
+            let full_path = if prefix.is_empty() {
+                text.clone()
+            } else {
+                format!("{prefix}::{text}")
+            };
+            // The alias is the last segment of the path.
+            if let Some(last) = text.rsplit("::").next() {
+                state
+                    .use_aliases
+                    .insert(last.to_string(), full_path.clone());
+            }
+            emit_use_relation(source_qn, &full_path, is_pub, state);
+        }
+        "use_as_clause" => {
+            // `use foo::bar as baz` — alias field is the local name, value field is the path.
+            let path_node = node.child_by_field_name("path");
+            let alias_node = node.child_by_field_name("alias");
+            if let (Some(pn), Some(an)) = (path_node, alias_node) {
+                let path_text = pn.utf8_text(source).unwrap_or_default().replace(' ', "");
+                let alias_text = an.utf8_text(source).unwrap_or_default().trim().to_string();
+                if !path_text.is_empty() && !alias_text.is_empty() {
+                    let full_path = if prefix.is_empty() {
+                        path_text.clone()
+                    } else {
+                        format!("{prefix}::{path_text}")
+                    };
+                    state.use_aliases.insert(alias_text, full_path.clone());
+                    emit_use_relation(source_qn, &full_path, is_pub, state);
+                }
+            }
+        }
+        "scoped_use_list" => {
+            // `foo::{bar, baz}` — extract the path prefix and recurse into the list.
+            let path_node = node.child_by_field_name("path");
+            let list_node = node.child_by_field_name("list");
+
+            let new_prefix = if let Some(pn) = path_node {
+                let p = pn.utf8_text(source).unwrap_or_default().replace(' ', "");
+                if prefix.is_empty() {
+                    p
+                } else {
+                    format!("{prefix}::{p}")
+                }
+            } else {
+                prefix.to_string()
+            };
+
+            if let Some(ln) = list_node {
+                parse_use_tree(ln, source, &new_prefix, source_qn, is_pub, state);
+            }
+        }
+        "use_list" => {
+            // Iterate named children and recurse.
+            for i in 0..node.named_child_count() {
+                if let Some(child) = node.named_child(i) {
+                    parse_use_tree(child, source, prefix, source_qn, is_pub, state);
+                }
+            }
+        }
+        "use_wildcard" => {
+            // `use foo::*` — emit Depends on parent, no alias.
+            if !prefix.is_empty() {
+                emit_use_relation(source_qn, prefix, is_pub, state);
+            }
+        }
+        _ => {
+            // Fallback: try text-based extraction for unknown node kinds.
+            let text = node.utf8_text(source).unwrap_or_default().replace(' ', "");
+            if !text.is_empty() {
+                let full_path = if prefix.is_empty() {
+                    text.clone()
+                } else {
+                    format!("{prefix}::{text}")
+                };
+                if let Some(last) = text.rsplit("::").next() {
+                    if !last.contains('{') && !last.contains('*') {
+                        state
+                            .use_aliases
+                            .insert(last.to_string(), full_path.clone());
+                    }
+                }
+                if !full_path.contains('{') {
+                    emit_use_relation(source_qn, &full_path, is_pub, state);
+                }
+            }
+        }
+    }
+}
+
+/// Emit a `Depends` relation (and `Exports` if the use is public).
+fn emit_use_relation(source_qn: &str, target: &str, is_pub: bool, state: &mut FileParseState<'_>) {
+    state.relations.push(AnalysisRelation {
+        source_qualified_name: source_qn.to_string(),
+        target_qualified_name: target.to_string(),
+        kind: EdgeKind::Depends,
+    });
+    if is_pub {
+        state.relations.push(AnalysisRelation {
+            source_qualified_name: source_qn.to_string(),
+            target_qualified_name: target.to_string(),
+            kind: EdgeKind::Exports,
+        });
+    }
+}
+
+/// Check whether a `use_declaration` node has a `visibility_modifier` child
+/// (i.e., `pub use`).
+fn has_visibility_modifier(node: tree_sitter::Node<'_>) -> bool {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "visibility_modifier" {
+            return true;
+        }
+    }
+    false
 }
 
 /// Build a map of local variable names to inferred type qualified names.
@@ -563,9 +764,10 @@ fn build_local_type_map(
     body: tree_sitter::Node<'_>,
     source: &[u8],
     module_context: &[String],
+    use_aliases: &HashMap<String, String>,
 ) -> HashMap<String, String> {
     let mut type_map = HashMap::new();
-    collect_let_declarations(body, source, module_context, &mut type_map);
+    collect_let_declarations(body, source, module_context, use_aliases, &mut type_map);
     type_map
 }
 
@@ -574,6 +776,7 @@ fn collect_let_declarations(
     node: tree_sitter::Node<'_>,
     source: &[u8],
     module_context: &[String],
+    use_aliases: &HashMap<String, String>,
     type_map: &mut HashMap<String, String>,
 ) {
     for i in 0..node.named_child_count() {
@@ -592,9 +795,12 @@ fn collect_let_declarations(
 
                     // Try explicit type annotation first: `let x: Foo = ...`
                     if let Some(type_node) = child.child_by_field_name("type") {
-                        if let Some(type_qn) =
-                            extract_type_from_annotation(type_node, source, module_context)
-                        {
+                        if let Some(type_qn) = extract_type_from_annotation(
+                            type_node,
+                            source,
+                            module_context,
+                            use_aliases,
+                        ) {
                             type_map.insert(var_name, type_qn);
                             continue;
                         }
@@ -602,7 +808,8 @@ fn collect_let_declarations(
 
                     // Try inferring from the value expression
                     if let Some(value) = child.child_by_field_name("value") {
-                        if let Some(type_qn) = infer_type_from_value(value, source, module_context)
+                        if let Some(type_qn) =
+                            infer_type_from_value(value, source, module_context, use_aliases)
                         {
                             type_map.insert(var_name, type_qn);
                         }
@@ -611,7 +818,7 @@ fn collect_let_declarations(
             }
         } else {
             // Recurse into child nodes (e.g., blocks within the function body)
-            collect_let_declarations(child, source, module_context, type_map);
+            collect_let_declarations(child, source, module_context, use_aliases, type_map);
         }
     }
 }
@@ -637,6 +844,37 @@ fn type_name_without_generics(node: tree_sitter::Node<'_>, source: &[u8]) -> Opt
             Some(text.split('<').next().unwrap_or(text).trim().to_string())
         }
     }
+}
+
+/// Extract concrete type argument names from a `generic_type` node.
+///
+/// For `Arc<RaftEngine>` returns `["RaftEngine"]`.
+/// For `Result<Foo, Bar>` returns `["Foo", "Bar"]`.
+/// Filters out type parameters and primitives.
+fn extract_type_arguments(node: tree_sitter::Node<'_>, source: &[u8]) -> Vec<String> {
+    let mut args = Vec::new();
+
+    // The node might be a `generic_type` with a `type_arguments` field.
+    let type_args_node = if node.kind() == "generic_type" {
+        node.child_by_field_name("type_arguments")
+    } else {
+        None
+    };
+
+    let Some(ta) = type_args_node else {
+        return args;
+    };
+
+    for i in 0..ta.named_child_count() {
+        let Some(child) = ta.named_child(i) else {
+            continue;
+        };
+        if let Some(name) = type_name_without_generics(child, source) {
+            args.push(name);
+        }
+    }
+
+    args
 }
 
 /// Extract type parameter names declared on an `impl` block.
@@ -691,12 +929,16 @@ fn is_rust_primitive(name: &str) -> bool {
 /// Build the qualified name for an impl block's target type, or `None` if the
 /// type is a type parameter or primitive (which would produce a phantom node).
 ///
-/// Scoped types (containing `::`) are kept as-is since they are already
-/// qualified. Unscoped types get the module context prepended.
+/// Resolution order:
+/// 1. Type parameter or primitive → `None`
+/// 2. Contains `::` → keep as-is (already qualified)
+/// 3. Found in `use_aliases` → return the resolved path
+/// 4. Default → prepend module context
 fn resolve_impl_type_qn(
     type_name: &str,
     type_params: &[String],
     module_context: &[String],
+    use_aliases: &HashMap<String, String>,
 ) -> Option<String> {
     if type_params.contains(&type_name.to_string()) || is_rust_primitive(type_name) {
         return None;
@@ -704,6 +946,8 @@ fn resolve_impl_type_qn(
     if type_name.contains("::") {
         // Already scoped (e.g., `other_crate::Type`) — keep as-is.
         Some(type_name.to_string())
+    } else if let Some(resolved) = use_aliases.get(type_name) {
+        Some(resolved.clone())
     } else {
         let module_qn = build_qualified_name(module_context);
         Some(format!("{module_qn}::{type_name}"))
@@ -718,13 +962,18 @@ fn extract_type_from_annotation(
     type_node: tree_sitter::Node<'_>,
     source: &[u8],
     module_context: &[String],
+    use_aliases: &HashMap<String, String>,
 ) -> Option<String> {
     match type_node.kind() {
         "type_identifier" => {
             let name = type_node.utf8_text(source).ok()?;
             if name.starts_with(|c: char| c.is_uppercase()) {
-                let module_qn = build_qualified_name(module_context);
-                Some(format!("{module_qn}::{name}"))
+                if let Some(resolved) = use_aliases.get(name) {
+                    Some(resolved.clone())
+                } else {
+                    let module_qn = build_qualified_name(module_context);
+                    Some(format!("{module_qn}::{name}"))
+                }
             } else {
                 None
             }
@@ -732,7 +981,7 @@ fn extract_type_from_annotation(
         "generic_type" => {
             // Extract the base type from generic (e.g., `Vec<T>` → `Vec`)
             let base = type_node.child_by_field_name("type")?;
-            extract_type_from_annotation(base, source, module_context)
+            extract_type_from_annotation(base, source, module_context, use_aliases)
         }
         "scoped_type_identifier" => {
             // Fully qualified type path — keep as-is
@@ -742,7 +991,7 @@ fn extract_type_from_annotation(
         "reference_type" => {
             // &Type or &mut Type — extract the inner type
             let inner = type_node.child_by_field_name("type")?;
-            extract_type_from_annotation(inner, source, module_context)
+            extract_type_from_annotation(inner, source, module_context, use_aliases)
         }
         _ => None,
     }
@@ -755,6 +1004,7 @@ fn infer_type_from_value(
     value: tree_sitter::Node<'_>,
     source: &[u8],
     module_context: &[String],
+    use_aliases: &HashMap<String, String>,
 ) -> Option<String> {
     match value.kind() {
         "call_expression" => {
@@ -766,6 +1016,9 @@ fn infer_type_from_value(
                 if segments.len() == 2 {
                     let type_seg = segments[0];
                     if type_seg.starts_with(|c: char| c.is_uppercase()) {
+                        if let Some(resolved) = use_aliases.get(type_seg) {
+                            return Some(resolved.clone());
+                        }
                         let module_qn = build_qualified_name(module_context);
                         return Some(format!("{module_qn}::{type_seg}"));
                     }
@@ -778,6 +1031,9 @@ fn infer_type_from_value(
             let name_node = value.child_by_field_name("name")?;
             let name = name_node.utf8_text(source).ok()?;
             if name.starts_with(|c: char| c.is_uppercase()) {
+                if let Some(resolved) = use_aliases.get(name) {
+                    return Some(resolved.clone());
+                }
                 let module_qn = build_qualified_name(module_context);
                 Some(format!("{module_qn}::{name}"))
             } else {
@@ -796,6 +1052,7 @@ fn extract_param_types(
     params_node: tree_sitter::Node<'_>,
     source: &[u8],
     module_context: &[String],
+    use_aliases: &HashMap<String, String>,
 ) -> HashMap<String, String> {
     let mut type_map = HashMap::new();
 
@@ -820,7 +1077,7 @@ fn extract_param_types(
                     continue;
                 }
                 if let Some(type_qn) =
-                    extract_type_from_annotation(type_node, source, module_context)
+                    extract_type_from_annotation(type_node, source, module_context, use_aliases)
                 {
                     type_map.insert(param_name.to_string(), type_qn);
                 }
@@ -836,9 +1093,15 @@ fn extract_param_types(
 ///
 /// Applies heuristic resolution for common call patterns:
 /// - `Self::method` → replace `Self` with the `impl_type` QN (when available)
-/// - `Type::method` (single-segment Type starting with uppercase) → prepend `module_context`
+/// - `Type::method` (single-segment Type starting with uppercase) → check
+///   `use_aliases` first, then prepend `module_context`
 /// - Multi-segment paths (e.g., `std::io::stdout`) → keep as-is
-fn resolve_scoped_call(callee: &str, module_context: &[String], impl_type: Option<&str>) -> String {
+fn resolve_scoped_call(
+    callee: &str,
+    module_context: &[String],
+    impl_type: Option<&str>,
+    use_aliases: &HashMap<String, String>,
+) -> String {
     // Self::method → impl_type::method
     if let Some(rest) = callee.strip_prefix("Self::") {
         if let Some(type_qn) = impl_type {
@@ -852,6 +1115,9 @@ fn resolve_scoped_call(callee: &str, module_context: &[String], impl_type: Optio
     if segments.len() == 2 {
         let first = segments[0];
         if first != "Self" && first.starts_with(|c: char| c.is_uppercase()) {
+            if let Some(resolved) = use_aliases.get(first) {
+                return format!("{resolved}::{}", segments[1]);
+            }
             let module_qn = build_qualified_name(module_context);
             return format!("{module_qn}::{callee}");
         }
@@ -868,14 +1134,10 @@ fn resolve_scoped_call(callee: &str, module_context: &[String], impl_type: Optio
 /// `ImplType::method`. When `local_type_map` contains a mapping for
 /// a receiver variable, `x.method()` calls are resolved to
 /// `Type::method`. Other method calls remain unresolved.
-#[allow(clippy::too_many_arguments)]
 fn visit_call_expressions(
     node: tree_sitter::Node<'_>,
-    source: &[u8],
+    state: &mut FileParseState<'_>,
     module_context: &[String],
-    relations: &mut Vec<AnalysisRelation>,
-    unresolved_method_calls: &mut usize,
-    resolved_method_calls: &mut usize,
     impl_type: Option<&str>,
     local_type_map: &HashMap<String, String>,
 ) {
@@ -891,12 +1153,16 @@ fn visit_call_expressions(
                 match function.kind() {
                     "identifier" | "scoped_identifier" => {
                         // Simple function call or path-qualified call (e.g., `foo()` or `mod::foo()`).
-                        if let Ok(callee) = function.utf8_text(source) {
+                        if let Ok(callee) = function.utf8_text(state.source) {
                             let callee = callee.replace(' ', "");
                             if !callee.is_empty() {
-                                let resolved =
-                                    resolve_scoped_call(&callee, module_context, impl_type);
-                                relations.push(AnalysisRelation {
+                                let resolved = resolve_scoped_call(
+                                    &callee,
+                                    module_context,
+                                    impl_type,
+                                    &state.use_aliases,
+                                );
+                                state.relations.push(AnalysisRelation {
                                     source_qualified_name: source_qn,
                                     target_qualified_name: resolved,
                                     kind: EdgeKind::Calls,
@@ -912,13 +1178,14 @@ fn visit_call_expressions(
                             function.child_by_field_name("value"),
                             function.child_by_field_name("field"),
                         ) {
-                            if let (Ok(receiver_text), Ok(method_name)) =
-                                (receiver.utf8_text(source), method.utf8_text(source))
-                            {
+                            if let (Ok(receiver_text), Ok(method_name)) = (
+                                receiver.utf8_text(state.source),
+                                method.utf8_text(state.source),
+                            ) {
                                 if receiver_text == "self" {
                                     // self.method() → resolve via impl_type
                                     if let Some(type_qn) = impl_type {
-                                        relations.push(AnalysisRelation {
+                                        state.relations.push(AnalysisRelation {
                                             source_qualified_name: build_qualified_name(
                                                 module_context,
                                             ),
@@ -932,7 +1199,7 @@ fn visit_call_expressions(
                                 } else if receiver.kind() == "identifier" {
                                     // x.method() → look up x in local_type_map
                                     if let Some(type_qn) = local_type_map.get(receiver_text) {
-                                        relations.push(AnalysisRelation {
+                                        state.relations.push(AnalysisRelation {
                                             source_qualified_name: build_qualified_name(
                                                 module_context,
                                             ),
@@ -941,7 +1208,7 @@ fn visit_call_expressions(
                                             ),
                                             kind: EdgeKind::Calls,
                                         });
-                                        *resolved_method_calls += 1;
+                                        state.resolved_method_calls += 1;
                                         resolved = true;
                                     }
                                 }
@@ -951,7 +1218,7 @@ fn visit_call_expressions(
                         }
 
                         if !resolved {
-                            *unresolved_method_calls += 1;
+                            state.unresolved_method_calls += 1;
                         }
                     }
                     _ => {
@@ -962,17 +1229,40 @@ fn visit_call_expressions(
         }
 
         // Recurse into children to find nested call expressions.
-        visit_call_expressions(
-            child,
-            source,
-            module_context,
-            relations,
-            unresolved_method_calls,
-            resolved_method_calls,
-            impl_type,
-            local_type_map,
-        );
+        visit_call_expressions(child, state, module_context, impl_type, local_type_map);
     }
+}
+
+/// Check whether a tree-sitter node has a preceding `attribute_item` sibling
+/// containing the given attribute text (e.g., "test" or "cfg(test)").
+///
+/// Walks backward through siblings looking for `attribute_item` nodes whose
+/// text (between `#[` and `]`) matches the given attribute string.
+fn has_attribute(node: tree_sitter::Node<'_>, source: &[u8], attr_text: &str) -> bool {
+    let mut sibling = node.prev_named_sibling();
+    while let Some(sib) = sibling {
+        if sib.kind() == "attribute_item" {
+            if let Ok(text) = sib.utf8_text(source) {
+                // Attribute text looks like `#[test]` or `#[cfg(test)]`.
+                // Strip `#[` prefix and `]` suffix, then compare.
+                let inner = text
+                    .trim()
+                    .strip_prefix("#[")
+                    .and_then(|s| s.strip_suffix(']'));
+                if let Some(inner) = inner {
+                    if inner.trim() == attr_text {
+                        return true;
+                    }
+                }
+            }
+            // Keep looking — there can be multiple attributes.
+            sibling = sib.prev_named_sibling();
+        } else {
+            // Non-attribute node — stop looking.
+            break;
+        }
+    }
+    false
 }
 
 /// Extract the name of a tree-sitter item node.
@@ -1365,7 +1655,7 @@ mod tests {
     }
 
     #[test]
-    fn grouped_use_generates_depends_on_parent_path() {
+    fn grouped_use_generates_individual_depends() {
         let result = parse_source("my_crate", "use std::collections::{HashMap, HashSet};");
         let depends: Vec<_> = result
             .relations
@@ -1373,12 +1663,23 @@ mod tests {
             .filter(|r| r.kind == EdgeKind::Depends)
             .collect();
         assert!(
-            !depends.is_empty(),
-            "grouped use should generate Depends relation on parent path"
+            depends.len() >= 2,
+            "grouped use should generate individual Depends relations, got: {:?}",
+            depends
         );
-        assert_eq!(
-            depends[0].target_qualified_name, "std::collections",
-            "grouped use should depend on parent path"
+        let targets: Vec<&str> = depends
+            .iter()
+            .map(|d| d.target_qualified_name.as_str())
+            .collect();
+        assert!(
+            targets.contains(&"std::collections::HashMap"),
+            "should depend on HashMap, got: {:?}",
+            targets
+        );
+        assert!(
+            targets.contains(&"std::collections::HashSet"),
+            "should depend on HashSet, got: {:?}",
+            targets
         );
     }
 
@@ -1909,34 +2210,41 @@ mod tests {
     fn resolve_scoped_call_unit_tests() {
         let ctx = vec!["my_crate".to_string(), "module".to_string()];
         let impl_type = Some("my_crate::Foo");
+        let aliases = HashMap::new();
 
         // Self::method → impl_type::method
         assert_eq!(
-            resolve_scoped_call("Self::new", &ctx, impl_type),
+            resolve_scoped_call("Self::new", &ctx, impl_type, &aliases),
             "my_crate::Foo::new"
         );
 
         // Type::method (uppercase, 2 segments) → module_context::Type::method
         assert_eq!(
-            resolve_scoped_call("Bar::create", &ctx, impl_type),
+            resolve_scoped_call("Bar::create", &ctx, impl_type, &aliases),
             "my_crate::module::Bar::create"
         );
 
         // Multi-segment → kept as-is
         assert_eq!(
-            resolve_scoped_call("std::io::stdout", &ctx, impl_type),
+            resolve_scoped_call("std::io::stdout", &ctx, impl_type, &aliases),
             "std::io::stdout"
         );
 
         // Simple function (no ::) → kept as-is
-        assert_eq!(resolve_scoped_call("helper", &ctx, impl_type), "helper");
+        assert_eq!(
+            resolve_scoped_call("helper", &ctx, impl_type, &aliases),
+            "helper"
+        );
 
         // Self:: without impl_type → kept as-is
-        assert_eq!(resolve_scoped_call("Self::new", &ctx, None), "Self::new");
+        assert_eq!(
+            resolve_scoped_call("Self::new", &ctx, None, &aliases),
+            "Self::new"
+        );
 
         // Lowercase 2-segment → kept as-is (not a type)
         assert_eq!(
-            resolve_scoped_call("module::func", &ctx, impl_type),
+            resolve_scoped_call("module::func", &ctx, impl_type, &aliases),
             "module::func"
         );
     }
@@ -2172,5 +2480,415 @@ mod tests {
         let meta = item.metadata.as_ref().expect("should have metadata");
         let loc = meta["loc"].as_u64().expect("loc should be a number");
         assert_eq!(loc, 4, "struct spanning 4 lines should have loc=4");
+    }
+
+    // --- Test code detection tests ---
+
+    #[test]
+    fn test_fn_tagged_as_test() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            #[test]
+            fn my_test() {
+                assert!(true);
+            }
+        "#,
+        );
+        let test_fn = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name == "my_crate::my_test")
+            .expect("should find test function");
+        assert!(
+            test_fn.tags.contains(&"test".to_string()),
+            "function with #[test] should have 'test' tag, got: {:?}",
+            test_fn.tags
+        );
+    }
+
+    #[test]
+    fn cfg_test_module_tags_descendants() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            #[cfg(test)]
+            mod tests {
+                fn helper() {}
+                #[test]
+                fn it_works() {}
+            }
+        "#,
+        );
+        let test_mod = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name == "my_crate::tests")
+            .expect("should find tests module");
+        assert!(
+            test_mod.tags.contains(&"test".to_string()),
+            "#[cfg(test)] module should have 'test' tag"
+        );
+
+        let helper = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name == "my_crate::tests::helper")
+            .expect("should find helper function");
+        assert!(
+            helper.tags.contains(&"test".to_string()),
+            "function inside #[cfg(test)] module should inherit 'test' tag"
+        );
+
+        let it_works = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name == "my_crate::tests::it_works")
+            .expect("should find it_works function");
+        assert!(
+            it_works.tags.contains(&"test".to_string()),
+            "#[test] fn inside #[cfg(test)] module should have 'test' tag"
+        );
+    }
+
+    #[test]
+    fn non_test_fn_has_no_test_tag() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub fn process_data() -> u32 { 42 }
+            pub struct Foo;
+        "#,
+        );
+        for item in &result.items {
+            assert!(
+                !item.tags.contains(&"test".to_string()),
+                "non-test item '{}' should not have 'test' tag",
+                item.qualified_name
+            );
+        }
+    }
+
+    #[test]
+    fn test_fn_inside_non_test_module_detected() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            mod utils {
+                #[test]
+                fn test_helper() {}
+                fn regular_fn() {}
+            }
+        "#,
+        );
+        let test_fn = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name == "my_crate::utils::test_helper")
+            .expect("should find test_helper");
+        assert!(
+            test_fn.tags.contains(&"test".to_string()),
+            "#[test] fn should be tagged even outside #[cfg(test)] module"
+        );
+
+        let regular_fn = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name == "my_crate::utils::regular_fn")
+            .expect("should find regular_fn");
+        assert!(
+            !regular_fn.tags.contains(&"test".to_string()),
+            "non-test fn in regular module should not be tagged"
+        );
+
+        let module = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name == "my_crate::utils")
+            .expect("should find utils module");
+        assert!(
+            !module.tags.contains(&"test".to_string()),
+            "regular module should not be tagged as test"
+        );
+    }
+
+    // --- Use-alias resolution tests (Phase 2) ---
+
+    #[test]
+    fn use_alias_resolves_impl_type() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            use other::Foo;
+            impl Foo {
+                pub fn bar(&self) {}
+            }
+        "#,
+        );
+        let method = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name.ends_with("bar"))
+            .expect("should find method bar");
+        assert_eq!(
+            method.parent_qualified_name,
+            Some("other::Foo".to_string()),
+            "use alias should resolve impl type to other::Foo"
+        );
+    }
+
+    #[test]
+    fn use_as_alias_resolves_impl_type() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            use other::Foo as Bar;
+            impl Bar {
+                pub fn baz(&self) {}
+            }
+        "#,
+        );
+        let method = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name.ends_with("baz"))
+            .expect("should find method baz");
+        assert_eq!(
+            method.parent_qualified_name,
+            Some("other::Foo".to_string()),
+            "use-as alias should resolve Bar back to other::Foo"
+        );
+    }
+
+    #[test]
+    fn grouped_use_emits_individual_depends_relations() {
+        let result = parse_source("my_crate", "use std::collections::{HashMap, HashSet};");
+        let depends: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Depends)
+            .collect();
+        let targets: Vec<&str> = depends
+            .iter()
+            .map(|d| d.target_qualified_name.as_str())
+            .collect();
+        assert!(
+            targets.contains(&"std::collections::HashMap"),
+            "should emit individual Depends for HashMap, got: {:?}",
+            targets
+        );
+        assert!(
+            targets.contains(&"std::collections::HashSet"),
+            "should emit individual Depends for HashSet, got: {:?}",
+            targets
+        );
+    }
+
+    #[test]
+    fn pub_use_emits_exports_edge() {
+        let result = parse_source("my_crate", "pub use other::Foo;");
+        let exports: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Exports)
+            .collect();
+        assert!(
+            !exports.is_empty(),
+            "pub use should emit Exports edge, got relations: {:?}",
+            result.relations
+        );
+        assert_eq!(
+            exports[0].target_qualified_name, "other::Foo",
+            "Exports target should be the use path"
+        );
+    }
+
+    #[test]
+    fn use_aliases_scoped_to_module() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            mod inner {
+                use other::Foo;
+                impl Foo {
+                    pub fn inner_method(&self) {}
+                }
+            }
+            // This Foo should NOT resolve via inner's alias.
+            impl Foo {
+                pub fn outer_method(&self) {}
+            }
+        "#,
+        );
+        let inner_method = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name.ends_with("inner_method"));
+        assert!(inner_method.is_some(), "should find inner_method");
+        assert_eq!(
+            inner_method.unwrap().parent_qualified_name,
+            Some("other::Foo".to_string()),
+            "inner method should resolve via alias to other::Foo"
+        );
+
+        let outer_method = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name.ends_with("outer_method"));
+        assert!(outer_method.is_some(), "should find outer_method");
+        assert_eq!(
+            outer_method.unwrap().parent_qualified_name,
+            Some("my_crate::Foo".to_string()),
+            "outer method should NOT use inner module's alias"
+        );
+    }
+
+    // --- Well-known container type tests (Phase 3) ---
+
+    #[test]
+    fn well_known_arc_impl_parents_under_inner_type() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub struct RaftEngine;
+            pub trait Display { fn fmt(&self); }
+            impl Display for Arc<RaftEngine> {
+                fn fmt(&self) {}
+            }
+        "#,
+        );
+        let method = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name.ends_with("fmt"));
+        assert!(method.is_some(), "should find method fmt");
+        assert_eq!(
+            method.unwrap().parent_qualified_name,
+            Some("my_crate::RaftEngine".to_string()),
+            "impl Display for Arc<RaftEngine> should parent methods under RaftEngine"
+        );
+    }
+
+    #[test]
+    fn well_known_box_impl_parents_under_inner_type() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub struct MyError;
+            pub trait Error { fn source(&self); }
+            impl Error for Box<MyError> {
+                fn source(&self) {}
+            }
+        "#,
+        );
+        let method = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name.ends_with("source"));
+        assert!(method.is_some(), "should find method source");
+        assert_eq!(
+            method.unwrap().parent_qualified_name,
+            Some("my_crate::MyError".to_string()),
+            "impl Error for Box<MyError> should parent methods under MyError"
+        );
+    }
+
+    #[test]
+    fn well_known_with_only_type_params_skips_impl() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub trait MyTrait { fn do_thing(&self); }
+            impl<T> MyTrait for Arc<T> {
+                fn do_thing(&self) {}
+            }
+        "#,
+        );
+        let impls: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Implements)
+            .collect();
+        assert!(
+            impls.is_empty(),
+            "impl for Arc<T> with only type params should not emit Implements, got: {:?}",
+            impls
+        );
+        let method = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name.ends_with("do_thing"));
+        assert!(
+            method.is_none()
+                || method.unwrap().parent_qualified_name.as_deref() != Some("my_crate::Arc"),
+            "should not create phantom node for Arc"
+        );
+    }
+
+    #[test]
+    fn well_known_wrapper_metadata_annotated() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub struct RaftEngine;
+            pub trait Display { fn fmt(&self); }
+            impl Display for Arc<RaftEngine> {
+                fn fmt(&self) {}
+            }
+        "#,
+        );
+        let method = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name.ends_with("fmt"))
+            .expect("should find method fmt");
+        let meta = method.metadata.as_ref().expect("should have metadata");
+        assert_eq!(
+            meta["wrapped_by"].as_str(),
+            Some("Arc"),
+            "method metadata should annotate wrapped_by=Arc"
+        );
+    }
+
+    #[test]
+    fn non_well_known_generic_not_unwrapped() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub struct MyWrapper<T> { val: T }
+            pub struct Foo;
+            impl MyWrapper<Foo> {
+                pub fn bar(&self) {}
+            }
+        "#,
+        );
+        let method = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name.ends_with("bar"))
+            .expect("should find method bar");
+        assert_eq!(
+            method.parent_qualified_name,
+            Some("my_crate::MyWrapper".to_string()),
+            "non-well-known generic type should NOT be unwrapped"
+        );
+    }
+
+    #[test]
+    fn well_known_container_types_trait_method() {
+        let analyzer = RustAnalyzer::new();
+        let containers = CoreLanguageParser::well_known_container_types(&analyzer);
+        assert!(
+            containers.contains(&"Arc"),
+            "should include Arc in well-known containers"
+        );
+        assert!(
+            containers.contains(&"Box"),
+            "should include Box in well-known containers"
+        );
+        assert!(
+            containers.contains(&"Result"),
+            "should include Result in well-known containers"
+        );
     }
 }

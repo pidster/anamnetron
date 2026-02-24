@@ -28,14 +28,20 @@ export function buildHierarchy(graph: CytoscapeGraph): HierarchyNode<TreeNode> {
 
   // First pass: create TreeNode entries
   for (const n of graph.elements.nodes) {
+    const d = n.data as unknown as Record<string, unknown>;
+    // Merge _childCount from collapsed nodes into metadata so getMetric can access it
+    let metadata = n.data.metadata;
+    if (typeof d._childCount === "number") {
+      metadata = { ...metadata, _childCount: d._childCount };
+    }
     const treeNode: TreeNode = {
       id: n.data.id,
-      label: n.data.label,
+      label: (d._displayLabel as string) ?? n.data.label,
       kind: n.data.kind,
       sub_kind: n.data.sub_kind,
       canonical_path: n.data.canonical_path,
       language: n.data.language,
-      metadata: n.data.metadata,
+      metadata,
       children: [],
     };
     nodeMap.set(n.data.id, treeNode);
@@ -92,7 +98,11 @@ export function sumByMetric(
   return root.sum((d) => {
     if (d.children.length > 0) return 0;
     if (metric === "count") return 1;
-    return getMetric(d, metric) || 1;
+    const val = getMetric(d, metric);
+    if (val > 0) return val;
+    // Collapsed nodes may lack the metric; use _childCount as proportional fallback
+    const childCount = getMetric(d, "_childCount");
+    return childCount > 0 ? childCount : 1;
   });
 }
 
