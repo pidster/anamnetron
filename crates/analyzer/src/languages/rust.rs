@@ -1063,17 +1063,35 @@ fn resolve_impl_type_qn(
     // Strip `dyn ` prefix — trait object qualifier, not part of type identity.
     let type_name = type_name.strip_prefix("dyn ").unwrap_or(type_name);
     if type_name.contains("::") {
-        // Already scoped (e.g., `other_crate::Type`) — keep as-is.
-        Some(type_name.to_string())
+        // Already scoped — normalize `crate::` to actual crate name.
+        Some(normalize_crate_prefix(type_name, module_context))
     } else if local_types.contains(type_name) {
         // Local definition shadows any use-alias with the same name.
         let module_qn = build_qualified_name(module_context);
         Some(format!("{module_qn}::{type_name}"))
     } else if let Some(resolved) = use_aliases.get(type_name) {
-        Some(resolved.clone())
+        // Normalize `crate::` prefix from use-aliases to actual crate name.
+        Some(normalize_crate_prefix(resolved, module_context))
     } else {
         let module_qn = build_qualified_name(module_context);
         Some(format!("{module_qn}::{type_name}"))
+    }
+}
+
+/// Normalize `crate::` prefix in a qualified path to the actual crate name.
+///
+/// In Rust, `use crate::foo::Bar` produces a path `crate::foo::Bar` where
+/// `crate` is a keyword, not the actual crate name. This replaces it with
+/// the first element of the module context (the real crate name).
+fn normalize_crate_prefix(path: &str, module_context: &[String]) -> String {
+    if let Some(rest) = path.strip_prefix("crate::") {
+        let crate_name = module_context
+            .first()
+            .map(|s| s.as_str())
+            .unwrap_or("crate");
+        format!("{crate_name}::{rest}")
+    } else {
+        path.to_string()
     }
 }
 
@@ -3212,6 +3230,38 @@ mod tests {
             meta["trait"].as_str(),
             Some("TryFrom"),
             "method should record the trait name"
+        );
+    }
+
+    #[test]
+    fn cross_crate_from_impl_with_crate_prefix_import() {
+        // Source type imported via `use crate::` path — the `crate::` prefix
+        // must be normalized to the actual crate name for cross-crate detection.
+        let result = parse_source(
+            "my_crate",
+            r#"
+            use other::Foreign;
+            use crate::errors::Local;
+            impl From<Local> for Foreign {
+                fn from(val: Local) -> Self { todo!() }
+            }
+        "#,
+        );
+        let method = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name.ends_with("from") && i.sub_kind == "function")
+            .expect("should find method from");
+        assert_eq!(
+            method.parent_qualified_name,
+            Some("my_crate::errors::Local".to_string()),
+            "cross-crate From impl with crate:: import should reparent under the local source type"
+        );
+        let meta = method.metadata.as_ref().expect("should have metadata");
+        assert_eq!(
+            meta["impl_for"].as_str(),
+            Some("other::Foreign"),
+            "method should record the foreign target type"
         );
     }
 
