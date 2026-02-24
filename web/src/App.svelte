@@ -15,6 +15,7 @@
   import NavigationPanel from "./components/NavigationPanel.svelte";
   import Breadcrumb from "./components/Breadcrumb.svelte";
   import { filterStore } from "./stores/filter.svelte";
+  import { filterGraph } from "./lib/filter-logic";
   import { navigationStore } from "./stores/navigation.svelte";
   import { expansionStore } from "./stores/expansion.svelte";
   import { scopeStore } from "./stores/scope.svelte";
@@ -98,12 +99,26 @@
     return computeVisibleElements(scopedGraph, expansionStore.expandedNodes, scopedTraversalIndex);
   });
 
+  // Apply filter store to the visible graph for non-GraphView visualisations
+  let filteredVisibleGraph = $derived.by(() => {
+    if (!visibleGraph) return visibleGraph;
+    if (!filterStore.hasActiveFilters) return visibleGraph;
+    return filterGraph(
+      visibleGraph,
+      filterStore.nodeKinds,
+      filterStore.edgeKinds,
+      filterStore.subKinds,
+      filterStore.languages,
+      filterStore.testVisibility,
+    );
+  });
+
   /** Select a node: expand ancestors so it's visible, then select it. */
   function selectNode(nodeId: string) {
     if (fullTraversalIndex) {
       expansionStore.expandAncestors(nodeId, fullTraversalIndex);
     }
-    selectionStore.selectedNodeId = nodeId;
+    selectionStore.selectSingle(nodeId);
     selectionStore.panelOpen = true;
   }
 
@@ -601,7 +616,7 @@
         {#if viewStore.mode === "mermaid"}
           <ErrorBoundary name="Mermaid View">
             <MermaidView
-              graph={visibleGraph}
+              graph={filteredVisibleGraph}
               {theme}
               totalNodeCount={scopedGraph?.elements.nodes.length ?? 0}
               currentDepth={expansionStore.currentDepth}
@@ -629,15 +644,15 @@
           </ErrorBoundary>
         {:else if viewStore.mode === "treemap"}
           <ErrorBoundary name="Treemap View">
-            <TreemapView graph={scopedGraph} />
+            <TreemapView graph={filteredVisibleGraph} />
           </ErrorBoundary>
         {:else if viewStore.mode === "chord"}
           <ErrorBoundary name="Chord View">
-            <ChordView graph={scopedGraph} />
+            <ChordView graph={filteredVisibleGraph} />
           </ErrorBoundary>
         {:else if viewStore.mode === "sunburst"}
           <ErrorBoundary name="Sunburst View">
-            <SunburstView graph={scopedGraph} />
+            <SunburstView graph={filteredVisibleGraph} />
           </ErrorBoundary>
         {/if}
       {:else}

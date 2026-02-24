@@ -73,11 +73,11 @@
       // C4 diagram theming: Mermaid applies cScale colors to C4 component fills.
       // personBkg is used for the person-man class (which renders Component boxes).
       themeVariables: isDark ? {
-        personBkg: "#1e4976",
-        personBorder: "#53a8b6",
+        personBkg: "#2a2a2a",
+        personBorder: "#5b9bd5",
       } : {
-        personBkg: "#3a7ca5",
-        personBorder: "#2d6a88",
+        personBkg: "#e3f2fd",
+        personBorder: "#1976d2",
       },
     });
 
@@ -106,29 +106,29 @@
 
   /** Patch inline SVG attributes for C4 diagrams in dark mode. */
   function patchC4DarkTheme(container: HTMLDivElement) {
-    // Component boxes: lighten fill, teal border
+    // Component boxes: neutral dark fill, accent border
     container.querySelectorAll(".person-man rect").forEach((rect) => {
-      rect.setAttribute("fill", "#1e4976");
-      rect.setAttribute("stroke", "#53a8b6");
+      rect.setAttribute("fill", "#2a2a2a");
+      rect.setAttribute("stroke", "#5b9bd5");
     });
-    // Component text: ensure white
+    // Component text: ensure readable
     container.querySelectorAll(".person-man text").forEach((text) => {
-      text.setAttribute("fill", "#e0e0e0");
+      text.setAttribute("fill", "#e8e8e8");
     });
-    // Boundary rects: invisible #444444 → visible teal
+    // Boundary rects: invisible #444444 → visible accent
     container.querySelectorAll('rect[stroke="#444444"]').forEach((rect) => {
-      rect.setAttribute("stroke", "#53a8b6");
+      rect.setAttribute("stroke", "#5b9bd5");
     });
     // Boundary labels: dark grey → muted light
     container.querySelectorAll('text[fill="#444444"]').forEach((text) => {
-      text.setAttribute("fill", "#8899aa");
+      text.setAttribute("fill", "#999999");
     });
     // Relationship lines
     container.querySelectorAll('line[stroke="#444444"]').forEach((line) => {
-      line.setAttribute("stroke", "#8899aa");
+      line.setAttribute("stroke", "#999999");
     });
     container.querySelectorAll('path[stroke="#444444"]').forEach((path) => {
-      path.setAttribute("stroke", "#8899aa");
+      path.setAttribute("stroke", "#999999");
     });
   }
 

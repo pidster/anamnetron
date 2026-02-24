@@ -14,6 +14,19 @@
 
   <div class="filter-sections">
     <section class="filter-section">
+      <h4>Scope</h4>
+      <div class="scope-buttons">
+        {#each ["all", "code", "tests"] as mode}
+          <button
+            class="scope-btn"
+            class:scope-btn-active={filterStore.testVisibility === mode}
+            onclick={() => filterStore.setTestVisibility(mode as "all" | "code" | "tests")}
+          >{mode === "all" ? "All" : mode === "code" ? "Code" : "Tests"}</button>
+        {/each}
+      </div>
+    </section>
+
+    <section class="filter-section">
       <h4>Node Kind</h4>
       {#each NODE_KINDS as kind}
         <label class="filter-item">
@@ -137,5 +150,42 @@
   .filter-item input[type="checkbox"] {
     margin: 0;
     accent-color: var(--accent);
+  }
+
+  .scope-buttons {
+    display: flex;
+    gap: 0;
+  }
+
+  .scope-btn {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    font-size: 0.8rem;
+    padding: 0.2rem 0.5rem;
+    cursor: pointer;
+    border-radius: 0;
+  }
+
+  .scope-btn:first-child {
+    border-radius: 3px 0 0 3px;
+  }
+
+  .scope-btn:last-child {
+    border-radius: 0 3px 3px 0;
+  }
+
+  .scope-btn + .scope-btn {
+    border-left: none;
+  }
+
+  .scope-btn-active {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+  }
+
+  .scope-btn-active + .scope-btn {
+    border-left: 1px solid var(--border);
   }
 </style>

@@ -5,7 +5,7 @@
   import { scaleOrdinal, scaleSequential } from "d3-scale";
   import { schemeTableau10, interpolateRdYlGn, interpolateBlues } from "d3-scale-chromatic";
   import type { CytoscapeGraph } from "../lib/types";
-  import { buildHierarchy, getMetric, type TreeNode } from "../lib/hierarchy";
+  import { buildHierarchy, sumByMetric, getMetric, type TreeNode } from "../lib/hierarchy";
   import { scopeStore } from "../stores/scope.svelte";
   import { selectionStore } from "../stores/selection.svelte";
 
@@ -112,10 +112,7 @@
   let arcs = $derived.by((): HierarchyRectangularNode<TreeNode>[] => {
     if (!drillRoot || radius <= 0) return [];
 
-    const root = drillRoot.copy().sum((d) => {
-      if (d.children.length > 0) return 0;
-      return getMetric(d, "loc") || 1;
-    });
+    const root = sumByMetric(drillRoot.copy(), "loc");
 
     const layout = partition<TreeNode>().size([2 * Math.PI, radius]);
 
@@ -379,6 +376,41 @@
     {/if}
   </div>
 
+  {#if arcs.length > 0}
+    <div class="sunburst-legend">
+      {#if colourMode === "language"}
+        {#each languageSet as lang}
+          <div class="legend-item">
+            <span class="legend-swatch" style="background-color: {languageScale(lang)}"></span>
+            <span class="legend-name">{lang}</span>
+          </div>
+        {/each}
+        {#if languageSet.length === 0}
+          <span class="legend-note">No languages</span>
+        {/if}
+      {:else if colourMode === "kind"}
+        {#each ["system", "service", "component", "unit"] as k}
+          <div class="legend-item">
+            <span class="legend-swatch" style="background-color: {kindScale(k)}"></span>
+            <span class="legend-name">{k}</span>
+          </div>
+        {/each}
+      {:else if colourMode === "depth"}
+        <div class="legend-gradient-row">
+          <span class="legend-gradient-label">Shallow</span>
+          <div class="legend-gradient depth-gradient"></div>
+          <span class="legend-gradient-label">Deep</span>
+        </div>
+      {:else if colourMode === "fan-out"}
+        <div class="legend-gradient-row">
+          <span class="legend-gradient-label">Low</span>
+          <div class="legend-gradient fanout-gradient"></div>
+          <span class="legend-gradient-label">High</span>
+        </div>
+      {/if}
+    </div>
+  {/if}
+
   {#if tooltip.visible && tooltip.node}
     <div
       class="sunburst-tooltip"
@@ -401,6 +433,12 @@
         <span class="tooltip-key">Fan-out</span>
         <span>{getMetric(tooltip.node, "fan_out")}</span>
       </div>
+      {#if getMetric(tooltip.node, "_childCount") > 0}
+        <div class="tooltip-row">
+          <span class="tooltip-key">Contains</span>
+          <span>{getMetric(tooltip.node, "_childCount")} collapsed nodes</span>
+        </div>
+      {/if}
       {#if tooltip.node.language}
         <div class="tooltip-row">
           <span class="tooltip-key">Language</span>
@@ -543,6 +581,72 @@
     fill: #fff;
     pointer-events: none;
     text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+  }
+
+  .sunburst-legend {
+    position: absolute;
+    bottom: 8px;
+    right: 8px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.4rem 0.5rem;
+    font-size: 0.7rem;
+    max-height: 200px;
+    overflow-y: auto;
+    opacity: 0.9;
+    z-index: 5;
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.1rem 0;
+  }
+
+  .legend-swatch {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+
+  .legend-name {
+    color: var(--text);
+    white-space: nowrap;
+    text-transform: capitalize;
+  }
+
+  .legend-note {
+    color: var(--text-muted);
+    font-style: italic;
+  }
+
+  .legend-gradient-row {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+
+  .legend-gradient {
+    width: 60px;
+    height: 10px;
+    border-radius: 2px;
+  }
+
+  .legend-gradient.depth-gradient {
+    background: linear-gradient(to right, #deebf7, #9ecae1, #4292c6, #2171b5, #084594);
+  }
+
+  .legend-gradient.fanout-gradient {
+    background: linear-gradient(to right, #1a9850, #91cf60, #d9ef8b, #fee08b, #fc8d59, #d73027);
+  }
+
+  .legend-gradient-label {
+    color: var(--text-muted);
+    font-size: 0.65rem;
   }
 
   .sunburst-tooltip {

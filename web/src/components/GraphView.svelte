@@ -70,15 +70,15 @@
   }
 
   function buildStyleSheet(): cytoscape.StylesheetStyle[] {
-    const accent = getCssVar("--accent") || "#53a8b6";
-    const muted = getCssVar("--muted") || "#607d8b";
+    const accent = getCssVar("--accent") || "#5b9bd5";
+    const muted = getCssVar("--muted") || "#757575";
     const pass = getCssVar("--pass") || "#4caf50";
     const fail = getCssVar("--fail") || "#f44336";
     const warn = getCssVar("--warn") || "#ff9800";
     const text = getCssVar("--text") || "#e0e0e0";
     const isDark = theme === "dark";
-    const parentBg = isDark ? "#16213e" : "#e8eef3";
-    const parentBorder = isDark ? "#0f3460" : "#b0c4d8";
+    const parentBg = isDark ? "#2a2a2a" : "#f0f0f0";
+    const parentBorder = isDark ? "#3a3a3a" : "#d0d0d0";
     const selectedBorder = isDark ? "#fff" : "#000";
 
     const styles: cytoscape.StylesheetStyle[] = [
@@ -189,7 +189,7 @@
         width: 4,
         label: "data(_count)",
         "font-size": "10px",
-        "text-background-color": isDark ? "#132f4c" : "#ffffff",
+        "text-background-color": isDark ? "#252525" : "#fafafa",
         "text-background-opacity": 0.8,
         "text-background-padding": "2px",
         color: text,

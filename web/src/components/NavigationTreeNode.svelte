@@ -30,14 +30,19 @@
   let children = $derived(traversalIndex.childrenMap.get(nodeId) ?? []);
   let hasChildren = $derived(children.length > 0);
   let isExpanded = $derived(expandedTreeNodes.has(nodeId));
-  let isSelected = $derived(selectionStore.selectedNodeId === nodeId);
+  let isSelected = $derived(selectionStore.selectedNodeIds.has(nodeId));
   let isPhantom = $derived(phantomIds.has(nodeId));
   let label = $derived(labelMap.get(nodeId) ?? nodeId);
 
   function handleClick(e: MouseEvent) {
     e.stopPropagation();
+    if (e.ctrlKey || e.metaKey) {
+      selectionStore.toggleNode(nodeId);
+    } else {
+      selectionStore.selectSingle(nodeId);
+      onscopenode?.(nodeId);
+    }
     onselectnode?.(nodeId);
-    onscopenode?.(nodeId);
   }
 
   function handleChevronClick(e: MouseEvent) {

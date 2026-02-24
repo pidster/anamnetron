@@ -297,6 +297,17 @@
     </svg>
   {/if}
 
+  {#if matrix.names.length > 0}
+    <div class="chord-legend">
+      {#each matrix.names as name, i}
+        <div class="legend-item">
+          <span class="legend-swatch" style="background-color: {matrix.colors[i]}"></span>
+          <span class="legend-name">{name}</span>
+        </div>
+      {/each}
+    </div>
+  {/if}
+
   {#if tooltipVisible}
     <div
       class="chord-tooltip"
@@ -384,7 +395,7 @@
   }
 
   .chord-arc.chord-selected {
-    stroke: var(--accent, #53a8b6);
+    stroke: var(--accent, #5b9bd5);
     stroke-width: 3;
     fill-opacity: 1;
   }
@@ -402,7 +413,42 @@
 
   .chord-label-selected {
     font-weight: bold;
-    fill: var(--accent, #53a8b6);
+    fill: var(--accent, #5b9bd5);
+  }
+
+  .chord-legend {
+    position: absolute;
+    bottom: 8px;
+    left: 8px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.4rem 0.5rem;
+    font-size: 0.7rem;
+    max-height: 200px;
+    overflow-y: auto;
+    opacity: 0.9;
+    z-index: 5;
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.1rem 0;
+  }
+
+  .legend-swatch {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+
+  .legend-name {
+    color: var(--text);
+    white-space: nowrap;
   }
 
   .chord-tooltip {

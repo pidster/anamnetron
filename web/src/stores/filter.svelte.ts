@@ -12,6 +12,7 @@ class FilterStore {
   languages = $state<Set<string>>(new Set());
   availableSubKinds = $state<string[]>([]);
   availableLanguages = $state<string[]>([]);
+  testVisibility = $state<"all" | "code" | "tests">("all");
   sidebarOpen = $state(false);
 
   /** Toggle a node kind filter. */
@@ -34,6 +35,11 @@ class FilterStore {
     this.languages = toggleInSet(this.languages, lang);
   }
 
+  /** Set test visibility mode. */
+  setTestVisibility(mode: "all" | "code" | "tests") {
+    this.testVisibility = mode;
+  }
+
   /** Populate available values from graph nodes and enable all by default. */
   populateFromGraph(nodes: Array<{ data: CyNodeData }>) {
     this.availableSubKinds = extractSubKinds(nodes);
@@ -50,6 +56,7 @@ class FilterStore {
     this.edgeKinds = new Set(ALL_EDGE_KINDS);
     this.subKinds = new Set(this.availableSubKinds);
     this.languages = new Set(this.availableLanguages);
+    this.testVisibility = "all";
   }
 
   /** Whether any filters are actively reducing the view. */
@@ -63,6 +70,7 @@ class FilterStore {
       allEdgeKinds: ALL_EDGE_KINDS.length,
       allSubKinds: this.availableSubKinds.length,
       allLanguages: this.availableLanguages.length,
+      testVisibility: this.testVisibility,
     });
   }
 }

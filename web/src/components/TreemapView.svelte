@@ -393,6 +393,12 @@
         <span class="tooltip-key">Fan-out</span>
         <span>{getMetric(tooltip.node, "fan_out")}</span>
       </div>
+      {#if getMetric(tooltip.node, "_childCount") > 0}
+        <div class="tooltip-row">
+          <span class="tooltip-key">Contains</span>
+          <span>{getMetric(tooltip.node, "_childCount")} collapsed nodes</span>
+        </div>
+      {/if}
       {#if tooltip.node.language}
         <div class="tooltip-row">
           <span class="tooltip-key">Language</span>
@@ -524,8 +530,8 @@
   }
 
   .treemap-cell-selected {
-    border: 2px solid var(--accent, #53a8b6);
-    box-shadow: 0 0 0 2px var(--accent, #53a8b6);
+    border: 2px solid var(--accent, #5b9bd5);
+    box-shadow: 0 0 0 2px var(--accent, #5b9bd5);
     z-index: 3;
   }
 
