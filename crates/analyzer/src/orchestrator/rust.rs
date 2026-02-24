@@ -11,7 +11,7 @@ use svt_core::model::{EdgeKind, NodeKind};
 
 use crate::discovery::discover_project;
 use crate::languages::rust::RustAnalyzer;
-use crate::languages::{LanguageAnalyzer, ParseResult};
+use crate::languages::ParseResult;
 use crate::types::{AnalysisItem, AnalysisRelation};
 
 use super::{LanguageOrchestrator, LanguageUnit};
@@ -116,7 +116,8 @@ impl LanguageOrchestrator for RustOrchestrator {
 
     fn analyze(&self, unit: &LanguageUnit) -> ParseResult {
         let file_refs: Vec<&Path> = unit.source_files.iter().map(|p| p.as_path()).collect();
-        self.analyzer.analyze_crate(&unit.name, &file_refs)
+        self.analyzer
+            .analyze_crate_with_root(&unit.name, &file_refs, &unit.source_root)
     }
 
     fn post_process(&self, unit: &LanguageUnit, result: &mut ParseResult) {

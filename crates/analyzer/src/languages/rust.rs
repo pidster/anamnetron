@@ -63,6 +63,9 @@ struct FileParseState<'a> {
     use_aliases: HashMap<String, String>,
     local_types: HashSet<String>,
     well_known_containers: &'a [&'a str],
+    /// Qualified names of modules already emitted (by explicit `mod` declarations
+    /// or by file-path inference). Shared across all files in a crate to deduplicate.
+    emitted_modules: &'a mut HashSet<String>,
 }
 
 /// Rust source code analyzer using tree-sitter-rust.
@@ -106,6 +109,7 @@ impl LanguageAnalyzer for RustAnalyzer {
 
     fn analyze_crate(&self, crate_name: &str, files: &[&Path]) -> ParseResult {
         let mut result = ParseResult::default();
+        let mut emitted_modules = HashSet::new();
 
         let mut parser = tree_sitter::Parser::new();
         if parser
@@ -127,6 +131,8 @@ impl LanguageAnalyzer for RustAnalyzer {
                         crate_name,
                         file,
                         &source,
+                        None,
+                        &mut emitted_modules,
                         &mut result.items,
                         &mut result.relations,
                         &mut result.warnings,
@@ -145,12 +151,155 @@ impl LanguageAnalyzer for RustAnalyzer {
     }
 }
 
+impl RustAnalyzer {
+    /// Analyze a crate with an explicit source root, inferring module context
+    /// from file paths relative to the source root.
+    ///
+    /// Unlike [`analyze_crate()`](LanguageAnalyzer::analyze_crate), this method
+    /// infers module nesting from file paths (e.g., `src/protocol/record.rs`
+    /// yields module context `[crate, "protocol", "record"]`) and emits
+    /// synthetic module items for inferred intermediate segments.
+    pub fn analyze_crate_with_root(
+        &self,
+        crate_name: &str,
+        files: &[&Path],
+        source_root: &Path,
+    ) -> ParseResult {
+        let mut result = ParseResult::default();
+        let mut emitted_modules = HashSet::new();
+
+        let mut parser = tree_sitter::Parser::new();
+        if parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .is_err()
+        {
+            result.warnings.push(AnalysisWarning {
+                source_ref: String::new(),
+                message: "failed to load tree-sitter-rust grammar".to_string(),
+            });
+            return result;
+        }
+
+        for file in files {
+            match std::fs::read_to_string(file) {
+                Ok(source) => {
+                    parse_file(
+                        &mut parser,
+                        crate_name,
+                        file,
+                        &source,
+                        Some(source_root),
+                        &mut emitted_modules,
+                        &mut result.items,
+                        &mut result.relations,
+                        &mut result.warnings,
+                    );
+                }
+                Err(err) => {
+                    result.warnings.push(AnalysisWarning {
+                        source_ref: file.display().to_string(),
+                        message: format!("failed to read file: {err}"),
+                    });
+                }
+            }
+        }
+
+        result
+    }
+}
+
+/// Infer module context from a file's path relative to the source root.
+///
+/// - `src/lib.rs` / `src/main.rs` → `[crate_name]`
+/// - `src/foo.rs` → `[crate_name, "foo"]`
+/// - `src/foo/mod.rs` → `[crate_name, "foo"]`
+/// - `src/foo/bar.rs` → `[crate_name, "foo", "bar"]`
+///
+/// Falls back to `[crate_name]` if the path cannot be made relative to
+/// source_root or has no meaningful segments.
+fn infer_module_context(file_path: &Path, source_root: &Path, crate_name: &str) -> Vec<String> {
+    let mut context = vec![crate_name.to_string()];
+
+    let relative = match file_path.strip_prefix(source_root) {
+        Ok(r) => r,
+        Err(_) => return context,
+    };
+
+    // Collect path components, stripping the .rs extension from the final one.
+    let components: Vec<&str> = relative.iter().map(|c| c.to_str().unwrap_or("")).collect();
+
+    if components.is_empty() {
+        return context;
+    }
+
+    for (i, component) in components.iter().enumerate() {
+        let is_last = i == components.len() - 1;
+        if is_last {
+            // Strip .rs extension from the final component.
+            let stem = component.strip_suffix(".rs").unwrap_or(component);
+            // Skip lib.rs, main.rs, and mod.rs — they don't add a segment.
+            if stem == "lib" || stem == "main" || stem == "mod" {
+                continue;
+            }
+            context.push(stem.to_string());
+        } else {
+            // Intermediate directory — always contributes a module segment.
+            context.push((*component).to_string());
+        }
+    }
+
+    context
+}
+
+/// Emit synthetic module items for inferred intermediate module segments.
+///
+/// For context `[crate, "protocol", "record"]`, emits module items for
+/// `crate::protocol` and `crate::protocol::record`, skipping any that
+/// have already been emitted (either by explicit `mod` declarations or
+/// by previous file-path inferences).
+fn emit_inferred_module_items(
+    module_context: &[String],
+    crate_name: &str,
+    file_path: &Path,
+    emitted_modules: &mut HashSet<String>,
+    items: &mut Vec<AnalysisItem>,
+) {
+    // The first element is the crate name — inferred segments start at index 1.
+    for depth in 1..module_context.len() {
+        let qualified_name = module_context[..=depth].join("::");
+        if emitted_modules.contains(&qualified_name) {
+            continue;
+        }
+        emitted_modules.insert(qualified_name.clone());
+
+        let parent_qn = if depth == 1 {
+            crate_name.to_string()
+        } else {
+            module_context[..depth].join("::")
+        };
+
+        items.push(AnalysisItem {
+            qualified_name,
+            kind: NodeKind::Component,
+            sub_kind: "module".to_string(),
+            parent_qualified_name: Some(parent_qn),
+            source_ref: file_path.display().to_string(),
+            language: "rust".to_string(),
+            metadata: None,
+            tags: vec![],
+        });
+    }
+}
+
 /// Parse a single Rust source file and extract structural items and relationships.
+#[allow(clippy::too_many_arguments)]
 fn parse_file(
     parser: &mut tree_sitter::Parser,
     crate_name: &str,
     file_path: &Path,
     source: &str,
+    source_root: Option<&Path>,
+    emitted_modules: &mut HashSet<String>,
     items: &mut Vec<AnalysisItem>,
     relations: &mut Vec<AnalysisRelation>,
     warnings: &mut Vec<AnalysisWarning>,
@@ -164,7 +313,19 @@ fn parse_file(
     };
 
     let root = tree.root_node();
-    let module_context = vec![crate_name.to_string()];
+    let module_context = match source_root {
+        Some(sr) => infer_module_context(file_path, sr, crate_name),
+        None => vec![crate_name.to_string()],
+    };
+
+    // Emit synthetic module items for inferred intermediate segments.
+    emit_inferred_module_items(
+        &module_context,
+        crate_name,
+        file_path,
+        emitted_modules,
+        items,
+    );
 
     let mut state = FileParseState {
         source: source.as_bytes(),
@@ -177,6 +338,7 @@ fn parse_file(
         use_aliases: HashMap::new(),
         local_types: HashSet::new(),
         well_known_containers: RUST_WELL_KNOWN_CONTAINERS,
+        emitted_modules,
     };
 
     visit_children(root, &mut state, &module_context, None, false);
@@ -437,16 +599,21 @@ fn visit_mod_item(
     let source_ref = format!("{}:{line}", state.file_path.display());
     let loc = node.end_position().row - node.start_position().row + 1;
 
-    state.items.push(AnalysisItem {
-        qualified_name: qualified_name.clone(),
-        kind: NodeKind::Component,
-        sub_kind: "module".to_string(),
-        parent_qualified_name: Some(parent_qualified_name),
-        source_ref,
-        language: "rust".to_string(),
-        metadata: Some(serde_json::json!({"loc": loc})),
-        tags,
-    });
+    // Only emit the module item if it wasn't already emitted by file-path inference.
+    if !state.emitted_modules.contains(&qualified_name) {
+        state.items.push(AnalysisItem {
+            qualified_name: qualified_name.clone(),
+            kind: NodeKind::Component,
+            sub_kind: "module".to_string(),
+            parent_qualified_name: Some(parent_qualified_name),
+            source_ref,
+            language: "rust".to_string(),
+            metadata: Some(serde_json::json!({"loc": loc})),
+            tags,
+        });
+    }
+    // Record the module as emitted so file-path inference won't duplicate it.
+    state.emitted_modules.insert(qualified_name.clone());
 
     // If the module has a body (inline module), descend into its declarations.
     if let Some(body) = node.child_by_field_name("body") {
@@ -3293,6 +3460,181 @@ mod tests {
         assert!(
             !has_impl_for,
             "same-crate impl should not have impl_for metadata"
+        );
+    }
+
+    // --- infer_module_context tests ---
+
+    #[test]
+    fn infer_module_context_lib_rs() {
+        let ctx = infer_module_context(
+            Path::new("/project/src/lib.rs"),
+            Path::new("/project/src"),
+            "my_crate",
+        );
+        assert_eq!(ctx, vec!["my_crate"]);
+    }
+
+    #[test]
+    fn infer_module_context_main_rs() {
+        let ctx = infer_module_context(
+            Path::new("/project/src/main.rs"),
+            Path::new("/project/src"),
+            "my_crate",
+        );
+        assert_eq!(ctx, vec!["my_crate"]);
+    }
+
+    #[test]
+    fn infer_module_context_submodule_file() {
+        let ctx = infer_module_context(
+            Path::new("/project/src/foo.rs"),
+            Path::new("/project/src"),
+            "my_crate",
+        );
+        assert_eq!(ctx, vec!["my_crate", "foo"]);
+    }
+
+    #[test]
+    fn infer_module_context_mod_rs() {
+        let ctx = infer_module_context(
+            Path::new("/project/src/foo/mod.rs"),
+            Path::new("/project/src"),
+            "my_crate",
+        );
+        assert_eq!(ctx, vec!["my_crate", "foo"]);
+    }
+
+    #[test]
+    fn infer_module_context_nested() {
+        let ctx = infer_module_context(
+            Path::new("/project/src/protocol/record.rs"),
+            Path::new("/project/src"),
+            "my_crate",
+        );
+        assert_eq!(ctx, vec!["my_crate", "protocol", "record"]);
+    }
+
+    #[test]
+    fn infer_module_context_deeply_nested() {
+        let ctx = infer_module_context(
+            Path::new("/project/src/a/b/c.rs"),
+            Path::new("/project/src"),
+            "my_crate",
+        );
+        assert_eq!(ctx, vec!["my_crate", "a", "b", "c"]);
+    }
+
+    #[test]
+    fn infer_module_context_fallback_when_not_under_source_root() {
+        let ctx = infer_module_context(
+            Path::new("/other/path/foo.rs"),
+            Path::new("/project/src"),
+            "my_crate",
+        );
+        assert_eq!(ctx, vec!["my_crate"]);
+    }
+
+    // --- file-based module inference integration tests ---
+
+    #[test]
+    fn file_based_module_items_have_correct_parent() {
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(src.join("protocol")).unwrap();
+        std::fs::write(src.join("lib.rs"), "pub mod protocol;\n").unwrap();
+        std::fs::write(
+            src.join("protocol/mod.rs"),
+            "pub mod record;\npub struct Handler;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("protocol/record.rs"),
+            "pub struct Record { pub id: u32 }\n",
+        )
+        .unwrap();
+
+        let analyzer = RustAnalyzer::new();
+        let files = [
+            src.join("lib.rs"),
+            src.join("protocol/mod.rs"),
+            src.join("protocol/record.rs"),
+        ];
+        let file_refs: Vec<&Path> = files.iter().map(|p| p.as_path()).collect();
+        let result = analyzer.analyze_crate_with_root("my_crate", &file_refs, &src);
+
+        // The Record struct should be parented under my_crate::protocol::record.
+        let record = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name == "my_crate::protocol::record::Record")
+            .expect("should find Record struct");
+        assert_eq!(
+            record.parent_qualified_name,
+            Some("my_crate::protocol::record".to_string()),
+            "Record should be parented under the inferred module"
+        );
+
+        // The Handler struct should be parented under my_crate::protocol.
+        let handler = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name == "my_crate::protocol::Handler")
+            .expect("should find Handler struct");
+        assert_eq!(
+            handler.parent_qualified_name,
+            Some("my_crate::protocol".to_string()),
+            "Handler should be parented under the inferred module"
+        );
+
+        // There should be module items for protocol and protocol::record.
+        let protocol_mod = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name == "my_crate::protocol" && i.sub_kind == "module");
+        assert!(
+            protocol_mod.is_some(),
+            "should have module item for my_crate::protocol"
+        );
+        let record_mod = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name == "my_crate::protocol::record" && i.sub_kind == "module");
+        assert!(
+            record_mod.is_some(),
+            "should have module item for my_crate::protocol::record"
+        );
+    }
+
+    #[test]
+    fn inferred_modules_do_not_duplicate_declared_modules() {
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(src.join("protocol")).unwrap();
+        // lib.rs declares `mod protocol;` which would also be inferred from the path.
+        std::fs::write(src.join("lib.rs"), "pub mod protocol;\n").unwrap();
+        std::fs::write(src.join("protocol/mod.rs"), "pub struct Handler;\n").unwrap();
+
+        let analyzer = RustAnalyzer::new();
+        let files = [src.join("lib.rs"), src.join("protocol/mod.rs")];
+        let file_refs: Vec<&Path> = files.iter().map(|p| p.as_path()).collect();
+        let result = analyzer.analyze_crate_with_root("my_crate", &file_refs, &src);
+
+        // Count how many times my_crate::protocol appears as a module.
+        let protocol_modules: Vec<_> = result
+            .items
+            .iter()
+            .filter(|i| i.qualified_name == "my_crate::protocol" && i.sub_kind == "module")
+            .collect();
+        assert_eq!(
+            protocol_modules.len(),
+            1,
+            "my_crate::protocol should appear exactly once, got: {:?}",
+            protocol_modules
         );
     }
 }
