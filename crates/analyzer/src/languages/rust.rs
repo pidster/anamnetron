@@ -4,7 +4,7 @@
 //! and relationships (use dependencies, trait implementations, function calls)
 //! from Rust source files using tree-sitter parsing.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use svt_core::analysis::LanguageParser as CoreLanguageParser;
@@ -61,6 +61,7 @@ struct FileParseState<'a> {
     unresolved_method_calls: usize,
     resolved_method_calls: usize,
     use_aliases: HashMap<String, String>,
+    local_types: HashSet<String>,
     well_known_containers: &'a [&'a str],
 }
 
@@ -174,6 +175,7 @@ fn parse_file(
         unresolved_method_calls: 0,
         resolved_method_calls: 0,
         use_aliases: HashMap::new(),
+        local_types: HashSet::new(),
         well_known_containers: RUST_WELL_KNOWN_CONTAINERS,
     };
 
@@ -338,6 +340,9 @@ fn extract_named_item(
         return;
     };
 
+    // Register the type name so local definitions shadow use-aliases.
+    state.local_types.insert(name.clone());
+
     let parent_qualified_name = build_qualified_name(module_context);
     let qualified_name = format!("{parent_qualified_name}::{name}");
     let line = node.start_position().row + 1;
@@ -448,11 +453,13 @@ fn visit_mod_item(
         let mut child_context = module_context.to_vec();
         child_context.push(name);
 
-        // Scope use_aliases: inner module gets a fresh alias map; outer
-        // aliases are restored when we return from the module body.
+        // Scope use_aliases and local_types: inner module gets fresh maps;
+        // outer values are restored when we return from the module body.
         let parent_aliases = std::mem::take(&mut state.use_aliases);
+        let parent_local_types = std::mem::take(&mut state.local_types);
         visit_children(body, state, &child_context, None, mod_is_test);
         state.use_aliases = parent_aliases;
+        state.local_types = parent_local_types;
     }
 }
 
@@ -476,14 +483,48 @@ fn visit_impl_item(
     let type_params = impl_type_param_names(node, state.source);
 
     // Resolve the impl target type, potentially unwrapping well-known containers.
-    let (impl_type_qn, wrapper_type) = resolve_impl_target(
+    let (mut impl_type_qn, wrapper_type, is_dyn) = resolve_impl_target(
         type_node,
         state.source,
         &type_params,
         module_context,
         &state.use_aliases,
+        &state.local_types,
         state.well_known_containers,
     );
+
+    // Detect cross-crate impl: if the resolved type belongs to a different crate,
+    // try to reparent under the local source type from the trait's type argument.
+    let mut foreign_target: Option<String> = None;
+    let mut trait_name_for_meta: Option<String> = None;
+    if let Some(ref qn) = impl_type_qn {
+        let current_crate = module_context.first().map(|s| s.as_str()).unwrap_or("");
+        let target_crate = qn.split("::").next().unwrap_or("");
+        if !current_crate.is_empty() && current_crate != target_crate {
+            // Foreign type — try to extract local source type from trait args.
+            if let Some(trait_n) = trait_node {
+                if let Some(local_source) = extract_trait_source_type(
+                    trait_n,
+                    state.source,
+                    &type_params,
+                    module_context,
+                    &state.use_aliases,
+                    &state.local_types,
+                ) {
+                    // Emit a Depends edge from local source to foreign target.
+                    state.relations.push(AnalysisRelation {
+                        source_qualified_name: local_source.clone(),
+                        target_qualified_name: qn.clone(),
+                        kind: EdgeKind::Depends,
+                    });
+                    // Extract the trait's simple name for metadata.
+                    trait_name_for_meta = type_name_without_generics(trait_n, state.source);
+                    foreign_target = Some(qn.clone());
+                    impl_type_qn = Some(local_source);
+                }
+            }
+        }
+    }
 
     // Emit an Implements relation for trait impls (only when the source type
     // resolves to a real node).
@@ -498,17 +539,47 @@ fn visit_impl_item(
     }
 
     // Find the body of the impl block and extract function items from it.
-    // If this was a well-known container unwrap, annotate methods with wrapper metadata.
+    // Annotate methods with wrapper/dispatch/cross-crate metadata as needed.
+    let needs_annotation = wrapper_type.is_some() || is_dyn || foreign_target.is_some();
     if let Some(body) = node.child_by_field_name("body") {
-        if let Some(ref wrapper) = wrapper_type {
-            visit_impl_body_with_wrapper(
+        if needs_annotation {
+            let items_before = state.items.len();
+            visit_children(
                 body,
                 state,
                 module_context,
                 impl_type_qn.as_deref(),
                 is_test_context,
-                wrapper,
             );
+            // Annotate any newly emitted function items with metadata.
+            for item in &mut state.items[items_before..] {
+                if item.sub_kind == "function" {
+                    let meta = item.metadata.get_or_insert_with(|| serde_json::json!({}));
+                    if let Some(obj) = meta.as_object_mut() {
+                        if let Some(ref wrapper) = wrapper_type {
+                            obj.insert(
+                                "wrapped_by".to_string(),
+                                serde_json::Value::String(wrapper.clone()),
+                            );
+                        }
+                        if is_dyn {
+                            obj.insert(
+                                "dispatch".to_string(),
+                                serde_json::Value::String("dynamic".to_string()),
+                            );
+                        }
+                        if let Some(ref ft) = foreign_target {
+                            obj.insert(
+                                "impl_for".to_string(),
+                                serde_json::Value::String(ft.clone()),
+                            );
+                        }
+                        if let Some(ref tn) = trait_name_for_meta {
+                            obj.insert("trait".to_string(), serde_json::Value::String(tn.clone()));
+                        }
+                    }
+                }
+            }
         } else {
             visit_children(
                 body,
@@ -521,71 +592,110 @@ fn visit_impl_item(
     }
 }
 
-/// Visit the body of an impl block that was unwrapped from a well-known container,
-/// annotating emitted methods with `wrapped_by` metadata.
-fn visit_impl_body_with_wrapper(
-    body: tree_sitter::Node<'_>,
-    state: &mut FileParseState<'_>,
-    module_context: &[String],
-    impl_type: Option<&str>,
-    is_test_context: bool,
-    wrapper_type: &str,
-) {
-    let items_before = state.items.len();
-    visit_children(body, state, module_context, impl_type, is_test_context);
-    // Annotate any newly emitted function items with the wrapper metadata.
-    for item in &mut state.items[items_before..] {
-        if item.sub_kind == "function" {
-            let meta = item.metadata.get_or_insert_with(|| serde_json::json!({}));
-            if let Some(obj) = meta.as_object_mut() {
-                obj.insert(
-                    "wrapped_by".to_string(),
-                    serde_json::Value::String(wrapper_type.to_string()),
-                );
-            }
-        }
-    }
-}
-
 /// Resolve the impl target type, unwrapping well-known containers if applicable.
 ///
-/// Returns `(resolved_qn, wrapper_type_name)`. When the outer type is a
+/// Returns `(resolved_qn, wrapper_type_name, is_dyn)`. When the outer type is a
 /// well-known container (e.g., `Arc<Foo>`), `resolved_qn` points to the inner
-/// type (`Foo`) and `wrapper_type_name` is `Some("Arc")`.
+/// type (`Foo`) and `wrapper_type_name` is `Some("Arc")`. When the inner type
+/// (or the base type itself) was a `dyn Trait`, `is_dyn` is `true`.
 fn resolve_impl_target(
     type_node: Option<tree_sitter::Node<'_>>,
     source: &[u8],
     type_params: &[String],
     module_context: &[String],
     use_aliases: &HashMap<String, String>,
+    local_types: &HashSet<String>,
     well_known_containers: &[&str],
-) -> (Option<String>, Option<String>) {
+) -> (Option<String>, Option<String>, bool) {
     let Some(tn) = type_node else {
-        return (None, None);
+        return (None, None, false);
     };
 
     let base_name = match type_name_without_generics(tn, source) {
         Some(n) => n,
-        None => return (None, None),
+        None => return (None, None, false),
     };
+
+    // Check if the base type itself is a `dyn Trait` (inherent impl on trait object).
+    let is_base_dyn = tn.kind() == "dynamic_type";
 
     // Check if the base type is a well-known container.
     if well_known_containers.contains(&base_name.as_str()) {
         // Extract the first concrete type argument.
         let type_args = extract_type_arguments(tn, source);
+
+        // Check if the inner type argument is a `dyn Trait`.
+        let inner_is_dyn = find_inner_type_arg_node(tn)
+            .map(|n| n.kind() == "dynamic_type")
+            .unwrap_or(false);
+
         if let Some(inner) = type_args
             .iter()
             .find(|arg| !type_params.contains(arg) && !is_rust_primitive(arg))
         {
-            let inner_qn = resolve_impl_type_qn(inner, type_params, module_context, use_aliases);
-            return (inner_qn, Some(base_name));
+            let inner_qn =
+                resolve_impl_type_qn(inner, type_params, module_context, use_aliases, local_types);
+            return (inner_qn, Some(base_name), inner_is_dyn);
         }
         // All type args are params/primitives — skip entirely (no useful parent).
-        return (None, Some(base_name));
+        return (None, Some(base_name), false);
     }
 
-    let qn = resolve_impl_type_qn(&base_name, type_params, module_context, use_aliases);
-    (qn, None)
+    let qn = resolve_impl_type_qn(
+        &base_name,
+        type_params,
+        module_context,
+        use_aliases,
+        local_types,
+    );
+    (qn, None, is_base_dyn)
+}
+
+/// Find the first concrete type argument node inside a `generic_type` node.
+///
+/// Used to inspect the tree-sitter node kind of inner type arguments
+/// (e.g., to detect `dynamic_type` nodes inside `Box<dyn Trait>`).
+fn find_inner_type_arg_node(node: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
+    if node.kind() != "generic_type" {
+        return None;
+    }
+    let ta = node.child_by_field_name("type_arguments")?;
+    ta.named_child(0)
+}
+
+/// Extract the first type argument from a trait node and resolve it as a local type.
+///
+/// Used for cross-crate trait impl reparenting: given `From<LocalType>`, extracts
+/// `LocalType`, resolves it, and returns the qualified name only if it belongs
+/// to the current crate.
+fn extract_trait_source_type(
+    trait_node: tree_sitter::Node<'_>,
+    source: &[u8],
+    type_params: &[String],
+    module_context: &[String],
+    use_aliases: &HashMap<String, String>,
+    local_types: &HashSet<String>,
+) -> Option<String> {
+    let type_args = extract_type_arguments(trait_node, source);
+    let first_arg = type_args.first()?;
+    if type_params.contains(first_arg) || is_rust_primitive(first_arg) {
+        return None;
+    }
+    let qn = resolve_impl_type_qn(
+        first_arg,
+        type_params,
+        module_context,
+        use_aliases,
+        local_types,
+    )?;
+    // Only reparent if the resolved type is local (same crate).
+    let current_crate = module_context.first().map(|s| s.as_str()).unwrap_or("");
+    let resolved_crate = qn.split("::").next().unwrap_or("");
+    if current_crate == resolved_crate {
+        Some(qn)
+    } else {
+        None
+    }
 }
 
 /// Handle a `use_declaration` node using tree-sitter traversal.
@@ -838,6 +948,12 @@ fn type_name_without_generics(node: tree_sitter::Node<'_>, source: &[u8]) -> Opt
             // e.g., path::to::Type — get full text, already no generics at this level
             node.utf8_text(source).ok().map(|s| s.replace(' ', ""))
         }
+        "dynamic_type" => {
+            // `dyn Trait` — extract the trait name, stripping the `dyn` keyword.
+            // The first named child is typically the trait type identifier.
+            let trait_type = node.named_child(0)?;
+            type_name_without_generics(trait_type, source)
+        }
         _ => {
             // Fallback: strip anything from first '<' onward
             let text = node.utf8_text(source).ok()?;
@@ -939,13 +1055,20 @@ fn resolve_impl_type_qn(
     type_params: &[String],
     module_context: &[String],
     use_aliases: &HashMap<String, String>,
+    local_types: &HashSet<String>,
 ) -> Option<String> {
     if type_params.contains(&type_name.to_string()) || is_rust_primitive(type_name) {
         return None;
     }
+    // Strip `dyn ` prefix — trait object qualifier, not part of type identity.
+    let type_name = type_name.strip_prefix("dyn ").unwrap_or(type_name);
     if type_name.contains("::") {
         // Already scoped (e.g., `other_crate::Type`) — keep as-is.
         Some(type_name.to_string())
+    } else if local_types.contains(type_name) {
+        // Local definition shadows any use-alias with the same name.
+        let module_qn = build_qualified_name(module_context);
+        Some(format!("{module_qn}::{type_name}"))
     } else if let Some(resolved) = use_aliases.get(type_name) {
         Some(resolved.clone())
     } else {
@@ -2889,6 +3012,237 @@ mod tests {
         assert!(
             containers.contains(&"Result"),
             "should include Result in well-known containers"
+        );
+    }
+
+    // --- Fix 1: dyn prefix stripping tests ---
+
+    #[test]
+    fn dyn_trait_impl_strips_dyn_prefix() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub trait WalIo { fn read(&self); }
+            impl WalIo for Box<dyn WalIo> {
+                fn read(&self) {}
+            }
+        "#,
+        );
+        let method = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name.ends_with("read") && i.sub_kind == "function")
+            .expect("should find method read");
+        assert_eq!(
+            method.parent_qualified_name,
+            Some("my_crate::WalIo".to_string()),
+            "impl WalIo for Box<dyn WalIo> should parent methods under WalIo"
+        );
+        let meta = method.metadata.as_ref().expect("should have metadata");
+        assert_eq!(
+            meta["wrapped_by"].as_str(),
+            Some("Box"),
+            "method should have wrapped_by=Box metadata"
+        );
+        assert_eq!(
+            meta["dispatch"].as_str(),
+            Some("dynamic"),
+            "method should have dispatch=dynamic metadata"
+        );
+    }
+
+    #[test]
+    fn dyn_trait_inherent_impl() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub trait MyTrait { fn base(&self); }
+            impl dyn MyTrait {
+                fn helper(&self) {}
+            }
+        "#,
+        );
+        let method = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name.ends_with("helper"))
+            .expect("should find method helper");
+        assert_eq!(
+            method.parent_qualified_name,
+            Some("my_crate::MyTrait".to_string()),
+            "impl dyn MyTrait should parent methods under MyTrait"
+        );
+        let meta = method.metadata.as_ref().expect("should have metadata");
+        assert_eq!(
+            meta["dispatch"].as_str(),
+            Some("dynamic"),
+            "method should have dispatch=dynamic metadata"
+        );
+    }
+
+    // --- Fix 2: local type shadowing tests ---
+
+    #[test]
+    fn local_type_shadows_use_alias() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            use thiserror::Error;
+            pub enum Error { Foo }
+            impl Error {
+                fn bar(&self) {}
+            }
+        "#,
+        );
+        let method = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name.ends_with("bar"))
+            .expect("should find method bar");
+        assert_eq!(
+            method.parent_qualified_name,
+            Some("my_crate::Error".to_string()),
+            "local type definition should shadow use-alias"
+        );
+    }
+
+    #[test]
+    fn local_type_does_not_shadow_in_different_module() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            mod inner {
+                pub enum Error { Foo }
+            }
+            use thiserror::Error;
+            impl Error {
+                fn bar(&self) {}
+            }
+        "#,
+        );
+        let method = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name.ends_with("bar"))
+            .expect("should find method bar");
+        assert_eq!(
+            method.parent_qualified_name,
+            Some("thiserror::Error".to_string()),
+            "local type in inner module should not shadow outer use-alias"
+        );
+    }
+
+    // --- Fix 3: cross-crate trait impl reparenting tests ---
+
+    #[test]
+    fn cross_crate_from_impl_reparents_under_local_type() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            use other::Foreign;
+            pub struct Local;
+            impl From<Local> for Foreign {
+                fn from(val: Local) -> Self { todo!() }
+            }
+        "#,
+        );
+        let method = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name.ends_with("from") && i.sub_kind == "function")
+            .expect("should find method from");
+        assert_eq!(
+            method.parent_qualified_name,
+            Some("my_crate::Local".to_string()),
+            "cross-crate From impl should reparent methods under the local source type"
+        );
+        let meta = method.metadata.as_ref().expect("should have metadata");
+        assert_eq!(
+            meta["impl_for"].as_str(),
+            Some("other::Foreign"),
+            "method should record the foreign target type"
+        );
+        assert_eq!(
+            meta["trait"].as_str(),
+            Some("From"),
+            "method should record the trait name"
+        );
+        // Should also have a Depends edge from Local to Foreign.
+        let depends = result.relations.iter().find(|r| {
+            r.kind == EdgeKind::Depends
+                && r.source_qualified_name == "my_crate::Local"
+                && r.target_qualified_name == "other::Foreign"
+        });
+        assert!(
+            depends.is_some(),
+            "should emit a Depends edge from local to foreign type"
+        );
+    }
+
+    #[test]
+    fn cross_crate_tryfrom_impl_reparents_under_local_type() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            use other::Foreign;
+            pub struct Local;
+            impl TryFrom<Local> for Foreign {
+                type Error = String;
+                fn try_from(val: Local) -> Result<Self, Self::Error> { todo!() }
+            }
+        "#,
+        );
+        let method = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name.ends_with("try_from"))
+            .expect("should find method try_from");
+        assert_eq!(
+            method.parent_qualified_name,
+            Some("my_crate::Local".to_string()),
+            "cross-crate TryFrom impl should reparent methods under the local source type"
+        );
+        let meta = method.metadata.as_ref().expect("should have metadata");
+        assert_eq!(
+            meta["impl_for"].as_str(),
+            Some("other::Foreign"),
+            "method should record the foreign target type"
+        );
+        assert_eq!(
+            meta["trait"].as_str(),
+            Some("TryFrom"),
+            "method should record the trait name"
+        );
+    }
+
+    #[test]
+    fn same_crate_impl_not_reparented() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub struct Foo;
+            pub struct Bar;
+            impl From<Foo> for Bar {
+                fn from(val: Foo) -> Self { todo!() }
+            }
+        "#,
+        );
+        let method = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name.ends_with("from") && i.sub_kind == "function")
+            .expect("should find method from");
+        assert_eq!(
+            method.parent_qualified_name,
+            Some("my_crate::Bar".to_string()),
+            "same-crate From impl should keep methods under the target type"
+        );
+        // Should NOT have impl_for metadata.
+        let meta = method.metadata.as_ref();
+        let has_impl_for = meta.and_then(|m| m.get("impl_for")).is_some();
+        assert!(
+            !has_impl_for,
+            "same-crate impl should not have impl_for metadata"
         );
     }
 }
