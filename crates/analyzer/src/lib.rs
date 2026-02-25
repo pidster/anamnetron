@@ -22,6 +22,7 @@ use std::path::Path;
 
 use svt_core::model::{SnapshotKind, Version};
 use svt_core::store::GraphStore;
+use tracing::{debug, info, info_span};
 
 use crate::mapping::map_to_graph;
 use crate::orchestrator::OrchestratorRegistry;
@@ -82,13 +83,21 @@ pub fn analyze_project_with_registry(
     let mut units_per_language: HashMap<String, usize> = HashMap::new();
 
     for orchestrator in registry.orchestrators() {
+        let lang = orchestrator.language_id();
+        let _lang_span = info_span!("analyze_language", language = lang).entered();
+
         // Phase 1: project-level extra items (e.g., workspace root).
         all_items.extend(orchestrator.extra_items(project_root));
 
         // Phase 2: discover units.
         let units = orchestrator.discover(project_root);
+        info!(language = lang, units = units.len(), "discovered units");
 
         for unit in &units {
+            let _unit_span =
+                info_span!("analyze_unit", unit = %unit.name, files = unit.source_files.len())
+                    .entered();
+
             // Phase 3: emit top-level item from LanguageUnit fields.
             all_items.push(AnalysisItem {
                 qualified_name: unit.name.clone(),
@@ -106,10 +115,24 @@ pub fn analyze_project_with_registry(
 
             // Phase 5: analyze source files.
             files_analyzed += unit.source_files.len();
+            debug!(unit = %unit.name, "analyzing source files");
             let mut result = orchestrator.analyze(unit);
+            debug!(
+                unit = %unit.name,
+                items = result.items.len(),
+                relations = result.relations.len(),
+                "analysis complete"
+            );
 
             // Phase 6: post-process.
+            debug!(unit = %unit.name, "post-processing");
             orchestrator.post_process(unit, &mut result);
+            debug!(
+                unit = %unit.name,
+                items = result.items.len(),
+                relations = result.relations.len(),
+                "post-processing complete"
+            );
 
             all_items.extend(result.items);
             all_relations.extend(result.relations);
@@ -121,6 +144,11 @@ pub fn analyze_project_with_registry(
             .or_insert(0) += units.len();
     }
 
+    info!(
+        items = all_items.len(),
+        relations = all_relations.len(),
+        "mapping to graph"
+    );
     // Map to graph nodes and edges.
     let (nodes, edges, mapping_warnings) = map_to_graph(&all_items, &all_relations);
     all_warnings.extend(mapping_warnings);
@@ -267,6 +295,9 @@ pub fn analyze_project_incremental_with_registry(
     );
 
     for (orchestrator, units) in &discovered {
+        let lang = orchestrator.language_id();
+        let _lang_span = info_span!("analyze_language", language = lang).entered();
+
         // Project-level extra items (always emitted).
         all_items.extend(orchestrator.extra_items(project_root));
 
@@ -285,15 +316,33 @@ pub fn analyze_project_incremental_with_registry(
             all_items.extend(orchestrator.emit_structural_items(unit));
 
             if changed_unit_names.contains(&unit.name) {
+                let _unit_span =
+                    info_span!("analyze_unit", unit = %unit.name, files = unit.source_files.len())
+                        .entered();
                 // Changed unit: full analysis.
                 files_analyzed += unit.source_files.len();
+                debug!(unit = %unit.name, "analyzing source files");
                 let mut result = orchestrator.analyze(unit);
+                debug!(
+                    unit = %unit.name,
+                    items = result.items.len(),
+                    relations = result.relations.len(),
+                    "analysis complete"
+                );
+                debug!(unit = %unit.name, "post-processing");
                 orchestrator.post_process(unit, &mut result);
+                debug!(
+                    unit = %unit.name,
+                    items = result.items.len(),
+                    relations = result.relations.len(),
+                    "post-processing complete"
+                );
                 all_items.extend(result.items);
                 all_relations.extend(result.relations);
                 all_warnings.extend(result.warnings);
                 units_reanalyzed += 1;
             } else {
+                debug!(unit = %unit.name, "unchanged, skipping");
                 // Unchanged unit: skip analysis (nodes/edges already copied).
                 units_skipped += 1;
             }
