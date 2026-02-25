@@ -12,7 +12,6 @@
     expandedTreeNodes: Set<string>;
     ontoggleexpand: (nodeId: string) => void;
     onselectnode?: (nodeId: string) => void;
-    onfocusnode?: (nodeId: string) => void;
   }
 
   let {
@@ -24,7 +23,6 @@
     expandedTreeNodes,
     ontoggleexpand,
     onselectnode,
-    onfocusnode,
   }: Props = $props();
 
   let children = $derived(traversalIndex.childrenMap.get(nodeId) ?? []);
@@ -42,11 +40,6 @@
       selectionStore.selectSingle(nodeId);
     }
     onselectnode?.(nodeId);
-  }
-
-  function handleDblClick(e: MouseEvent) {
-    e.stopPropagation();
-    onfocusnode?.(nodeId);
   }
 
   function handleChevronClick(e: MouseEvent) {
@@ -69,7 +62,6 @@
     class:phantom={isPhantom}
     style="padding-left: {depth * 16 + 4}px"
     onclick={handleClick}
-    ondblclick={handleDblClick}
     onkeydown={handleKeydown}
     role="treeitem"
     aria-expanded={hasChildren ? isExpanded : undefined}
@@ -99,7 +91,6 @@
           {expandedTreeNodes}
           {ontoggleexpand}
           {onselectnode}
-          {onfocusnode}
         />
       {/each}
     </div>

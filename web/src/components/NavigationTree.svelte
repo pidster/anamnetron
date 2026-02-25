@@ -7,10 +7,9 @@
     labelMap: Map<string, string>;
     phantomIds?: Set<string>;
     onselectnode?: (nodeId: string) => void;
-    onfocusnode?: (nodeId: string) => void;
   }
 
-  let { traversalIndex, labelMap, phantomIds = new Set(), onselectnode, onfocusnode }: Props = $props();
+  let { traversalIndex, labelMap, phantomIds = new Set(), onselectnode }: Props = $props();
 
   // Track which tree nodes are expanded (independent from graph expansion)
   let expandedTreeNodes = $state<Set<string>>(new Set());
@@ -78,7 +77,6 @@
       {expandedTreeNodes}
       ontoggleexpand={toggleExpand}
       {onselectnode}
-      {onfocusnode}
     />
   {/each}
 </div>

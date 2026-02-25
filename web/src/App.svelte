@@ -134,13 +134,17 @@
     );
   });
 
-  /** Select a node: expand ancestors so it's visible, then select it. */
+  /** Select a node and focus into it if it has children. */
   function selectNode(nodeId: string) {
     if (fullTraversalIndex) {
       expansionStore.expandAncestors(nodeId, fullTraversalIndex);
     }
     selectionStore.selectSingle(nodeId);
     selectionStore.panelOpen = true;
+    // If the node has children, also focus into its subtree
+    if (fullTraversalIndex?.childrenMap.get(nodeId)?.length) {
+      focusStore.focus(nodeId);
+    }
   }
 
   // Hash routing: suppress writes during reads to avoid loops
@@ -691,7 +695,6 @@
       {labelMap}
       {phantomIds}
       onselectnode={(nodeId) => selectNode(nodeId)}
-      onfocusnode={(nodeId) => focusStore.focus(nodeId)}
     />
     <div class="graph-area">
       {#if graphStore.loading && !graphStore.graph}
