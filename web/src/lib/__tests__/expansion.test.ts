@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   computeVisibleElements,
   computeDefaultExpansion,
+  computeExpansionFromNode,
   getAncestorChain,
   countDescendants,
 } from "../expansion";
@@ -91,6 +92,58 @@ describe("computeDefaultExpansion", () => {
     expect(expanded.has("comp3")).toBe(true);
     // Leaf units should not be in expanded set (they have no children)
     expect(expanded.has("unit1")).toBe(false);
+  });
+});
+
+describe("computeExpansionFromNode", () => {
+  it("depth 0 returns empty set", () => {
+    const graph = makeHierarchy();
+    const index = buildTraversalIndex(graph);
+    const expanded = computeExpansionFromNode(index, "svc1", 0);
+    expect(expanded.size).toBe(0);
+  });
+
+  it("depth 1 expands only the start node", () => {
+    const graph = makeHierarchy();
+    const index = buildTraversalIndex(graph);
+    const expanded = computeExpansionFromNode(index, "svc1", 1);
+    expect(expanded.has("svc1")).toBe(true);
+    expect(expanded.has("comp1")).toBe(false);
+    expect(expanded.has("sys")).toBe(false);
+  });
+
+  it("depth 2 expands start node and its children", () => {
+    const graph = makeHierarchy();
+    const index = buildTraversalIndex(graph);
+    const expanded = computeExpansionFromNode(index, "svc1", 2);
+    expect(expanded.has("svc1")).toBe(true);
+    expect(expanded.has("comp1")).toBe(true);
+    expect(expanded.has("comp2")).toBe(true);
+    // Leaf units should not be expanded (they're at depth 3 from svc1)
+    expect(expanded.has("unit1")).toBe(false);
+  });
+
+  it("depth 3 expands down to leaf parents", () => {
+    const graph = makeHierarchy();
+    const index = buildTraversalIndex(graph);
+    const expanded = computeExpansionFromNode(index, "svc1", 3);
+    expect(expanded.has("svc1")).toBe(true);
+    expect(expanded.has("comp1")).toBe(true);
+    expect(expanded.has("comp2")).toBe(true);
+    // unit1, unit2, unit3 are at depth 3 — added to expanded set
+    expect(expanded.has("unit1")).toBe(true);
+    expect(expanded.has("unit2")).toBe(true);
+    expect(expanded.has("unit3")).toBe(true);
+  });
+
+  it("does not expand nodes outside the subtree", () => {
+    const graph = makeHierarchy();
+    const index = buildTraversalIndex(graph);
+    const expanded = computeExpansionFromNode(index, "svc1", 10);
+    expect(expanded.has("sys")).toBe(false);
+    expect(expanded.has("svc2")).toBe(false);
+    expect(expanded.has("comp3")).toBe(false);
+    expect(expanded.has("unit4")).toBe(false);
   });
 });
 

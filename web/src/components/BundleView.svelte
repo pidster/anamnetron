@@ -13,7 +13,6 @@
   } from "../lib/edge-bundling";
   import { EDGE_STYLES, KIND_COLORS } from "../lib/visual-encoding";
   import { selectionStore } from "../stores/selection.svelte";
-  import { scopeStore } from "../stores/scope.svelte";
 
   interface Props {
     graph: CytoscapeGraph | null;
@@ -183,10 +182,9 @@
     return crumbs;
   });
 
-  // Reset drill path when graph or scope changes
+  // Reset drill path when graph changes
   $effect(() => {
     const _g = graph;
-    const _s = scopeStore.scopeNodeId;
     drillPath = [];
   });
 

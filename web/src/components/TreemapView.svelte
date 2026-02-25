@@ -5,7 +5,7 @@
   import { interpolateRdYlGn, interpolateBlues } from "d3-scale-chromatic";
   import type { CytoscapeGraph } from "../lib/types";
   import { buildHierarchy, sumByMetric, getMetric, type TreeNode } from "../lib/hierarchy";
-  import { scopeStore } from "../stores/scope.svelte";
+  import { focusStore } from "../stores/focus.svelte";
   import { selectionStore } from "../stores/selection.svelte";
 
   /** A switchable metric preset for the treemap. */
@@ -76,9 +76,6 @@
 
   let activePreset = $derived(PRESETS[activePresetIndex]);
 
-  // Drill-down state: stack of node IDs from root to current focus
-  let drillPath = $state<string[]>([]);
-
   // Tooltip state
   let tooltip = $state<{
     visible: boolean;
@@ -121,20 +118,8 @@
     );
   }
 
-  // Find the drill-down root within the hierarchy
-  let drillRoot = $derived.by((): HierarchyNode<TreeNode> | null => {
-    if (!fullHierarchy) return null;
-    if (drillPath.length === 0) return fullHierarchy;
-
-    // Walk down the hierarchy following the drill path
-    let current: HierarchyNode<TreeNode> = fullHierarchy;
-    for (const nodeId of drillPath) {
-      const child = current.children?.find((c) => c.data.id === nodeId);
-      if (!child) return fullHierarchy; // Path broken, reset
-      current = child;
-    }
-    return current;
-  });
+  // The treemap root is always the full hierarchy root (focus is handled by App.svelte)
+  let drillRoot = $derived(fullHierarchy);
 
   // Compute maximum value for the colour metric across all leaves
   let maxColourValue = $derived.by((): number => {
@@ -181,25 +166,6 @@
     return laid.leaves();
   });
 
-  // Breadcrumb trail for drill-down navigation
-  let breadcrumbs = $derived.by((): Array<{ id: string; label: string }> => {
-    if (!fullHierarchy) return [];
-
-    const crumbs: Array<{ id: string; label: string }> = [
-      { id: "__top__", label: fullHierarchy.data.label },
-    ];
-
-    let current: HierarchyNode<TreeNode> = fullHierarchy;
-    for (const nodeId of drillPath) {
-      const child = current.children?.find((c) => c.data.id === nodeId);
-      if (!child) break;
-      crumbs.push({ id: child.data.id, label: child.data.label });
-      current = child;
-    }
-
-    return crumbs;
-  });
-
   // Legend labels derived from preset
   let legendColourLabel = $derived(
     activePreset.colourMetric === "depth"
@@ -226,14 +192,6 @@
   // The currently selected node ID from the shared selection store
   let externalSelectedId = $derived(selectionStore.selectedNodeId);
 
-  // Reset drill path when graph or scope changes
-  $effect(() => {
-    // Track graph identity and scope to trigger reset
-    const _g = graph;
-    const _s = scopeStore.scopeNodeId;
-    drillPath = [];
-  });
-
   function getColor(node: HierarchyRectangularNode<TreeNode>): string {
     const metric = activePreset.colourMetric;
     if (metric === "depth") {
@@ -244,10 +202,10 @@
   }
 
   function handleClick(node: HierarchyRectangularNode<TreeNode>) {
-    // If the node's original data has children, drill into it
+    // If the node has children in the hierarchy, focus into it
     const original = findOriginalNode(node.data.id);
     if (original && original.children && original.children.length > 0) {
-      drillPath = [...drillPath, node.data.id];
+      focusStore.focus(node.data.id);
     } else {
       // Leaf node: select it in the detail panel
       selectionStore.selectedNodeId = node.data.id;
@@ -262,14 +220,6 @@
       if (node.data.id === id) found = node;
     });
     return found;
-  }
-
-  function handleBreadcrumbClick(index: number) {
-    if (index === 0) {
-      drillPath = [];
-    } else {
-      drillPath = drillPath.slice(0, index);
-    }
   }
 
   function handleMouseEnter(
@@ -334,26 +284,6 @@
       </button>
     {/each}
   </div>
-
-  {#if breadcrumbs.length > 1}
-    <div class="breadcrumb-bar">
-      {#each breadcrumbs as crumb, i}
-        {#if i > 0}
-          <span class="breadcrumb-sep">/</span>
-        {/if}
-        {#if i < breadcrumbs.length - 1}
-          <button
-            class="breadcrumb-link"
-            onclick={() => handleBreadcrumbClick(i)}
-          >
-            {crumb.label}
-          </button>
-        {:else}
-          <span class="breadcrumb-current">{crumb.label}</span>
-        {/if}
-      {/each}
-    </div>
-  {/if}
 
   <div class="treemap-area" role="img" aria-label="Treemap visualisation">
     {#each rectangles as rect (rect.data.id)}
@@ -502,41 +432,6 @@
   .preset-btn:disabled {
     opacity: 0.4;
     cursor: not-allowed;
-  }
-
-  .breadcrumb-bar {
-    display: flex;
-    align-items: center;
-    padding: 0.35rem 0.75rem;
-    background: var(--surface);
-    border-bottom: 1px solid var(--border);
-    font-size: 0.8rem;
-    gap: 0.15rem;
-    flex-shrink: 0;
-  }
-
-  .breadcrumb-sep {
-    color: var(--text-muted);
-    margin: 0 0.15rem;
-  }
-
-  .breadcrumb-link {
-    background: none;
-    border: none;
-    color: var(--accent);
-    cursor: pointer;
-    font-size: 0.8rem;
-    padding: 0.1rem 0.25rem;
-    border-radius: 3px;
-  }
-
-  .breadcrumb-link:hover {
-    background: var(--border);
-  }
-
-  .breadcrumb-current {
-    color: var(--text);
-    font-weight: 600;
   }
 
   .treemap-area {

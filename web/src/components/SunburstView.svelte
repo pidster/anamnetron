@@ -6,7 +6,6 @@
   import { schemeTableau10, interpolateRdYlGn, interpolateBlues } from "d3-scale-chromatic";
   import type { CytoscapeGraph } from "../lib/types";
   import { buildHierarchy, sumByMetric, getMetric, type TreeNode } from "../lib/hierarchy";
-  import { scopeStore } from "../stores/scope.svelte";
   import { selectionStore } from "../stores/selection.svelte";
 
   type ColourMode = "language" | "kind" | "depth" | "fan-out";
@@ -165,10 +164,9 @@
     return crumbs;
   });
 
-  // Reset drill path when graph or scope changes
+  // Reset drill path when graph changes
   $effect(() => {
     const _g = graph;
-    const _s = scopeStore.scopeNodeId;
     drillPath = [];
   });
 

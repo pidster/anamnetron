@@ -1,5 +1,5 @@
 import type { TraversalIndex } from "../lib/traversal";
-import { computeDefaultExpansion, getAncestorChain } from "../lib/expansion";
+import { computeDefaultExpansion, computeExpansionFromNode, getAncestorChain } from "../lib/expansion";
 
 /** Reactive store tracking which parent nodes are expanded. */
 class ExpansionStore {
@@ -42,6 +42,12 @@ class ExpansionStore {
   expandToDepth(depth: number, index: TraversalIndex) {
     this.currentDepth = depth;
     this.expandedNodes = computeDefaultExpansion(index, depth);
+  }
+
+  /** Replace the expansion set with nodes at or above the given depth relative to a start node. */
+  expandToDepthFrom(depth: number, index: TraversalIndex, startNodeId: string) {
+    this.currentDepth = depth;
+    this.expandedNodes = computeExpansionFromNode(index, startNodeId, depth);
   }
 
   /** Expand all ancestors of a node so it becomes visible. */

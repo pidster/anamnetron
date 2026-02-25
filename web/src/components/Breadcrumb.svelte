@@ -6,44 +6,77 @@
     selectedNodeId: string | null;
     traversalIndex: TraversalIndex | null;
     labelMap: Map<string, string>;
-    scopeNodeId?: string | null;
+    focusNodeId?: string | null;
+    focusHistory?: string[];
     onnavigate?: (nodeId: string) => void;
-    onclearscope?: () => void;
+    onfocus?: (nodeId: string) => void;
+    onclearfocus?: () => void;
   }
 
-  let { selectedNodeId, traversalIndex, labelMap, scopeNodeId = null, onnavigate, onclearscope }: Props = $props();
+  let {
+    selectedNodeId,
+    traversalIndex,
+    labelMap,
+    focusNodeId = null,
+    focusHistory = [],
+    onnavigate,
+    onfocus,
+    onclearfocus,
+  }: Props = $props();
 
-  let scopeLabel = $derived(scopeNodeId ? (labelMap.get(scopeNodeId) ?? scopeNodeId) : null);
-
-  let crumbs = $derived.by(() => {
-    if (!selectedNodeId || !traversalIndex) return [];
-    const ancestors = getAncestorChain(traversalIndex, selectedNodeId);
-    return [...ancestors, selectedNodeId].map((id) => ({
+  // Focus breadcrumbs: history + current focus node
+  let focusCrumbs = $derived.by(() => {
+    if (!focusNodeId) return [];
+    const crumbs = focusHistory.map((id) => ({
       id,
       label: labelMap.get(id) ?? id,
+      isCurrent: false,
+    }));
+    crumbs.push({
+      id: focusNodeId,
+      label: labelMap.get(focusNodeId) ?? focusNodeId,
+      isCurrent: true,
+    });
+    return crumbs;
+  });
+
+  // Selection breadcrumbs: ancestor chain of selected node (shown when no focus active)
+  let selectionCrumbs = $derived.by(() => {
+    if (focusNodeId || !selectedNodeId || !traversalIndex) return [];
+    const ancestors = getAncestorChain(traversalIndex, selectedNodeId);
+    return [...ancestors, selectedNodeId].map((id, i, arr) => ({
+      id,
+      label: labelMap.get(id) ?? id,
+      isCurrent: i === arr.length - 1,
     }));
   });
+
+  let showFocus = $derived(focusCrumbs.length > 0);
+  let showSelection = $derived(selectionCrumbs.length > 0);
 </script>
 
-{#if crumbs.length > 0 || scopeLabel}
+{#if showFocus || showSelection}
   <nav class="breadcrumb" aria-label="Node path">
-    {#if scopeLabel}
-      <span class="scope-chip">
-        Scope: {scopeLabel}
-        <button class="scope-clear" onclick={() => onclearscope?.()} aria-label="Clear scope">&times;</button>
-      </span>
-      {#if crumbs.length > 0}
-        <span class="separator">|</span>
-      {/if}
+    {#if showFocus}
+      <button class="crumb root-crumb" onclick={() => onclearfocus?.()}>Root</button>
+      {#each focusCrumbs as crumb}
+        <span class="separator">&gt;</span>
+        {#if crumb.isCurrent}
+          <span class="crumb current">{crumb.label}</span>
+        {:else}
+          <button class="crumb" onclick={() => onfocus?.(crumb.id)}>{crumb.label}</button>
+        {/if}
+      {/each}
+    {:else}
+      {#each selectionCrumbs as crumb, i}
+        {#if i > 0}<span class="separator">&gt;</span>{/if}
+        {#if crumb.isCurrent}
+          <span class="crumb current">{crumb.label}</span>
+        {:else}
+          <button class="crumb" onclick={() => onnavigate?.(crumb.id)}>{crumb.label}</button>
+        {/if}
+      {/each}
     {/if}
-    {#each crumbs as crumb, i}
-      {#if i > 0}<span class="separator">&gt;</span>{/if}
-      {#if i < crumbs.length - 1}
-        <button class="crumb" onclick={() => onnavigate?.(crumb.id)}>{crumb.label}</button>
-      {:else}
-        <span class="crumb current">{crumb.label}</span>
-      {/if}
-    {/each}
   </nav>
 {/if}
 
@@ -91,31 +124,13 @@
     background: none;
   }
 
-  .scope-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.25rem;
-    background: var(--accent);
-    color: #fff;
-    padding: 0.1rem 0.4rem;
-    border-radius: 3px;
-    font-size: 0.78rem;
-    font-weight: 600;
+  .root-crumb {
+    color: var(--text-muted);
+    font-weight: 500;
   }
 
-  .scope-clear {
-    background: none;
-    border: none;
-    color: rgba(255, 255, 255, 0.8);
-    cursor: pointer;
-    font-size: 0.9rem;
-    padding: 0 0.1rem;
-    line-height: 1;
-    border-radius: 2px;
-  }
-
-  .scope-clear:hover {
-    color: #fff;
-    background: rgba(255, 255, 255, 0.2);
+  .root-crumb:hover {
+    color: var(--text);
+    background: var(--border);
   }
 </style>

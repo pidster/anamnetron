@@ -183,6 +183,35 @@ export function getAncestorChain(
   return chain;
 }
 
+/**
+ * Compute the set of expanded node IDs for a given depth relative to a specific start node.
+ *
+ * Depth 0 = nothing expanded below startNode.
+ * Depth 1 = startNode expanded (its children visible).
+ * Depth 2 = startNode + its children expanded, etc.
+ */
+export function computeExpansionFromNode(
+  index: TraversalIndex,
+  startNodeId: string,
+  maxDepth: number,
+): Set<string> {
+  const expanded = new Set<string>();
+  if (maxDepth <= 0) return expanded;
+  let frontier = [startNodeId];
+  let depth = 0;
+  while (depth < maxDepth && frontier.length > 0) {
+    const next: string[] = [];
+    for (const id of frontier) {
+      expanded.add(id);
+      const children = index.childrenMap.get(id);
+      if (children) next.push(...children);
+    }
+    frontier = next;
+    depth++;
+  }
+  return expanded;
+}
+
 /** Count all descendants (children, grandchildren, etc.) of a node. */
 export function countDescendants(
   index: TraversalIndex,

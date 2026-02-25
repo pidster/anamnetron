@@ -18,7 +18,7 @@
   import { filterGraph } from "./lib/filter-logic";
   import { navigationStore } from "./stores/navigation.svelte";
   import { expansionStore } from "./stores/expansion.svelte";
-  import { scopeStore } from "./stores/scope.svelte";
+  import { focusStore } from "./stores/focus.svelte";
   import { mermaidStore } from "./stores/mermaid.svelte";
   import { viewStore, type ViewMode } from "./stores/view.svelte";
   import { extractSubtree } from "./lib/scope";
@@ -60,6 +60,26 @@
     return map;
   });
 
+  // Build bidirectional lookups between node IDs and canonical paths for URL routing
+  let idToPath = $derived.by(() => {
+    const map = new Map<string, string>();
+    if (graphStore.graph) {
+      for (const node of graphStore.graph.elements.nodes) {
+        map.set(node.data.id, node.data.canonical_path);
+      }
+    }
+    return map;
+  });
+  let pathToId = $derived.by(() => {
+    const map = new Map<string, string>();
+    if (graphStore.graph) {
+      for (const node of graphStore.graph.elements.nodes) {
+        map.set(node.data.canonical_path, node.data.id);
+      }
+    }
+    return map;
+  });
+
   // Derive phantom node IDs from graph (nodes with sub_kind === "phantom")
   let phantomIds = $derived.by(() => {
     const ids = new Set<string>();
@@ -79,25 +99,25 @@
     return buildTraversalIndex(graphStore.graph);
   });
 
-  // When scope is active, extract the subtree; otherwise pass through the full graph
-  let scopedGraph = $derived.by(() => {
-    if (!graphStore.graph || !scopeStore.scopeNodeId || !fullTraversalIndex) {
+  // When focus is active, extract the subtree; otherwise pass through the full graph
+  let focusedGraph = $derived.by(() => {
+    if (!graphStore.graph || !focusStore.focusNodeId || !fullTraversalIndex) {
       return graphStore.graph;
     }
-    return extractSubtree(graphStore.graph, scopeStore.scopeNodeId, fullTraversalIndex);
+    return extractSubtree(graphStore.graph, focusStore.focusNodeId, fullTraversalIndex);
   });
 
-  // Build a traversal index for the scoped graph (reuses fullTraversalIndex when unscoped)
-  let scopedTraversalIndex = $derived.by(() => {
-    if (!scopedGraph) return null;
-    if (scopedGraph === graphStore.graph && fullTraversalIndex) return fullTraversalIndex;
-    return buildTraversalIndex(scopedGraph);
+  // Build a traversal index for the focused graph (reuses fullTraversalIndex when unfocused)
+  let focusedTraversalIndex = $derived.by(() => {
+    if (!focusedGraph) return null;
+    if (focusedGraph === graphStore.graph && fullTraversalIndex) return fullTraversalIndex;
+    return buildTraversalIndex(focusedGraph);
   });
 
   // Apply depth-based visibility filtering to constrain MermaidView rendering
   let visibleGraph = $derived.by(() => {
-    if (!scopedGraph || !scopedTraversalIndex) return scopedGraph;
-    return computeVisibleElements(scopedGraph, expansionStore.expandedNodes, scopedTraversalIndex);
+    if (!focusedGraph || !focusedTraversalIndex) return focusedGraph;
+    return computeVisibleElements(focusedGraph, expansionStore.expandedNodes, focusedTraversalIndex);
   });
 
   // Apply filter store to the visible graph for visualisations
@@ -135,7 +155,8 @@
         selectVersion(state.version);
       }
       if (state.node) {
-        selectionStore.selectedNodeId = state.node;
+        const nodeId = pathToId.get(state.node) ?? state.node;
+        selectionStore.selectedNodeId = nodeId;
         selectionStore.panelOpen = true;
       } else {
         selectionStore.clear();
@@ -143,10 +164,11 @@
       if (state.diff && state.diff !== graphStore.diffVersion) {
         compareVersion = state.diff;
       }
-      if (state.scope) {
-        scopeStore.setScope(state.scope);
+      if (state.focusPath) {
+        const focusId = pathToId.get(state.focusPath) ?? state.focusPath;
+        focusStore.focus(focusId);
       } else {
-        scopeStore.clear();
+        focusStore.clear();
       }
       if (state.mermaid) {
         mermaidStore.diagramType = state.mermaid as "flowchart" | "dataflow" | "sequence" | "c4";
@@ -174,9 +196,6 @@
           ? initial.version
           : snapshots.length > 0 ? snapshots[0].version : null;
 
-        if (initial.scope) {
-          scopeStore.setScope(initial.scope);
-        }
         if (initial.mermaid) {
           mermaidStore.diagramType = initial.mermaid as "flowchart" | "dataflow" | "sequence" | "c4";
         }
@@ -187,12 +206,18 @@
         if (initialVersion) {
           suppressHashWrite = true;
           await selectVersion(initialVersion);
+          // Resolve canonical paths to node IDs now that the graph is loaded
+          if (initial.focusPath) {
+            const focusId = pathToId.get(initial.focusPath) ?? initial.focusPath;
+            focusStore.focus(focusId);
+          }
           if (initial.node) {
+            const nodeId = pathToId.get(initial.node) ?? initial.node;
             const index = fullTraversalIndex;
             if (index) {
-              expansionStore.expandAncestors(initial.node, index);
+              expansionStore.expandAncestors(nodeId, index);
             }
-            selectionStore.selectedNodeId = initial.node;
+            selectionStore.selectedNodeId = nodeId;
             selectionStore.panelOpen = true;
           }
           suppressHashWrite = false;
@@ -257,16 +282,28 @@
   // Sync state to URL hash
   $effect(() => {
     if (suppressHashWrite) return;
+    const focusId = focusStore.focusNodeId;
+    const selectedId = selectionStore.selectedNodeId;
     const hash = buildHash({
       version: graphStore.selectedVersion ?? undefined,
-      node: selectionStore.selectedNodeId ?? undefined,
+      node: selectedId ? (idToPath.get(selectedId) ?? selectedId) : undefined,
       diff: graphStore.diffVersion ?? undefined,
-      scope: scopeStore.scopeNodeId ?? undefined,
+      focusPath: focusId ? (idToPath.get(focusId) ?? focusId) : undefined,
       mermaid: mermaidStore.diagramType,
-      view: viewStore.mode !== "mermaid" ? viewStore.mode : undefined,
+      view: viewStore.mode ?? undefined,
     });
     if (hash !== window.location.hash) {
       history.replaceState(null, "", hash || window.location.pathname);
+    }
+  });
+
+  // React to focus changes: expand to relative depth 2 from the focused node
+  $effect(() => {
+    const focusId = focusStore.focusNodeId;
+    if (focusId && fullTraversalIndex) {
+      expansionStore.expandToDepthFrom(2, fullTraversalIndex, focusId);
+    } else if (!focusId && fullTraversalIndex) {
+      expansionStore.expandToDepth(2, fullTraversalIndex);
     }
   });
 
@@ -384,19 +421,28 @@
   }
 
   function handleKeydown(e: KeyboardEvent) {
-    // Escape: close panels, scope
+    // Escape: close panels, step back focus
     if (e.key === "Escape") {
       if (selectionStore.panelOpen) {
         selectionStore.clear();
         e.preventDefault();
-      } else if (scopeStore.active) {
-        scopeStore.clear();
+      } else if (focusStore.active) {
+        focusStore.back();
         e.preventDefault();
       } else if (showConformance) {
         clearConformance();
         e.preventDefault();
       }
       return;
+    }
+
+    // Backspace: quick back-navigation through focus history
+    if (e.key === "Backspace" && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement)) {
+      if (focusStore.active) {
+        focusStore.back();
+        e.preventDefault();
+        return;
+      }
     }
 
     // Don't handle keys when focus is in an input/select
@@ -442,9 +488,9 @@
       e.preventDefault();
     }
 
-    // s: scope to selected node
+    // s: focus into selected node's subtree
     if (e.key === "s" && selectionStore.selectedNodeId) {
-      scopeStore.setScope(selectionStore.selectedNodeId);
+      focusStore.focus(selectionStore.selectedNodeId);
       e.preventDefault();
     }
   }
@@ -508,8 +554,14 @@
           class="depth-btn"
           onclick={() => {
             const index = fullTraversalIndex;
-            if (index && expansionStore.currentDepth > 0)
-              expansionStore.expandToDepth(expansionStore.currentDepth - 1, index);
+            if (index && expansionStore.currentDepth > 0) {
+              const newDepth = expansionStore.currentDepth - 1;
+              if (focusStore.focusNodeId) {
+                expansionStore.expandToDepthFrom(newDepth, index, focusStore.focusNodeId);
+              } else {
+                expansionStore.expandToDepth(newDepth, index);
+              }
+            }
           }}
           aria-label="Decrease depth"
           disabled={expansionStore.currentDepth <= 0}
@@ -519,8 +571,14 @@
           class="depth-btn"
           onclick={() => {
             const index = fullTraversalIndex;
-            if (index)
-              expansionStore.expandToDepth(expansionStore.currentDepth + 1, index);
+            if (index) {
+              const newDepth = expansionStore.currentDepth + 1;
+              if (focusStore.focusNodeId) {
+                expansionStore.expandToDepthFrom(newDepth, index, focusStore.focusNodeId);
+              } else {
+                expansionStore.expandToDepth(newDepth, index);
+              }
+            }
           }}
           aria-label="Increase depth"
         >+</button>
@@ -528,8 +586,13 @@
           class="depth-btn"
           onclick={() => {
             const index = fullTraversalIndex;
-            if (index)
-              expansionStore.expandToDepth(10, index);
+            if (index) {
+              if (focusStore.focusNodeId) {
+                expansionStore.expandToDepthFrom(10, index, focusStore.focusNodeId);
+              } else {
+                expansionStore.expandToDepth(10, index);
+              }
+            }
           }}
           aria-label="Expand all"
         >All</button>
@@ -591,9 +654,11 @@
     selectedNodeId={selectionStore.selectedNodeId}
     traversalIndex={fullTraversalIndex}
     {labelMap}
-    scopeNodeId={scopeStore.scopeNodeId}
+    focusNodeId={focusStore.focusNodeId}
+    focusHistory={focusStore.history}
     onnavigate={(nodeId) => selectNode(nodeId)}
-    onclearscope={() => scopeStore.clear()}
+    onfocus={(nodeId) => focusStore.focusAncestor(nodeId)}
+    onclearfocus={() => focusStore.clear()}
   />
 
   <div class="main-content">
@@ -602,11 +667,7 @@
       {labelMap}
       {phantomIds}
       onselectnode={(nodeId) => selectNode(nodeId)}
-      onscopenode={(nodeId) => {
-        scopeStore.setScope(nodeId);
-        // Reset expansion for the new scope
-        if (fullTraversalIndex) expansionStore.expandToDepth(2, fullTraversalIndex);
-      }}
+      onfocusnode={(nodeId) => focusStore.focus(nodeId)}
     />
     <div class="graph-area">
       {#if graphStore.loading && !graphStore.graph}
@@ -614,13 +675,13 @@
           <div class="spinner"></div>
           <p>Loading graph data...</p>
         </div>
-      {:else if scopedGraph}
+      {:else if focusedGraph}
         {#if viewStore.mode === "mermaid"}
           <ErrorBoundary name="Mermaid View">
             <MermaidView
               graph={filteredVisibleGraph}
               {theme}
-              totalNodeCount={scopedGraph?.elements.nodes.length ?? 0}
+              totalNodeCount={focusedGraph?.elements.nodes.length ?? 0}
               currentDepth={expansionStore.currentDepth}
             />
           </ErrorBoundary>

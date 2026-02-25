@@ -9,10 +9,10 @@
     labelMap: Map<string, string>;
     phantomIds?: Set<string>;
     onselectnode?: (nodeId: string) => void;
-    onscopenode?: (nodeId: string) => void;
+    onfocusnode?: (nodeId: string) => void;
   }
 
-  let { traversalIndex, labelMap, phantomIds = new Set(), onselectnode, onscopenode }: Props = $props();
+  let { traversalIndex, labelMap, phantomIds = new Set(), onselectnode, onfocusnode }: Props = $props();
 </script>
 
 <aside class="nav-panel" class:collapsed={navigationStore.collapsed}>
@@ -51,7 +51,7 @@
             {labelMap}
             {phantomIds}
             {onselectnode}
-            {onscopenode}
+            {onfocusnode}
           />
         {:else}
           <div class="empty-state">No graph loaded</div>
