@@ -4,9 +4,6 @@ export type Version = number;
 /** Snapshot kinds matching the server enum. */
 export type SnapshotKind = "design" | "analysis" | "import";
 
-/** Layout engine options. */
-export type LayoutType = "fcose" | "dagre" | "elk";
-
 /** Node kinds matching the server enum. */
 export type NodeKind = "system" | "service" | "component" | "unit";
 

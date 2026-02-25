@@ -6,7 +6,7 @@ export const KIND_COLORS: Record<string, string> = {
   unit: "--kind-unit",
 };
 
-/** Cytoscape shape names for node sub_kind values. Leaf nodes only (compound parents stay rectangular). */
+/** Shape names for node sub_kind values. */
 export const SUB_KIND_SHAPES: Record<string, string> = {
   trait: "diamond",
   struct: "hexagon",

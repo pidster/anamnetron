@@ -24,10 +24,11 @@
   import { extractSubtree } from "./lib/scope";
   import { computeVisibleElements } from "./lib/expansion";
   import MermaidView from "./components/MermaidView.svelte";
-  import GraphView from "./components/GraphView.svelte";
   import TreemapView from "./components/TreemapView.svelte";
   import ChordView from "./components/ChordView.svelte";
   import SunburstView from "./components/SunburstView.svelte";
+  import BundleView from "./components/BundleView.svelte";
+  import MatrixView from "./components/MatrixView.svelte";
 
   let showConformance = $state(false);
   let conformanceDesign = $state<Version | null>(null);
@@ -99,7 +100,7 @@
     return computeVisibleElements(scopedGraph, expansionStore.expandedNodes, scopedTraversalIndex);
   });
 
-  // Apply filter store to the visible graph for non-GraphView visualisations
+  // Apply filter store to the visible graph for visualisations
   let filteredVisibleGraph = $derived.by(() => {
     if (!visibleGraph) return visibleGraph;
     if (!filterStore.hasActiveFilters) return visibleGraph;
@@ -487,9 +488,10 @@
       <span class="view-switcher">
         {#each [
           { mode: "treemap" as ViewMode, label: "Treemap", disabled: false },
+          { mode: "bundle" as ViewMode, label: "Bundle", disabled: false },
+          { mode: "matrix" as ViewMode, label: "Matrix", disabled: false },
           { mode: "chord" as ViewMode, label: "Chord", disabled: false },
           { mode: "sunburst" as ViewMode, label: "Sunburst", disabled: false },
-          { mode: "graph" as ViewMode, label: "Graph", disabled: false },
           { mode: "mermaid" as ViewMode, label: "Mermaid", disabled: false },
         ] as item}
           <button
@@ -622,25 +624,13 @@
               currentDepth={expansionStore.currentDepth}
             />
           </ErrorBoundary>
-        {:else if viewStore.mode === "graph"}
-          <ErrorBoundary name="Graph View">
-            <GraphView
-              graph={scopedGraph}
-              expandedNodes={expansionStore.expandedNodes}
-              onToggleExpand={(nodeId) => expansionStore.toggle(nodeId)}
-              onFocusNode={(nodeId) => selectNode(nodeId)}
-              onScopeNode={(nodeId) => {
-                scopeStore.setScope(nodeId);
-                if (fullTraversalIndex) expansionStore.expandToDepth(2, fullTraversalIndex);
-              }}
-              conformance={graphStore.conformanceReport}
-              diff={graphStore.diffReport}
-              {theme}
-              filterNodeKinds={filterStore.nodeKinds}
-              filterEdgeKinds={filterStore.edgeKinds}
-              filterSubKinds={filterStore.subKinds}
-              filterLanguages={filterStore.languages}
-            />
+        {:else if viewStore.mode === "bundle"}
+          <ErrorBoundary name="Bundle View">
+            <BundleView graph={filteredVisibleGraph} />
+          </ErrorBoundary>
+        {:else if viewStore.mode === "matrix"}
+          <ErrorBoundary name="Matrix View">
+            <MatrixView graph={filteredVisibleGraph} />
           </ErrorBoundary>
         {:else if viewStore.mode === "treemap"}
           <ErrorBoundary name="Treemap View">
