@@ -1171,16 +1171,35 @@ fn impl_type_param_names(impl_node: tree_sitter::Node<'_>, source: &[u8]) -> Vec
     let mut names = Vec::new();
     let mut cursor = type_params.walk();
     for child in type_params.children(&mut cursor) {
-        // tree-sitter-rust wraps each type param in a `type_parameter` node
-        // with a `name` field (e.g., `T` or `T: Display`).
-        if child.kind() == "type_parameter" {
-            if let Some(name_node) = child.child_by_field_name("name") {
-                if let Ok(name) = name_node.utf8_text(source) {
+        match child.kind() {
+            // tree-sitter-rust >= 0.23.3 wraps each type param in a
+            // `type_parameter` node with a `name` field.
+            "type_parameter" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    if let Ok(name) = name_node.utf8_text(source) {
+                        names.push(name.to_string());
+                    }
+                }
+            }
+            // tree-sitter-rust 0.23.2 emits bare `type_identifier` nodes
+            // directly inside `type_parameters` (e.g., `<T>` → type_identifier "T").
+            "type_identifier" => {
+                if let Ok(name) = child.utf8_text(source) {
                     names.push(name.to_string());
                 }
             }
+            // Constrained type params (`T: Display`) appear as
+            // `constrained_type_parameter` with a `left` field for the name.
+            "constrained_type_parameter" => {
+                if let Some(left) = child.child_by_field_name("left") {
+                    if let Ok(name) = left.utf8_text(source) {
+                        names.push(name.to_string());
+                    }
+                }
+            }
+            // `lifetime_parameter` and punctuation nodes are skipped.
+            _ => {}
         }
-        // `lifetime_parameter` nodes are skipped (not type params).
     }
     names
 }

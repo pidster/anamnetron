@@ -14,6 +14,7 @@ pub mod discovery;
 pub mod hashing;
 pub mod languages;
 pub mod mapping;
+pub mod metrics;
 pub mod orchestrator;
 pub mod types;
 
@@ -142,6 +143,13 @@ pub fn analyze_project_with_registry(
         *units_per_language
             .entry(orchestrator.language_id().to_string())
             .or_insert(0) += units.len();
+    }
+
+    // Phase 6.5: Metric enrichment via rust-code-analysis.
+    {
+        let _metrics_span = info_span!("enrich_metrics").entered();
+        crate::metrics::enrich_metrics(&mut all_items, project_root);
+        info!(items = all_items.len(), "metric enrichment complete");
     }
 
     info!(
@@ -351,6 +359,13 @@ pub fn analyze_project_incremental_with_registry(
         *units_per_language
             .entry(orchestrator.language_id().to_string())
             .or_insert(0) += units.len();
+    }
+
+    // Phase 6.5: Metric enrichment via rust-code-analysis.
+    {
+        let _metrics_span = info_span!("enrich_metrics").entered();
+        crate::metrics::enrich_metrics(&mut all_items, project_root);
+        info!(items = all_items.len(), "metric enrichment complete");
     }
 
     // Phase 7: Map to graph and upsert (overwrites copied data for changed units).

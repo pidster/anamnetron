@@ -39,6 +39,27 @@
       colourMetric: "fan_out",
       colourScale: "diverging",
     },
+    {
+      name: "Complexity hotspots",
+      description: "Area by lines of code, colour by cyclomatic complexity",
+      areaMetric: "loc",
+      colourMetric: "cyclomatic",
+      colourScale: "diverging",
+    },
+    {
+      name: "Cognitive load",
+      description: "Area by lines of code, colour by cognitive complexity",
+      areaMetric: "loc",
+      colourMetric: "cognitive",
+      colourScale: "diverging",
+    },
+    {
+      name: "Maintainability",
+      description: "Area by lines of code, colour by maintainability index",
+      areaMetric: "loc",
+      colourMetric: "mi",
+      colourScale: "diverging",
+    },
   ];
 
   interface Props {
@@ -393,6 +414,24 @@
         <span class="tooltip-key">Fan-out</span>
         <span>{getMetric(tooltip.node, "fan_out")}</span>
       </div>
+      {#if getMetric(tooltip.node, "cyclomatic") > 0}
+        <div class="tooltip-row">
+          <span class="tooltip-key">Cyclomatic</span>
+          <span>{getMetric(tooltip.node, "cyclomatic")}</span>
+        </div>
+      {/if}
+      {#if getMetric(tooltip.node, "cognitive") > 0}
+        <div class="tooltip-row">
+          <span class="tooltip-key">Cognitive</span>
+          <span>{getMetric(tooltip.node, "cognitive")}</span>
+        </div>
+      {/if}
+      {#if getMetric(tooltip.node, "mi") > 0}
+        <div class="tooltip-row">
+          <span class="tooltip-key">MI</span>
+          <span>{getMetric(tooltip.node, "mi").toFixed(1)}</span>
+        </div>
+      {/if}
       {#if getMetric(tooltip.node, "_childCount") > 0}
         <div class="tooltip-row">
           <span class="tooltip-key">Contains</span>
