@@ -747,6 +747,8 @@
           dependencies={selectionStore.dependencies}
           dependents={selectionStore.dependents}
           loading={selectionStore.loading}
+          onselectnode={(nodeId) => selectNode(nodeId)}
+          onfocusnode={(nodeId) => focusStore.focus(nodeId)}
         />
       </ErrorBoundary>
     {/if}

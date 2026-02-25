@@ -10,9 +10,20 @@
     dependencies: ApiEdge[];
     dependents: ApiEdge[];
     loading: boolean;
+    onselectnode?: (nodeId: string) => void;
+    onfocusnode?: (nodeId: string) => void;
   }
 
-  let { node, children, ancestors, dependencies, dependents, loading }: Props = $props();
+  let {
+    node,
+    children,
+    ancestors,
+    dependencies,
+    dependents,
+    loading,
+    onselectnode,
+    onfocusnode,
+  }: Props = $props();
 
   /** Build a lookup from node ID to canonical path from the graph data. */
   const nodePathById = $derived.by(() => {
@@ -31,9 +42,12 @@
     return nodePathById.get(id) ?? id;
   }
 
-  function selectNode(nodeId: string) {
-    selectionStore.selectedNodeId = nodeId;
-    selectionStore.panelOpen = true;
+  function handleClick(nodeId: string) {
+    onselectnode?.(nodeId);
+  }
+
+  function handleDblClick(nodeId: string) {
+    onfocusnode?.(nodeId);
   }
 
   function close() {
@@ -86,7 +100,12 @@
           <ul>
             {#each ancestors as a}
               <li>
-                <button class="link-btn" onclick={() => selectNode(a.id)}>
+                <button
+                  class="link-btn"
+                  onclick={() => handleClick(a.id)}
+                  ondblclick={() => handleDblClick(a.id)}
+                  title="Click to select, double-click to focus"
+                >
                   <code>{a.canonical_path}</code>
                 </button>
               </li>
@@ -101,7 +120,12 @@
           <ul>
             {#each children as c}
               <li>
-                <button class="link-btn" onclick={() => selectNode(c.id)}>
+                <button
+                  class="link-btn"
+                  onclick={() => handleClick(c.id)}
+                  ondblclick={() => handleDblClick(c.id)}
+                  title="Click to select, double-click to focus"
+                >
                   <code>{c.canonical_path}</code>
                 </button>
               </li>
@@ -116,7 +140,12 @@
           <ul>
             {#each dependencies as d}
               <li>
-                <button class="link-btn" onclick={() => selectNode(d.target)}>
+                <button
+                  class="link-btn"
+                  onclick={() => handleClick(d.target)}
+                  ondblclick={() => handleDblClick(d.target)}
+                  title="Click to select, double-click to focus"
+                >
                   {d.kind}: <code>{resolvePath(d.target)}</code>
                 </button>
               </li>
@@ -131,7 +160,12 @@
           <ul>
             {#each dependents as d}
               <li>
-                <button class="link-btn" onclick={() => selectNode(d.source)}>
+                <button
+                  class="link-btn"
+                  onclick={() => handleClick(d.source)}
+                  ondblclick={() => handleDblClick(d.source)}
+                  title="Click to select, double-click to focus"
+                >
                   {d.kind}: <code>{resolvePath(d.source)}</code>
                 </button>
               </li>
