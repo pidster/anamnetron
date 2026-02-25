@@ -279,19 +279,27 @@
     localStorage.setItem("svt-nav-collapsed", String(navigationStore.collapsed));
   });
 
-  // Sync state to URL hash
+  // Sync state to URL hash.
+  // IMPORTANT: All reactive reads must happen BEFORE any early return,
+  // otherwise Svelte 5's $effect won't track them after a suppressed run.
   let previousHash = "";
   $effect(() => {
-    if (suppressHashWrite) return;
     const focusId = focusStore.focusNodeId;
     const selectedId = selectionStore.selectedNodeId;
     const currentView = viewStore.mode;
+    const currentVersion = graphStore.selectedVersion;
+    const currentDiff = graphStore.diffVersion;
+    const currentMermaid = mermaidStore.diagramType;
+    const currentIdToPath = idToPath;
+
+    if (suppressHashWrite) return;
+
     const hash = buildHash({
-      version: graphStore.selectedVersion ?? undefined,
-      node: selectedId ? (idToPath.get(selectedId) ?? selectedId) : undefined,
-      diff: graphStore.diffVersion ?? undefined,
-      focusPath: focusId ? (idToPath.get(focusId) ?? focusId) : undefined,
-      mermaid: currentView === "mermaid" ? mermaidStore.diagramType : undefined,
+      version: currentVersion ?? undefined,
+      node: selectedId ? (currentIdToPath.get(selectedId) ?? selectedId) : undefined,
+      diff: currentDiff ?? undefined,
+      focusPath: focusId ? (currentIdToPath.get(focusId) ?? focusId) : undefined,
+      mermaid: currentView === "mermaid" ? currentMermaid : undefined,
       view: currentView ?? undefined,
     });
     if (hash !== window.location.hash) {
