@@ -1,20 +1,26 @@
 /**
  * State that can be encoded in the URL hash.
  *
- * URL format: #<view>:<focus_path>&<params>
+ * URL format: #<view>=<path>&<params>
  * Examples:
- *   #treemap:/aeon/wal&v=1&node=abc
- *   #bundle:/aeon/rest/handlers&v=3
- *   #matrix:&v=1          (no focus, full graph)
+ *   #treemap=/aeon/wal&v=1
+ *   #bundle=/aeon/rest/handlers&v=3
+ *   #matrix=&v=1              (no path, full graph)
+ *   #treemap=/aeon/wal        (no extra params)
+ *
+ * The path is the canonical path of the current location (focused or selected node).
  */
 export interface HashState {
   view?: string;
-  focusPath?: string;
+  /** Canonical path of the current location (focus or selection). */
+  path?: string;
   version?: number;
-  node?: string;
   diff?: number;
   mermaid?: string;
 }
+
+/** Known view names for detecting the new URL format. */
+const VIEW_NAMES = new Set(["treemap", "bundle", "matrix", "chord", "sunburst", "mermaid"]);
 
 /** Parse the URL hash into state. */
 export function parseHash(hash: string): HashState {
@@ -23,25 +29,24 @@ export function parseHash(hash: string): HashState {
 
   const state: HashState = {};
 
-  // New format: <view>:<path>&<params>
+  // Split prefix from params at first &
   const ampIdx = clean.indexOf("&");
   const prefix = ampIdx >= 0 ? clean.slice(0, ampIdx) : clean;
   const paramStr = ampIdx >= 0 ? clean.slice(ampIdx + 1) : "";
 
-  const colonIdx = prefix.indexOf(":");
-  if (colonIdx >= 0) {
+  // New format: <view>=<path> where view is a known name
+  const eqIdx = prefix.indexOf("=");
+  const possibleView = eqIdx >= 0 ? prefix.slice(0, eqIdx) : "";
+
+  if (eqIdx >= 0 && VIEW_NAMES.has(possibleView)) {
     // New format detected
-    const view = prefix.slice(0, colonIdx);
-    const path = prefix.slice(colonIdx + 1);
-    if (view) state.view = view;
-    if (path) state.focusPath = decodeURIComponent(path);
+    const path = prefix.slice(eqIdx + 1);
+    state.view = possibleView;
+    if (path) state.path = decodeURIComponent(path);
 
     const params = new URLSearchParams(paramStr);
     const v = params.get("v");
     if (v) state.version = parseInt(v, 10);
-
-    const node = params.get("node");
-    if (node) state.node = node;
 
     const diff = params.get("diff");
     if (diff) state.diff = parseInt(diff, 10);
@@ -55,14 +60,14 @@ export function parseHash(hash: string): HashState {
     const v = params.get("v");
     if (v) state.version = parseInt(v, 10);
 
+    // Legacy: scope or node become path
+    const scope = params.get("scope");
     const node = params.get("node");
-    if (node) state.node = node;
+    if (scope) state.path = scope;
+    else if (node) state.path = node;
 
     const diff = params.get("diff");
     if (diff) state.diff = parseInt(diff, 10);
-
-    const scope = params.get("scope");
-    if (scope) state.focusPath = scope;
 
     const mermaid = params.get("mermaid");
     if (mermaid) state.mermaid = mermaid;
@@ -77,24 +82,23 @@ export function parseHash(hash: string): HashState {
 /** Build a URL hash string from state. */
 export function buildHash(state: HashState): string {
   const view = state.view ?? "";
-  const focusPath = state.focusPath ?? "";
+  const path = state.path ?? "";
 
   const params = new URLSearchParams();
   if (state.version !== undefined) params.set("v", String(state.version));
-  if (state.node !== undefined) params.set("node", state.node);
   if (state.diff !== undefined) params.set("diff", String(state.diff));
   if (state.mermaid !== undefined) params.set("mermaid", state.mermaid);
 
   const paramStr = params.toString();
 
-  // Build: #<view>:<focusPath>&<params>
-  const prefix = `${view}:${encodeURIComponent(focusPath).replace(/%2F/gi, "/")}`;
+  // Keep slashes readable in the path
+  const encodedPath = encodeURIComponent(path).replace(/%2F/gi, "/");
+  const prefix = `${view}=${encodedPath}`;
 
   if (paramStr) {
     return `#${prefix}&${paramStr}`;
   }
-  // Only emit hash if there's meaningful content
-  if (view || focusPath) {
+  if (view || path) {
     return `#${prefix}`;
   }
   return "";

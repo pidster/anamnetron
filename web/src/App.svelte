@@ -154,21 +154,24 @@
       if (state.version && state.version !== graphStore.selectedVersion) {
         selectVersion(state.version);
       }
-      if (state.node) {
-        const nodeId = pathToId.get(state.node) ?? state.node;
-        selectionStore.selectedNodeId = nodeId;
-        selectionStore.panelOpen = true;
+      if (state.path) {
+        const nodeId = pathToId.get(state.path) ?? state.path;
+        // If the node has children in the graph, treat path as focus; otherwise as selection
+        const hasChildren = fullTraversalIndex?.childrenMap.has(nodeId);
+        if (hasChildren) {
+          focusStore.focus(nodeId);
+          selectionStore.selectSingle(nodeId);
+        } else {
+          focusStore.clear();
+          selectionStore.selectedNodeId = nodeId;
+          selectionStore.panelOpen = true;
+        }
       } else {
+        focusStore.clear();
         selectionStore.clear();
       }
       if (state.diff && state.diff !== graphStore.diffVersion) {
         compareVersion = state.diff;
-      }
-      if (state.focusPath) {
-        const focusId = pathToId.get(state.focusPath) ?? state.focusPath;
-        focusStore.focus(focusId);
-      } else {
-        focusStore.clear();
       }
       if (state.mermaid) {
         mermaidStore.diagramType = state.mermaid as "flowchart" | "dataflow" | "sequence" | "c4";
@@ -206,14 +209,14 @@
         if (initialVersion) {
           suppressHashWrite = true;
           await selectVersion(initialVersion);
-          // Resolve canonical paths to node IDs now that the graph is loaded
-          if (initial.focusPath) {
-            const focusId = pathToId.get(initial.focusPath) ?? initial.focusPath;
-            focusStore.focus(focusId);
-          }
-          if (initial.node) {
-            const nodeId = pathToId.get(initial.node) ?? initial.node;
+          // Resolve canonical path to node ID now that the graph is loaded
+          if (initial.path) {
+            const nodeId = pathToId.get(initial.path) ?? initial.path;
             const index = fullTraversalIndex;
+            const hasChildren = index?.childrenMap.has(nodeId);
+            if (hasChildren) {
+              focusStore.focus(nodeId);
+            }
             if (index) {
               expansionStore.expandAncestors(nodeId, index);
             }
@@ -294,11 +297,13 @@
 
     if (suppressHashWrite) return;
 
+    // Path = focused node (priority) or selected node
+    const locationId = focusId ?? selectedId;
+    const locationPath = locationId ? (currentIdToPath.get(locationId) ?? locationId) : undefined;
     const hash = buildHash({
       version: currentVersion ?? undefined,
-      node: selectedId ? (currentIdToPath.get(selectedId) ?? selectedId) : undefined,
+      path: locationPath,
       diff: currentDiff ?? undefined,
-      focusPath: focusId ? (currentIdToPath.get(focusId) ?? focusId) : undefined,
       mermaid: currentView === "mermaid" ? currentMermaid : undefined,
       view: currentView ?? undefined,
     });
@@ -307,7 +312,7 @@
       const oldState = parseHash(previousHash);
       const newState = parseHash(hash);
       const viewChanged = oldState.view !== newState.view;
-      const focusChanged = oldState.focusPath !== newState.focusPath;
+      const focusChanged = oldState.path !== newState.path;
       if (previousHash && (viewChanged || focusChanged)) {
         history.pushState(null, "", hash || window.location.pathname);
       } else {
