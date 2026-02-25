@@ -8,9 +8,10 @@
 
   interface Props {
     graph: CytoscapeGraph | null;
+    onselectnode?: (nodeId: string) => void;
   }
 
-  let { graph }: Props = $props();
+  let { graph, onselectnode }: Props = $props();
 
   let containerWidth = $state(800);
   let containerHeight = $state(600);
@@ -143,8 +144,7 @@
   function handleArcClick(index: number) {
     const nodeId = matrix.ids[index];
     if (nodeId) {
-      selectionStore.selectedNodeId = nodeId;
-      selectionStore.panelOpen = true;
+      onselectnode?.(nodeId);
     }
   }
 

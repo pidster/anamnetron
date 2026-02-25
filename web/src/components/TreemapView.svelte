@@ -5,7 +5,6 @@
   import { interpolateRdYlGn, interpolateBlues } from "d3-scale-chromatic";
   import type { CytoscapeGraph } from "../lib/types";
   import { buildHierarchy, sumByMetric, getMetric, type TreeNode } from "../lib/hierarchy";
-  import { focusStore } from "../stores/focus.svelte";
   import { selectionStore } from "../stores/selection.svelte";
 
   /** A switchable metric preset for the treemap. */
@@ -64,9 +63,10 @@
 
   interface Props {
     graph: CytoscapeGraph | null;
+    onselectnode?: (nodeId: string) => void;
   }
 
-  let { graph }: Props = $props();
+  let { graph, onselectnode }: Props = $props();
 
   let containerWidth = $state(800);
   let containerHeight = $state(600);
@@ -202,24 +202,7 @@
   }
 
   function handleClick(node: HierarchyRectangularNode<TreeNode>) {
-    // If the node has children in the hierarchy, focus into it
-    const original = findOriginalNode(node.data.id);
-    if (original && original.children && original.children.length > 0) {
-      focusStore.focus(node.data.id);
-    } else {
-      // Leaf node: select it in the detail panel
-      selectionStore.selectedNodeId = node.data.id;
-      selectionStore.panelOpen = true;
-    }
-  }
-
-  function findOriginalNode(id: string): HierarchyNode<TreeNode> | null {
-    if (!fullHierarchy) return null;
-    let found: HierarchyNode<TreeNode> | null = null;
-    fullHierarchy.each((node) => {
-      if (node.data.id === id) found = node;
-    });
-    return found;
+    onselectnode?.(node.data.id);
   }
 
   function handleMouseEnter(

@@ -9,13 +9,12 @@
     type MatrixCell,
     type HierarchicalMatrix,
   } from "../lib/hierarchical-matrix";
-  import { selectionStore } from "../stores/selection.svelte";
-
   interface Props {
     graph: CytoscapeGraph | null;
+    onselectnode?: (nodeId: string) => void;
   }
 
-  let { graph }: Props = $props();
+  let { graph, onselectnode }: Props = $props();
 
   let sortMode = $state<MatrixSortMode>("hierarchy");
 
@@ -73,14 +72,12 @@
   function handleCellClick(row: number, _col: number) {
     const node = matrixData.nodes[row];
     if (node) {
-      selectionStore.selectSingle(node.id);
-      selectionStore.panelOpen = true;
+      onselectnode?.(node.id);
     }
   }
 
   function handleHeaderClick(nodeId: string) {
-    selectionStore.selectSingle(nodeId);
-    selectionStore.panelOpen = true;
+    onselectnode?.(nodeId);
   }
 
   function getCellBackground(row: number, col: number): string {

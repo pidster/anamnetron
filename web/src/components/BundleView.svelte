@@ -12,21 +12,18 @@
     type BundledEdge,
   } from "../lib/edge-bundling";
   import { EDGE_STYLES, KIND_COLORS } from "../lib/visual-encoding";
-  import { selectionStore } from "../stores/selection.svelte";
-
   interface Props {
     graph: CytoscapeGraph | null;
+    onselectnode?: (nodeId: string) => void;
   }
 
-  let { graph }: Props = $props();
+  let { graph, onselectnode }: Props = $props();
 
   let containerWidth = $state(800);
   let containerHeight = $state(600);
   let tension = $state(0.85);
   let svgEl = $state<SVGSVGElement>(undefined!);
 
-  // Drill-down state
-  let drillPath = $state<string[]>([]);
 
   // Hover state
   let hoveredNodeId = $state<string | null>(null);
@@ -56,17 +53,8 @@
     return buildHierarchy(graph);
   });
 
-  // Find drill-down root
-  let drillRoot = $derived.by((): HierarchyPointNode<TreeNode> | null => {
-    if (!fullHierarchy) return null;
-    let current = fullHierarchy;
-    for (const nodeId of drillPath) {
-      const child = current.children?.find((c) => c.data.id === nodeId);
-      if (!child) return fullHierarchy as unknown as HierarchyPointNode<TreeNode>;
-      current = child;
-    }
-    return current as unknown as HierarchyPointNode<TreeNode>;
-  });
+  // The layout root is the full hierarchy (focus/subtree filtering handled by App.svelte)
+  let drillRoot = $derived(fullHierarchy as unknown as HierarchyPointNode<TreeNode> | null);
 
   // Layout dimensions
   let radius = $derived(Math.min(containerWidth, containerHeight) / 2 - 80);
@@ -166,27 +154,6 @@
       .curve(curveBundle.beta(tension));
   });
 
-  // Breadcrumbs
-  let breadcrumbs = $derived.by((): Array<{ id: string; label: string }> => {
-    if (!fullHierarchy) return [];
-    const crumbs: Array<{ id: string; label: string }> = [
-      { id: "__top__", label: fullHierarchy.data.label },
-    ];
-    let current = fullHierarchy;
-    for (const nodeId of drillPath) {
-      const child = current.children?.find((c) => c.data.id === nodeId);
-      if (!child) break;
-      crumbs.push({ id: child.data.id, label: child.data.label });
-      current = child;
-    }
-    return crumbs;
-  });
-
-  // Reset drill path when graph changes
-  $effect(() => {
-    const _g = graph;
-    drillPath = [];
-  });
 
   // Set up d3-zoom
   onMount(() => {
@@ -242,21 +209,8 @@
     return getEdgeColor(edge.kind);
   }
 
-  function handleNodeClick(nodeId: string, hasChildren: boolean) {
-    if (hasChildren) {
-      drillPath = [...drillPath, nodeId];
-    } else {
-      selectionStore.selectSingle(nodeId);
-      selectionStore.panelOpen = true;
-    }
-  }
-
-  function handleBreadcrumbClick(index: number) {
-    if (index === 0) {
-      drillPath = [];
-    } else {
-      drillPath = drillPath.slice(0, index);
-    }
+  function handleNodeClick(nodeId: string) {
+    onselectnode?.(nodeId);
   }
 
   function handleNodeEnter(
@@ -322,26 +276,6 @@
     </label>
   </div>
 
-  {#if breadcrumbs.length > 1}
-    <div class="breadcrumb-bar">
-      {#each breadcrumbs as crumb, i}
-        {#if i > 0}
-          <span class="breadcrumb-sep">/</span>
-        {/if}
-        {#if i < breadcrumbs.length - 1}
-          <button
-            class="breadcrumb-link"
-            onclick={() => handleBreadcrumbClick(i)}
-          >
-            {crumb.label}
-          </button>
-        {:else}
-          <span class="breadcrumb-current">{crumb.label}</span>
-        {/if}
-      {/each}
-    </div>
-  {/if}
-
   <div class="bundle-area">
     {#if leafNodes.length === 0 && graph}
       <div class="center-message">
@@ -379,10 +313,10 @@
               role="button"
               tabindex="0"
               aria-label="{node.label} ({node.kind})"
-              onclick={() => handleNodeClick(node.id, node.hasChildren)}
+              onclick={() => handleNodeClick(node.id)}
               onkeydown={(e) => {
                 if (e.key === "Enter" || e.key === " ")
-                  handleNodeClick(node.id, node.hasChildren);
+                  handleNodeClick(node.id);
               }}
               onmouseenter={(e) => handleNodeEnter(e, node)}
               onmousemove={handleNodeMove}
@@ -460,41 +394,6 @@
     text-align: center;
     font-variant-numeric: tabular-nums;
     font-size: 0.8rem;
-  }
-
-  .breadcrumb-bar {
-    display: flex;
-    align-items: center;
-    padding: 0.35rem 0.75rem;
-    background: var(--surface);
-    border-bottom: 1px solid var(--border);
-    font-size: 0.8rem;
-    gap: 0.15rem;
-    flex-shrink: 0;
-  }
-
-  .breadcrumb-sep {
-    color: var(--text-muted);
-    margin: 0 0.15rem;
-  }
-
-  .breadcrumb-link {
-    background: none;
-    border: none;
-    color: var(--accent);
-    cursor: pointer;
-    font-size: 0.8rem;
-    padding: 0.1rem 0.25rem;
-    border-radius: 3px;
-  }
-
-  .breadcrumb-link:hover {
-    background: var(--border);
-  }
-
-  .breadcrumb-current {
-    color: var(--text);
-    font-weight: 600;
   }
 
   .bundle-area {

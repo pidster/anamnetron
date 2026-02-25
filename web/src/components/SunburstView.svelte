@@ -6,22 +6,19 @@
   import { schemeTableau10, interpolateRdYlGn, interpolateBlues } from "d3-scale-chromatic";
   import type { CytoscapeGraph } from "../lib/types";
   import { buildHierarchy, sumByMetric, getMetric, type TreeNode } from "../lib/hierarchy";
-  import { selectionStore } from "../stores/selection.svelte";
-
   type ColourMode = "language" | "kind" | "depth" | "fan-out";
 
   interface Props {
     graph: CytoscapeGraph | null;
+    onselectnode?: (nodeId: string) => void;
   }
 
-  let { graph }: Props = $props();
+  let { graph, onselectnode }: Props = $props();
 
   let containerWidth = $state(800);
   let containerHeight = $state(600);
   let colourMode = $state<ColourMode>("language");
 
-  // Drill-down state: stack of node IDs from root to current focus
-  let drillPath = $state<string[]>([]);
 
   // Tooltip state
   let tooltip = $state<{
@@ -41,19 +38,8 @@
     return buildHierarchy(graph);
   });
 
-  // Find the drill-down root within the hierarchy
-  let drillRoot = $derived.by((): HierarchyNode<TreeNode> | null => {
-    if (!fullHierarchy) return null;
-    if (drillPath.length === 0) return fullHierarchy;
-
-    let current: HierarchyNode<TreeNode> = fullHierarchy;
-    for (const nodeId of drillPath) {
-      const child = current.children?.find((c) => c.data.id === nodeId);
-      if (!child) return fullHierarchy;
-      current = child;
-    }
-    return current;
-  });
+  // The layout root is the full hierarchy (focus/subtree filtering handled by App.svelte)
+  let drillRoot = $derived(fullHierarchy);
 
   // Compute the maximum fan-out across all leaves for colour scaling
   let maxFanOut = $derived.by((): number => {
@@ -145,30 +131,6 @@
     return gen;
   });
 
-  // Breadcrumb trail
-  let breadcrumbs = $derived.by((): Array<{ id: string; label: string }> => {
-    if (!fullHierarchy) return [];
-
-    const crumbs: Array<{ id: string; label: string }> = [
-      { id: "__top__", label: fullHierarchy.data.label },
-    ];
-
-    let current: HierarchyNode<TreeNode> = fullHierarchy;
-    for (const nodeId of drillPath) {
-      const child = current.children?.find((c) => c.data.id === nodeId);
-      if (!child) break;
-      crumbs.push({ id: child.data.id, label: child.data.label });
-      current = child;
-    }
-
-    return crumbs;
-  });
-
-  // Reset drill path when graph changes
-  $effect(() => {
-    const _g = graph;
-    drillPath = [];
-  });
 
   function getColor(node: HierarchyRectangularNode<TreeNode>): string {
     switch (colourMode) {
@@ -177,35 +139,14 @@
       case "kind":
         return kindScale(node.data.kind);
       case "depth":
-        return depthScale(node.depth + drillPath.length);
+        return depthScale(node.depth);
       case "fan-out":
         return fanOutScale(getMetric(node.data, "fan_out"));
     }
   }
 
   function handleArcClick(node: HierarchyRectangularNode<TreeNode>) {
-    // If the node has children, drill into it
-    if (node.children && node.children.length > 0) {
-      drillPath = [...drillPath, node.data.id];
-    } else {
-      // Leaf node: select it in the detail panel
-      selectionStore.selectedNodeId = node.data.id;
-      selectionStore.panelOpen = true;
-    }
-  }
-
-  function handleCentreClick() {
-    if (drillPath.length > 0) {
-      drillPath = drillPath.slice(0, -1);
-    }
-  }
-
-  function handleBreadcrumbClick(index: number) {
-    if (index === 0) {
-      drillPath = [];
-    } else {
-      drillPath = drillPath.slice(0, index);
-    }
+    onselectnode?.(node.data.id);
   }
 
   function handleMouseEnter(
@@ -286,26 +227,6 @@
     {/each}
   </div>
 
-  {#if breadcrumbs.length > 1}
-    <div class="breadcrumb-bar">
-      {#each breadcrumbs as crumb, i}
-        {#if i > 0}
-          <span class="breadcrumb-sep">/</span>
-        {/if}
-        {#if i < breadcrumbs.length - 1}
-          <button
-            class="breadcrumb-link"
-            onclick={() => handleBreadcrumbClick(i)}
-          >
-            {crumb.label}
-          </button>
-        {:else}
-          <span class="breadcrumb-current">{crumb.label}</span>
-        {/if}
-      {/each}
-    </div>
-  {/if}
-
   <div class="sunburst-area">
     {#if arcs.length === 0 && graph}
       <div class="center-message">
@@ -316,18 +237,13 @@
         viewBox="{-containerWidth / 2} {-containerHeight / 2} {containerWidth} {containerHeight}"
         class="sunburst-svg"
       >
-        <!-- Centre circle: click to zoom out -->
+        <!-- Centre circle -->
         <circle
           cx="0"
           cy="0"
           r={arcs.length > 0 ? arcs[0].y0 : 30}
           class="sunburst-centre"
-          class:sunburst-centre-clickable={drillPath.length > 0}
-          role="button"
-          tabindex="0"
-          aria-label={drillPath.length > 0 ? "Zoom out" : centreNode?.label ?? "Root"}
-          onclick={handleCentreClick}
-          onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") handleCentreClick(); }}
+          aria-label={centreNode?.label ?? "Root"}
         />
         <!-- Centre label -->
         <text
@@ -489,41 +405,6 @@
     border-color: var(--accent);
   }
 
-  .breadcrumb-bar {
-    display: flex;
-    align-items: center;
-    padding: 0.35rem 0.75rem;
-    background: var(--surface);
-    border-bottom: 1px solid var(--border);
-    font-size: 0.8rem;
-    gap: 0.15rem;
-    flex-shrink: 0;
-  }
-
-  .breadcrumb-sep {
-    color: var(--text-muted);
-    margin: 0 0.15rem;
-  }
-
-  .breadcrumb-link {
-    background: none;
-    border: none;
-    color: var(--accent);
-    cursor: pointer;
-    font-size: 0.8rem;
-    padding: 0.1rem 0.25rem;
-    border-radius: 3px;
-  }
-
-  .breadcrumb-link:hover {
-    background: var(--border);
-  }
-
-  .breadcrumb-current {
-    color: var(--text);
-    font-weight: 600;
-  }
-
   .sunburst-area {
     flex: 1;
     display: flex;
@@ -541,14 +422,6 @@
     fill: var(--surface);
     stroke: var(--border);
     stroke-width: 1;
-  }
-
-  .sunburst-centre-clickable {
-    cursor: pointer;
-  }
-
-  .sunburst-centre-clickable:hover {
-    fill: var(--bg);
   }
 
   .sunburst-centre-label {

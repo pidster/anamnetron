@@ -711,23 +711,23 @@
           </ErrorBoundary>
         {:else if viewStore.mode === "bundle"}
           <ErrorBoundary name="Bundle View">
-            <BundleView graph={filteredVisibleGraph} />
+            <BundleView graph={filteredVisibleGraph} onselectnode={(nodeId) => selectNode(nodeId)} />
           </ErrorBoundary>
         {:else if viewStore.mode === "matrix"}
           <ErrorBoundary name="Matrix View">
-            <MatrixView graph={filteredVisibleGraph} />
+            <MatrixView graph={filteredVisibleGraph} onselectnode={(nodeId) => selectNode(nodeId)} />
           </ErrorBoundary>
         {:else if viewStore.mode === "treemap"}
           <ErrorBoundary name="Treemap View">
-            <TreemapView graph={filteredVisibleGraph} />
+            <TreemapView graph={filteredVisibleGraph} onselectnode={(nodeId) => selectNode(nodeId)} />
           </ErrorBoundary>
         {:else if viewStore.mode === "chord"}
           <ErrorBoundary name="Chord View">
-            <ChordView graph={filteredVisibleGraph} />
+            <ChordView graph={filteredVisibleGraph} onselectnode={(nodeId) => selectNode(nodeId)} />
           </ErrorBoundary>
         {:else if viewStore.mode === "sunburst"}
           <ErrorBoundary name="Sunburst View">
-            <SunburstView graph={filteredVisibleGraph} />
+            <SunburstView graph={filteredVisibleGraph} onselectnode={(nodeId) => selectNode(nodeId)} />
           </ErrorBoundary>
         {/if}
       {:else}
@@ -748,7 +748,6 @@
           dependents={selectionStore.dependents}
           loading={selectionStore.loading}
           onselectnode={(nodeId) => selectNode(nodeId)}
-          onfocusnode={(nodeId) => focusStore.focus(nodeId)}
         />
       </ErrorBoundary>
     {/if}

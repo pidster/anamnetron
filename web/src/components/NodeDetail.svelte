@@ -11,7 +11,6 @@
     dependents: ApiEdge[];
     loading: boolean;
     onselectnode?: (nodeId: string) => void;
-    onfocusnode?: (nodeId: string) => void;
   }
 
   let {
@@ -22,7 +21,6 @@
     dependents,
     loading,
     onselectnode,
-    onfocusnode,
   }: Props = $props();
 
   /** Build a lookup from node ID to canonical path from the graph data. */
@@ -44,10 +42,6 @@
 
   function handleClick(nodeId: string) {
     onselectnode?.(nodeId);
-  }
-
-  function handleDblClick(nodeId: string) {
-    onfocusnode?.(nodeId);
   }
 
   function close() {
@@ -103,8 +97,6 @@
                 <button
                   class="link-btn"
                   onclick={() => handleClick(a.id)}
-                  ondblclick={() => handleDblClick(a.id)}
-                  title="Click to select, double-click to focus"
                 >
                   <code>{a.canonical_path}</code>
                 </button>
@@ -123,8 +115,6 @@
                 <button
                   class="link-btn"
                   onclick={() => handleClick(c.id)}
-                  ondblclick={() => handleDblClick(c.id)}
-                  title="Click to select, double-click to focus"
                 >
                   <code>{c.canonical_path}</code>
                 </button>
@@ -143,8 +133,6 @@
                 <button
                   class="link-btn"
                   onclick={() => handleClick(d.target)}
-                  ondblclick={() => handleDblClick(d.target)}
-                  title="Click to select, double-click to focus"
                 >
                   {d.kind}: <code>{resolvePath(d.target)}</code>
                 </button>
@@ -163,8 +151,6 @@
                 <button
                   class="link-btn"
                   onclick={() => handleClick(d.source)}
-                  ondblclick={() => handleDblClick(d.source)}
-                  title="Click to select, double-click to focus"
                 >
                   {d.kind}: <code>{resolvePath(d.source)}</code>
                 </button>
