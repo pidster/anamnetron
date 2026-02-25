@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { ApiNode, ApiEdge } from "../lib/types";
+  import { graphStore } from "../stores/graph.svelte";
   import { selectionStore } from "../stores/selection.svelte";
 
   interface Props {
@@ -12,6 +13,28 @@
   }
 
   let { node, children, ancestors, dependencies, dependents, loading }: Props = $props();
+
+  /** Build a lookup from node ID to canonical path from the graph data. */
+  const nodePathById = $derived.by(() => {
+    const map = new Map<string, string>();
+    const nodes = graphStore.graph?.elements?.nodes;
+    if (nodes) {
+      for (const n of nodes) {
+        map.set(n.data.id, n.data.canonical_path);
+      }
+    }
+    return map;
+  });
+
+  /** Resolve a node ID to its canonical path, falling back to the raw ID. */
+  function resolvePath(id: string): string {
+    return nodePathById.get(id) ?? id;
+  }
+
+  function selectNode(nodeId: string) {
+    selectionStore.selectedNodeId = nodeId;
+    selectionStore.panelOpen = true;
+  }
 
   function close() {
     selectionStore.clear();
@@ -62,7 +85,11 @@
           <h3>Ancestors ({ancestors.length})</h3>
           <ul>
             {#each ancestors as a}
-              <li><code>{a.canonical_path}</code></li>
+              <li>
+                <button class="link-btn" onclick={() => selectNode(a.id)}>
+                  <code>{a.canonical_path}</code>
+                </button>
+              </li>
             {/each}
           </ul>
         </section>
@@ -73,7 +100,11 @@
           <h3>Children ({children.length})</h3>
           <ul>
             {#each children as c}
-              <li><code>{c.canonical_path}</code></li>
+              <li>
+                <button class="link-btn" onclick={() => selectNode(c.id)}>
+                  <code>{c.canonical_path}</code>
+                </button>
+              </li>
             {/each}
           </ul>
         </section>
@@ -84,7 +115,11 @@
           <h3>Dependencies ({dependencies.length})</h3>
           <ul>
             {#each dependencies as d}
-              <li>{d.kind}: {d.target}</li>
+              <li>
+                <button class="link-btn" onclick={() => selectNode(d.target)}>
+                  {d.kind}: <code>{resolvePath(d.target)}</code>
+                </button>
+              </li>
             {/each}
           </ul>
         </section>
@@ -95,7 +130,11 @@
           <h3>Dependents ({dependents.length})</h3>
           <ul>
             {#each dependents as d}
-              <li>{d.kind}: {d.source}</li>
+              <li>
+                <button class="link-btn" onclick={() => selectNode(d.source)}>
+                  {d.kind}: <code>{resolvePath(d.source)}</code>
+                </button>
+              </li>
             {/each}
           </ul>
         </section>
@@ -173,6 +212,20 @@
   code {
     font-size: 0.8rem;
     color: var(--accent);
+  }
+
+  .link-btn {
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    text-align: left;
+    font: inherit;
+    color: inherit;
+  }
+
+  .link-btn:hover code {
+    text-decoration: underline;
   }
 
   .metric-key {
