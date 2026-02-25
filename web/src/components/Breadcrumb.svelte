@@ -7,7 +7,6 @@
     traversalIndex: TraversalIndex | null;
     labelMap: Map<string, string>;
     focusNodeId?: string | null;
-    focusHistory?: string[];
     onnavigate?: (nodeId: string) => void;
     onfocus?: (nodeId: string) => void;
     onclearfocus?: () => void;
@@ -18,26 +17,20 @@
     traversalIndex,
     labelMap,
     focusNodeId = null,
-    focusHistory = [],
     onnavigate,
     onfocus,
     onclearfocus,
   }: Props = $props();
 
-  // Focus breadcrumbs: history + current focus node
+  // Focus breadcrumbs: full ancestor chain from graph hierarchy to focused node
   let focusCrumbs = $derived.by(() => {
-    if (!focusNodeId) return [];
-    const crumbs = focusHistory.map((id) => ({
+    if (!focusNodeId || !traversalIndex) return [];
+    const ancestors = getAncestorChain(traversalIndex, focusNodeId);
+    return [...ancestors, focusNodeId].map((id, i, arr) => ({
       id,
       label: labelMap.get(id) ?? id,
-      isCurrent: false,
+      isCurrent: i === arr.length - 1,
     }));
-    crumbs.push({
-      id: focusNodeId,
-      label: labelMap.get(focusNodeId) ?? focusNodeId,
-      isCurrent: true,
-    });
-    return crumbs;
   });
 
   // Selection breadcrumbs: ancestor chain of selected node (shown when no focus active)

@@ -280,20 +280,32 @@
   });
 
   // Sync state to URL hash
+  let previousHash = "";
   $effect(() => {
     if (suppressHashWrite) return;
     const focusId = focusStore.focusNodeId;
     const selectedId = selectionStore.selectedNodeId;
+    const currentView = viewStore.mode;
     const hash = buildHash({
       version: graphStore.selectedVersion ?? undefined,
       node: selectedId ? (idToPath.get(selectedId) ?? selectedId) : undefined,
       diff: graphStore.diffVersion ?? undefined,
       focusPath: focusId ? (idToPath.get(focusId) ?? focusId) : undefined,
-      mermaid: mermaidStore.diagramType,
-      view: viewStore.mode ?? undefined,
+      mermaid: currentView === "mermaid" ? mermaidStore.diagramType : undefined,
+      view: currentView ?? undefined,
     });
     if (hash !== window.location.hash) {
-      history.replaceState(null, "", hash || window.location.pathname);
+      // Push a new history entry when view or focus changes (for browser back/forward)
+      const oldState = parseHash(previousHash);
+      const newState = parseHash(hash);
+      const viewChanged = oldState.view !== newState.view;
+      const focusChanged = oldState.focusPath !== newState.focusPath;
+      if (previousHash && (viewChanged || focusChanged)) {
+        history.pushState(null, "", hash || window.location.pathname);
+      } else {
+        history.replaceState(null, "", hash || window.location.pathname);
+      }
+      previousHash = hash;
     }
   });
 
@@ -655,9 +667,8 @@
     traversalIndex={fullTraversalIndex}
     {labelMap}
     focusNodeId={focusStore.focusNodeId}
-    focusHistory={focusStore.history}
     onnavigate={(nodeId) => selectNode(nodeId)}
-    onfocus={(nodeId) => focusStore.focusAncestor(nodeId)}
+    onfocus={(nodeId) => focusStore.focus(nodeId)}
     onclearfocus={() => focusStore.clear()}
   />
 
