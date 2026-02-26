@@ -70,6 +70,9 @@ export function findPathThroughLCA(
  *
  * Uses a radial cluster layout. Each edge's control points trace
  * the hierarchy path from source leaf → LCA → target leaf.
+ * The actual beta-blending (tension) is handled by d3's `curveBundle`
+ * in the rendering layer; this function only supplies the hierarchy
+ * control points.
  */
 export function computeBundledEdges(
   root: HierarchyPointNode<TreeNode>,
@@ -122,11 +125,26 @@ export function computeBundledEdges(
  * Create a radial cluster layout for the hierarchy.
  *
  * Returns the laid-out root with x (angle in degrees) and y (radius) on each node.
+ *
+ * Interior node radii are remapped so the root sits at `minRadiusFraction * innerRadius`
+ * rather than at 0. Without this, edges whose LCA is near the root route through the
+ * centre of the circle, creating an ugly "inner boundary" effect.
  */
 export function createRadialCluster(
   root: HierarchyPointNode<TreeNode>,
   innerRadius: number,
+  minRadiusFraction = 0.92,
 ): HierarchyPointNode<TreeNode> {
   const layout = cluster<TreeNode>().size([360, innerRadius]);
-  return layout(root);
+  const result = layout(root);
+
+  // Remap radii from [0, innerRadius] to [minRadius, innerRadius].
+  // Leaves stay at innerRadius; the root moves to minRadius.
+  const minRadius = innerRadius * minRadiusFraction;
+  const scale = innerRadius > 0 ? (innerRadius - minRadius) / innerRadius : 1;
+  result.each((node) => {
+    node.y = minRadius + node.y * scale;
+  });
+
+  return result;
 }

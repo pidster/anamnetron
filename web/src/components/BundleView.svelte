@@ -98,11 +98,10 @@
         angle: number;
         hasChildren: boolean;
       }> = [];
-      // Collect direct children (one level deeper than drill root)
+      // Collect only leaf nodes (nodes without children) for the outer ring
       clusterRoot.each((node) => {
         if (node === clusterRoot) return;
-        if (node.children && node.children.length > 0 && node.depth === 1)
-          return; // Skip intermediate parents at depth 1 from drill root
+        if (node.children && node.children.length > 0) return;
         const angleRad = (node.x * Math.PI) / 180;
         const x = Math.sin(angleRad) * node.y;
         const y = -Math.cos(angleRad) * node.y;
@@ -146,7 +145,10 @@
     return ids;
   });
 
-  // Line generator for bundled edges
+  // Line generator for bundled edges.
+  // curveBundle handles Holten beta-blending in Cartesian space;
+  // the radius remapping in createRadialCluster prevents curves from
+  // dipping through the centre.
   let lineGen = $derived.by(() => {
     return lineRadial<[number, number]>()
       .angle((d) => d[0])

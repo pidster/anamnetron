@@ -224,8 +224,9 @@ describe("createRadialCluster", () => {
     }
   });
 
-  it("places root at center", () => {
+  it("places root at minimum radius (not center)", () => {
     const root = makeTree(simpleTree);
-    expect(root.y).toBe(0);
+    // Root is remapped to minRadiusFraction * innerRadius (default 0.92 * 200)
+    expect(root.y).toBeCloseTo(200 * 0.92, 1);
   });
 });
