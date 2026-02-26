@@ -1,5 +1,6 @@
 <script lang="ts">
   import { lineRadial, curveBundle } from "d3-shape";
+  import { scaleSqrt, scaleLog } from "d3-scale";
   import type { HierarchyPointNode } from "d3-hierarchy";
   import { zoom as d3zoom, zoomIdentity } from "d3-zoom";
   import { select } from "d3-selection";
@@ -8,6 +9,7 @@
   import { buildHierarchy, type TreeNode } from "../lib/hierarchy";
   import {
     computeBundledEdges,
+    computeArcEdges,
     createRadialCluster,
     type BundledEdge,
   } from "../lib/edge-bundling";
@@ -24,7 +26,6 @@
   let tension = $state(0.85);
   let svgEl = $state<SVGSVGElement>(undefined!);
 
-
   // Hover state
   let hoveredNodeId = $state<string | null>(null);
 
@@ -36,7 +37,10 @@
     label: string;
     kind: string;
     subKind: string;
-  }>({ visible: false, x: 0, y: 0, label: "", kind: "", subKind: "" });
+    descendants: number;
+    incomingCount: number;
+    outgoingCount: number;
+  }>({ visible: false, x: 0, y: 0, label: "", kind: "", subKind: "", descendants: 0, incomingCount: 0, outgoingCount: 0 });
 
   // Zoom transform
   let transformStr = $state("translate(0,0) scale(1)");
@@ -56,9 +60,9 @@
   // The layout root is the full hierarchy (focus/subtree filtering handled by App.svelte)
   let drillRoot = $derived(fullHierarchy as unknown as HierarchyPointNode<TreeNode> | null);
 
-  // Layout dimensions
-  let radius = $derived(Math.min(containerWidth, containerHeight) / 2 - 80);
-  let innerRadius = $derived(Math.max(radius - 40, 60));
+  // Layout dimensions — more room for labels
+  let radius = $derived(Math.min(containerWidth, containerHeight) / 2 - 120);
+  let innerRadius = $derived(Math.max(radius - 50, 60));
 
   // Compute radial cluster layout
   let clusterRoot = $derived.by((): HierarchyPointNode<TreeNode> | null => {
@@ -69,10 +73,32 @@
     );
   });
 
-  // Compute bundled edges
+  // Detect flat tree (root with only leaf children → use arcs instead of hierarchy bundling)
+  let isFlat = $derived.by(() => {
+    if (!clusterRoot) return false;
+    return clusterRoot.height <= 1;
+  });
+
+  // Compute bundled edges — adaptive: arcs for flat trees, hierarchy bundling for deeper
   let bundledEdges = $derived.by((): BundledEdge[] => {
     if (!clusterRoot || !graph) return [];
+    if (isFlat) {
+      return computeArcEdges(clusterRoot, graph.elements.edges);
+    }
     return computeBundledEdges(clusterRoot, graph.elements.edges);
+  });
+
+  // Build _childCount lookup from graph node data
+  let childCountMap = $derived.by(() => {
+    const map = new Map<string, number>();
+    if (!graph) return map;
+    for (const node of graph.elements.nodes) {
+      const d = node.data as unknown as Record<string, unknown>;
+      if (typeof d._childCount === "number") {
+        map.set(node.data.id, d._childCount);
+      }
+    }
+    return map;
   });
 
   // Get leaf nodes for rendering
@@ -85,7 +111,7 @@
       x: number;
       y: number;
       angle: number;
-      hasChildren: boolean;
+      childCount: number;
     }> => {
       if (!clusterRoot) return [];
       const nodes: Array<{
@@ -96,15 +122,18 @@
         x: number;
         y: number;
         angle: number;
-        hasChildren: boolean;
+        childCount: number;
       }> = [];
-      // Collect only leaf nodes (nodes without children) for the outer ring
+      // Collect only leaf nodes (nodes without children in the layout tree)
       clusterRoot.each((node) => {
         if (node === clusterRoot) return;
         if (node.children && node.children.length > 0) return;
         const angleRad = (node.x * Math.PI) / 180;
         const x = Math.sin(angleRad) * node.y;
         const y = -Math.cos(angleRad) * node.y;
+        const cc = childCountMap.get(node.data.id)
+          ?? (node.data.metadata as Record<string, unknown> | undefined)?._childCount as number | undefined
+          ?? 0;
         nodes.push({
           id: node.data.id,
           label: node.data.label,
@@ -113,42 +142,67 @@
           x,
           y,
           angle: node.x,
-          hasChildren: (node.children?.length ?? 0) > 0,
+          childCount: cc,
         });
       });
       return nodes;
     },
   );
 
+  // d3 scales for visual encoding
+  let radiusScale = $derived.by(() => {
+    const counts = leafNodes.map((n) => n.childCount).filter((c) => c > 0);
+    const maxCount = counts.length > 0 ? Math.max(...counts) : 1;
+    return scaleSqrt().domain([0, maxCount]).range([6, 28]);
+  });
+
+  let edgeWidthScale = $derived.by(() => {
+    const edgeCounts = bundledEdges.map((e) => e.count).filter((c) => c > 0);
+    const maxCount = edgeCounts.length > 0 ? Math.max(...edgeCounts) : 1;
+    return scaleLog().domain([1, Math.max(maxCount, 2)]).range([1.5, 10]).clamp(true);
+  });
+
+  // Whether to always show labels (≤60 nodes) or hover-only
+  let alwaysShowLabels = $derived(leafNodes.length <= 60);
+
   // Build edges-by-node lookup for hover highlighting
   let edgesByNode = $derived.by(() => {
     const incoming = new Map<string, BundledEdge[]>();
     const outgoing = new Map<string, BundledEdge[]>();
+
+    function addIncoming(nodeId: string, edge: BundledEdge) {
+      if (!incoming.has(nodeId)) incoming.set(nodeId, []);
+      incoming.get(nodeId)!.push(edge);
+    }
+    function addOutgoing(nodeId: string, edge: BundledEdge) {
+      if (!outgoing.has(nodeId)) outgoing.set(nodeId, []);
+      outgoing.get(nodeId)!.push(edge);
+    }
+
     for (const edge of bundledEdges) {
-      if (!outgoing.has(edge.sourceId)) outgoing.set(edge.sourceId, []);
-      outgoing.get(edge.sourceId)!.push(edge);
-      if (!incoming.has(edge.targetId)) incoming.set(edge.targetId, []);
-      incoming.get(edge.targetId)!.push(edge);
+      addOutgoing(edge.sourceId, edge);
+      addIncoming(edge.targetId, edge);
     }
     return { incoming, outgoing };
   });
 
-  // Set of connected node IDs when hovering
+  // Set of connected leaf node IDs when hovering
   let connectedNodeIds = $derived.by(() => {
     if (!hoveredNodeId) return new Set<string>();
     const ids = new Set<string>();
     ids.add(hoveredNodeId);
     const inc = edgesByNode.incoming.get(hoveredNodeId) ?? [];
     const out = edgesByNode.outgoing.get(hoveredNodeId) ?? [];
-    for (const e of inc) ids.add(e.sourceId);
-    for (const e of out) ids.add(e.targetId);
+    for (const e of inc) {
+      ids.add(e.sourceId);
+    }
+    for (const e of out) {
+      ids.add(e.targetId);
+    }
     return ids;
   });
 
-  // Line generator for bundled edges.
-  // curveBundle handles Holten beta-blending in Cartesian space;
-  // the radius remapping in createRadialCluster prevents curves from
-  // dipping through the centre.
+  // Line generator for bundled edges
   let lineGen = $derived.by(() => {
     return lineRadial<[number, number]>()
       .angle((d) => d[0])
@@ -166,7 +220,6 @@
       .sort((a, b) => b[1] - a[1])
       .map(([kind, count]) => ({ kind, count, color: getEdgeColor(kind) }));
   });
-
 
   // Set up d3-zoom
   onMount(() => {
@@ -206,20 +259,45 @@
     return getCssVar("--accent") || "#5b9bd5";
   }
 
+  function getNodeRadius(childCount: number): number {
+    return childCount > 0 ? radiusScale(childCount) : 6;
+  }
+
+  function getEdgeWidth(edge: BundledEdge): number {
+    return edgeWidthScale(Math.max(edge.count, 1));
+  }
+
+  /** Check whether the hovered leaf is the edge's source or target. */
+  function isEdgeConnected(edge: BundledEdge): "source" | "target" | false {
+    if (!hoveredNodeId) return false;
+    const out = edgesByNode.outgoing.get(hoveredNodeId);
+    if (out?.includes(edge)) return "source";
+    const inc = edgesByNode.incoming.get(hoveredNodeId);
+    if (inc?.includes(edge)) return "target";
+    return false;
+  }
+
   function getEdgeOpacity(edge: BundledEdge): number {
     if (!hoveredNodeId) return 0.4;
-    if (edge.sourceId === hoveredNodeId || edge.targetId === hoveredNodeId)
-      return 0.85;
+    if (isEdgeConnected(edge)) return 0.85;
     return 0.04;
   }
 
   function getHighlightColor(edge: BundledEdge): string {
     if (!hoveredNodeId) return getEdgeColor(edge.kind);
-    if (edge.sourceId === hoveredNodeId)
+    const conn = isEdgeConnected(edge);
+    if (conn === "source")
       return getCssVar("--fail") || "#f44336"; // outgoing = red
-    if (edge.targetId === hoveredNodeId)
+    if (conn === "target")
       return getCssVar("--pass") || "#4caf50"; // incoming = green
     return getEdgeColor(edge.kind);
+  }
+
+  function getEdgeStrokeWidth(edge: BundledEdge): number {
+    if (hoveredNodeId && isEdgeConnected(edge)) {
+      return Math.max(getEdgeWidth(edge), 2.5);
+    }
+    return getEdgeWidth(edge);
   }
 
   function handleNodeClick(nodeId: string) {
@@ -228,9 +306,11 @@
 
   function handleNodeEnter(
     event: MouseEvent,
-    node: { id: string; label: string; kind: string; subKind: string },
+    node: { id: string; label: string; kind: string; subKind: string; childCount: number },
   ) {
     hoveredNodeId = node.id;
+    const inc = edgesByNode.incoming.get(node.id) ?? [];
+    const out = edgesByNode.outgoing.get(node.id) ?? [];
     tooltip = {
       visible: true,
       x: event.clientX,
@@ -238,6 +318,9 @@
       label: node.label,
       kind: node.kind,
       subKind: node.subKind,
+      descendants: node.childCount,
+      incomingCount: inc.reduce((s, e) => s + e.count, 0),
+      outgoingCount: out.reduce((s, e) => s + e.count, 0),
     };
   }
 
@@ -254,8 +337,9 @@
   }
 
   /** Label position: outside the circle, rotated for readability. */
-  function labelTransform(angle: number): string {
-    const labelRadius = innerRadius + 12;
+  function labelTransform(angle: number, childCount: number): string {
+    const nodeR = getNodeRadius(childCount);
+    const labelRadius = innerRadius + nodeR + 4;
     const angleRad = (angle * Math.PI) / 180;
     const x = Math.sin(angleRad) * labelRadius;
     const y = -Math.cos(angleRad) * labelRadius;
@@ -307,25 +391,24 @@
               d={lineGen(edge.points) ?? ""}
               fill="none"
               stroke={getHighlightColor(edge)}
-              stroke-width={hoveredNodeId && (edge.sourceId === hoveredNodeId || edge.targetId === hoveredNodeId) ? 2 : bundledEdges.length > 500 ? 0.5 : 1.5}
+              stroke-width={getEdgeStrokeWidth(edge)}
               stroke-opacity={getEdgeOpacity(edge)}
               class="bundle-edge"
             />
           {/each}
 
-          <!-- Node dots -->
+          <!-- Node dots with size encoding -->
           {#each leafNodes as node (node.id)}
             <circle
               cx={node.x}
               cy={node.y}
-              r={leafNodes.length > 500 ? 1.5 : node.hasChildren ? 5 : 3.5}
+              r={getNodeRadius(node.childCount)}
               fill={getNodeColor(node.kind)}
               class="bundle-node"
               class:bundle-node-faded={hoveredNodeId !== null && !connectedNodeIds.has(node.id)}
-              class:bundle-node-parent={node.hasChildren}
               role="button"
               tabindex="0"
-              aria-label="{node.label} ({node.kind})"
+              aria-label="{node.label} ({node.kind}{node.childCount > 0 ? `, ${node.childCount} descendants` : ''})"
               onclick={() => handleNodeClick(node.id)}
               onkeydown={(e) => {
                 if (e.key === "Enter" || e.key === " ")
@@ -337,12 +420,27 @@
             />
           {/each}
 
-          <!-- Labels: only render for connected nodes when hovering (performance) -->
-          {#if hoveredNodeId}
+          <!-- Labels -->
+          {#if alwaysShowLabels}
+            <!-- Always-visible labels when ≤60 nodes -->
+            {#each leafNodes as node (node.id)}
+              <text
+                transform={labelTransform(node.angle, node.childCount)}
+                text-anchor={labelAnchor(node.angle)}
+                dominant-baseline="central"
+                class="bundle-label"
+                class:bundle-label-highlighted={hoveredNodeId !== null && connectedNodeIds.has(node.id)}
+                class:bundle-label-faded={hoveredNodeId !== null && !connectedNodeIds.has(node.id)}
+              >
+                {node.label}
+              </text>
+            {/each}
+          {:else if hoveredNodeId}
+            <!-- Hover-only labels when >60 nodes -->
             {#each leafNodes as node (node.id)}
               {#if connectedNodeIds.has(node.id)}
                 <text
-                  transform={labelTransform(node.angle)}
+                  transform={labelTransform(node.angle, node.childCount)}
                   text-anchor={labelAnchor(node.angle)}
                   dominant-baseline="central"
                   class="bundle-label bundle-label-highlighted"
@@ -367,6 +465,22 @@
         <span class="tooltip-key">Kind</span>
         <span>{tooltip.kind}{tooltip.subKind ? ` / ${tooltip.subKind}` : ""}</span>
       </div>
+      {#if tooltip.descendants > 0}
+        <div class="tooltip-row">
+          <span class="tooltip-key">Descendants</span>
+          <span>{tooltip.descendants}</span>
+        </div>
+      {/if}
+      {#if tooltip.incomingCount > 0 || tooltip.outgoingCount > 0}
+        <div class="tooltip-row">
+          <span class="tooltip-key tooltip-incoming">Incoming</span>
+          <span>{tooltip.incomingCount}</span>
+        </div>
+        <div class="tooltip-row">
+          <span class="tooltip-key tooltip-outgoing">Outgoing</span>
+          <span>{tooltip.outgoingCount}</span>
+        </div>
+      {/if}
     </div>
   {/if}
 
@@ -449,17 +563,12 @@
   .bundle-node {
     cursor: pointer;
     stroke: var(--surface);
-    stroke-width: 1;
+    stroke-width: 1.5;
     transition: opacity 0.15s ease;
   }
 
   .bundle-node-faded {
     opacity: 0.2;
-  }
-
-  .bundle-node-parent {
-    stroke-width: 2;
-    stroke: var(--bg);
   }
 
   .bundle-node:hover {
@@ -473,7 +582,7 @@
   }
 
   .bundle-label {
-    font-size: 9px;
+    font-size: 11px;
     fill: var(--text);
     pointer-events: none;
     transition: opacity 0.15s ease, font-weight 0.15s ease;
@@ -527,6 +636,14 @@
 
   .tooltip-key {
     color: var(--text-muted);
+  }
+
+  .tooltip-incoming {
+    color: var(--pass, #4caf50);
+  }
+
+  .tooltip-outgoing {
+    color: var(--fail, #f44336);
   }
 
   .bundle-legend {

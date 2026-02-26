@@ -11,6 +11,8 @@ export interface BundledEdge {
   kind: string;
   /** Sequence of [angle, radius] control points through the hierarchy. */
   points: Array<[number, number]>;
+  /** Number of real edges aggregated into this edge (from _count on meta-edges, default 1). */
+  count: number;
 }
 
 /**
@@ -76,7 +78,7 @@ export function findPathThroughLCA(
  */
 export function computeBundledEdges(
   root: HierarchyPointNode<TreeNode>,
-  edges: Array<{ data: { source: string; target: string; kind: string } }>,
+  edges: Array<{ data: { source: string; target: string; kind: string; _count?: number } }>,
 ): BundledEdge[] {
   const ancestorPaths = buildAncestorPaths(root);
 
@@ -113,12 +115,70 @@ export function computeBundledEdges(
       }
     }
 
+    const count = (edge.data as Record<string, unknown>)._count as number | undefined;
+
     if (points.length >= 2) {
-      bundled.push({ sourceId: source, targetId: target, kind, points });
+      bundled.push({ sourceId: source, targetId: target, kind, points, count: count ?? 1 });
     }
   }
 
   return bundled;
+}
+
+/**
+ * Compute simple bezier arc edges for flat trees (root with only leaf children).
+ *
+ * Instead of routing through hierarchy control points (which produces no
+ * bundling when there is only one level), this creates 3-point bezier arcs
+ * where the control point is pulled inward toward the centre.
+ */
+export function computeArcEdges(
+  root: HierarchyPointNode<TreeNode>,
+  edges: Array<{ data: { source: string; target: string; kind: string; _count?: number } }>,
+): BundledEdge[] {
+  // Build a position map from node ID to [angle, radius] in radial coords
+  const positionMap = new Map<string, [number, number]>();
+  root.each((node) => {
+    const angleRad = (node.x * Math.PI) / 180;
+    positionMap.set(node.data.id, [angleRad, node.y]);
+  });
+
+  const arcs: BundledEdge[] = [];
+
+  for (const edge of edges) {
+    const { source, target, kind } = edge.data;
+    if (kind === "contains") continue;
+
+    const srcPos = positionMap.get(source);
+    const tgtPos = positionMap.get(target);
+    if (!srcPos || !tgtPos) continue;
+
+    const [srcAngle, srcRadius] = srcPos;
+    const [tgtAngle, tgtRadius] = tgtPos;
+
+    // Control point at the midpoint angle, pulled inward to ~30% of the radius
+    let midAngle = (srcAngle + tgtAngle) / 2;
+
+    // If the arc spans more than PI radians, wrap around the other way
+    let angleDiff = tgtAngle - srcAngle;
+    if (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
+    if (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
+    midAngle = srcAngle + angleDiff / 2;
+
+    const midRadius = Math.min(srcRadius, tgtRadius) * 0.3;
+
+    const count = (edge.data as Record<string, unknown>)._count as number | undefined;
+
+    arcs.push({
+      sourceId: source,
+      targetId: target,
+      kind,
+      points: [srcPos, [midAngle, midRadius], tgtPos],
+      count: count ?? 1,
+    });
+  }
+
+  return arcs;
 }
 
 /**
@@ -128,12 +188,15 @@ export function computeBundledEdges(
  *
  * Interior node radii are remapped so the root sits at `minRadiusFraction * innerRadius`
  * rather than at 0. Without this, edges whose LCA is near the root route through the
- * centre of the circle, creating an ugly "inner boundary" effect.
+ * dead centre of the circle.
+ *
+ * A value of ~0.4 gives edges room to arc smoothly: shallow arcs for siblings,
+ * deeper arcs for cross-module edges, conveying hierarchical distance visually.
  */
 export function createRadialCluster(
   root: HierarchyPointNode<TreeNode>,
   innerRadius: number,
-  minRadiusFraction = 0.92,
+  minRadiusFraction = 0.4,
 ): HierarchyPointNode<TreeNode> {
   const layout = cluster<TreeNode>().size([360, innerRadius]);
   const result = layout(root);

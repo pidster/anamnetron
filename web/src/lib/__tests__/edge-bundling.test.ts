@@ -5,6 +5,7 @@ import {
   buildAncestorPaths,
   findPathThroughLCA,
   computeBundledEdges,
+  computeArcEdges,
   createRadialCluster,
 } from "../edge-bundling";
 
@@ -22,8 +23,9 @@ function makeEdge(
   source: string,
   target: string,
   kind = "depends",
+  _count?: number,
 ) {
-  return { data: { id, source, target, kind } };
+  return { data: { id, source, target, kind, _count } };
 }
 
 const simpleTree: TreeNode = {
@@ -74,6 +76,41 @@ const simpleTree: TreeNode = {
           children: [],
         },
       ],
+    },
+  ],
+};
+
+/** A flat tree: root with only leaf children (no intermediate hierarchy). */
+const flatTree: TreeNode = {
+  id: "root",
+  label: "Root",
+  kind: "system",
+  sub_kind: "",
+  canonical_path: "/",
+  children: [
+    {
+      id: "mod-a",
+      label: "Module A",
+      kind: "component",
+      sub_kind: "",
+      canonical_path: "/mod-a",
+      children: [],
+    },
+    {
+      id: "mod-b",
+      label: "Module B",
+      kind: "component",
+      sub_kind: "",
+      canonical_path: "/mod-b",
+      children: [],
+    },
+    {
+      id: "mod-c",
+      label: "Module C",
+      kind: "component",
+      sub_kind: "",
+      canonical_path: "/mod-c",
+      children: [],
     },
   ],
 };
@@ -201,6 +238,106 @@ describe("computeBundledEdges", () => {
       expect(radius).toBeGreaterThanOrEqual(0);
     }
   });
+
+  it("propagates _count to count field", () => {
+    const root = makeTree(simpleTree);
+    const edges = [makeEdge("e1", "a1", "b1", "depends", 7)];
+    const bundled = computeBundledEdges(root, edges);
+
+    expect(bundled).toHaveLength(1);
+    expect(bundled[0].count).toBe(7);
+  });
+
+  it("defaults count to 1 when _count is undefined", () => {
+    const root = makeTree(simpleTree);
+    const edges = [makeEdge("e1", "a1", "b1", "depends")];
+    const bundled = computeBundledEdges(root, edges);
+
+    expect(bundled).toHaveLength(1);
+    expect(bundled[0].count).toBe(1);
+  });
+});
+
+describe("computeArcEdges", () => {
+  it("produces 3-point arcs for a flat tree", () => {
+    const root = makeTree(flatTree);
+    const edges = [makeEdge("e1", "mod-a", "mod-b", "depends")];
+    const arcs = computeArcEdges(root, edges);
+
+    expect(arcs).toHaveLength(1);
+    expect(arcs[0].sourceId).toBe("mod-a");
+    expect(arcs[0].targetId).toBe("mod-b");
+    expect(arcs[0].points).toHaveLength(3);
+  });
+
+  it("skips contains edges", () => {
+    const root = makeTree(flatTree);
+    const edges = [makeEdge("c1", "root", "mod-a", "contains")];
+    const arcs = computeArcEdges(root, edges);
+    expect(arcs).toHaveLength(0);
+  });
+
+  it("skips edges with dangling endpoints", () => {
+    const root = makeTree(flatTree);
+    const edges = [makeEdge("e1", "mod-a", "nonexistent", "depends")];
+    const arcs = computeArcEdges(root, edges);
+    expect(arcs).toHaveLength(0);
+  });
+
+  it("carries count from _count", () => {
+    const root = makeTree(flatTree);
+    const edges = [makeEdge("e1", "mod-a", "mod-b", "depends", 12)];
+    const arcs = computeArcEdges(root, edges);
+
+    expect(arcs).toHaveLength(1);
+    expect(arcs[0].count).toBe(12);
+  });
+
+  it("defaults count to 1 when _count is undefined", () => {
+    const root = makeTree(flatTree);
+    const edges = [makeEdge("e1", "mod-a", "mod-b", "depends")];
+    const arcs = computeArcEdges(root, edges);
+
+    expect(arcs).toHaveLength(1);
+    expect(arcs[0].count).toBe(1);
+  });
+
+  it("control point radius is pulled inward", () => {
+    const root = makeTree(flatTree, 200);
+    const edges = [makeEdge("e1", "mod-a", "mod-b", "depends")];
+    const arcs = computeArcEdges(root, edges);
+
+    const [, controlPoint] = [arcs[0].points[0], arcs[0].points[1]];
+    // Control point radius should be much smaller than the leaf radius (200)
+    expect(controlPoint[1]).toBeLessThan(200 * 0.5);
+  });
+
+  it("handles multiple edges", () => {
+    const root = makeTree(flatTree);
+    const edges = [
+      makeEdge("e1", "mod-a", "mod-b", "depends"),
+      makeEdge("e2", "mod-b", "mod-c", "calls"),
+      makeEdge("e3", "mod-c", "mod-a", "depends"),
+    ];
+    const arcs = computeArcEdges(root, edges);
+    expect(arcs).toHaveLength(3);
+    // Each should have 3 points
+    for (const arc of arcs) {
+      expect(arc.points).toHaveLength(3);
+    }
+  });
+});
+
+describe("flat tree detection", () => {
+  it("flat tree has hierarchy height of 1", () => {
+    const root = makeTree(flatTree);
+    expect(root.height).toBe(1);
+  });
+
+  it("deeper tree has hierarchy height > 1", () => {
+    const root = makeTree(simpleTree);
+    expect(root.height).toBeGreaterThan(1);
+  });
 });
 
 describe("createRadialCluster", () => {
@@ -226,7 +363,7 @@ describe("createRadialCluster", () => {
 
   it("places root at minimum radius (not center)", () => {
     const root = makeTree(simpleTree);
-    // Root is remapped to minRadiusFraction * innerRadius (default 0.92 * 200)
-    expect(root.y).toBeCloseTo(200 * 0.92, 1);
+    // Root is remapped to minRadiusFraction * innerRadius (default 0.4 * 200)
+    expect(root.y).toBeCloseTo(200 * 0.4, 1);
   });
 });
