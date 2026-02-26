@@ -134,16 +134,23 @@
     );
   });
 
-  /** Select a node and focus into it if it has children. */
+  /** Select a node and focus into it (or its parent if it's a leaf). */
   function selectNode(nodeId: string) {
     if (fullTraversalIndex) {
       expansionStore.expandAncestors(nodeId, fullTraversalIndex);
     }
     selectionStore.selectSingle(nodeId);
     selectionStore.panelOpen = true;
-    // If the node has children, also focus into its subtree
-    if (fullTraversalIndex?.childrenMap.get(nodeId)?.length) {
-      focusStore.focus(nodeId);
+    // Focus into the node if it has children, or its parent container if it's a leaf
+    if (fullTraversalIndex) {
+      if (fullTraversalIndex.childrenMap.get(nodeId)?.length) {
+        focusStore.focus(nodeId);
+      } else {
+        const parentId = fullTraversalIndex.parentMap.get(nodeId);
+        if (parentId) {
+          focusStore.focus(parentId);
+        }
+      }
     }
   }
 
