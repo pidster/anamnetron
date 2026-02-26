@@ -156,6 +156,17 @@
       .curve(curveBundle.beta(tension));
   });
 
+  // Legend entries derived from the actual edge kinds present
+  let legendEntries = $derived.by(() => {
+    const kindCounts = new Map<string, number>();
+    for (const edge of bundledEdges) {
+      kindCounts.set(edge.kind, (kindCounts.get(edge.kind) ?? 0) + 1);
+    }
+    return [...kindCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([kind, count]) => ({ kind, count, color: getEdgeColor(kind) }));
+  });
+
 
   // Set up d3-zoom
   onMount(() => {
@@ -296,7 +307,7 @@
               d={lineGen(edge.points) ?? ""}
               fill="none"
               stroke={getHighlightColor(edge)}
-              stroke-width={hoveredNodeId && (edge.sourceId === hoveredNodeId || edge.targetId === hoveredNodeId) ? 2 : 1.5}
+              stroke-width={hoveredNodeId && (edge.sourceId === hoveredNodeId || edge.targetId === hoveredNodeId) ? 2 : bundledEdges.length > 500 ? 0.5 : 1.5}
               stroke-opacity={getEdgeOpacity(edge)}
               class="bundle-edge"
             />
@@ -307,7 +318,7 @@
             <circle
               cx={node.x}
               cy={node.y}
-              r={node.hasChildren ? 5 : 3.5}
+              r={leafNodes.length > 500 ? 1.5 : node.hasChildren ? 5 : 3.5}
               fill={getNodeColor(node.kind)}
               class="bundle-node"
               class:bundle-node-faded={hoveredNodeId !== null && !connectedNodeIds.has(node.id)}
@@ -326,19 +337,21 @@
             />
           {/each}
 
-          <!-- Labels -->
-          {#each leafNodes as node (node.id)}
-            <text
-              transform={labelTransform(node.angle)}
-              text-anchor={labelAnchor(node.angle)}
-              dominant-baseline="central"
-              class="bundle-label"
-              class:bundle-label-highlighted={hoveredNodeId !== null && connectedNodeIds.has(node.id)}
-              class:bundle-label-faded={hoveredNodeId !== null && !connectedNodeIds.has(node.id)}
-            >
-              {node.label}
-            </text>
-          {/each}
+          <!-- Labels: only render for connected nodes when hovering (performance) -->
+          {#if hoveredNodeId}
+            {#each leafNodes as node (node.id)}
+              {#if connectedNodeIds.has(node.id)}
+                <text
+                  transform={labelTransform(node.angle)}
+                  text-anchor={labelAnchor(node.angle)}
+                  dominant-baseline="central"
+                  class="bundle-label bundle-label-highlighted"
+                >
+                  {node.label}
+                </text>
+              {/if}
+            {/each}
+          {/if}
         </g>
       </svg>
     {/if}
@@ -354,6 +367,18 @@
         <span class="tooltip-key">Kind</span>
         <span>{tooltip.kind}{tooltip.subKind ? ` / ${tooltip.subKind}` : ""}</span>
       </div>
+    </div>
+  {/if}
+
+  {#if legendEntries.length > 0}
+    <div class="bundle-legend">
+      {#each legendEntries as entry}
+        <span class="legend-item">
+          <span class="legend-swatch" style="background: {entry.color};"></span>
+          <span class="legend-label">{entry.kind}</span>
+          <span class="legend-count">{entry.count}</span>
+        </span>
+      {/each}
     </div>
   {/if}
 </div>
@@ -501,6 +526,42 @@
   }
 
   .tooltip-key {
+    color: var(--text-muted);
+  }
+
+  .bundle-legend {
+    position: absolute;
+    bottom: 0.75rem;
+    right: 0.75rem;
+    display: flex;
+    gap: 0.75rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.3rem 0.6rem;
+    font-size: 0.75rem;
+    pointer-events: none;
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    color: var(--text);
+  }
+
+  .legend-swatch {
+    display: inline-block;
+    width: 12px;
+    height: 3px;
+    border-radius: 1px;
+  }
+
+  .legend-label {
+    text-transform: capitalize;
+  }
+
+  .legend-count {
     color: var(--text-muted);
   }
 </style>

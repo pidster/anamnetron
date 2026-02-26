@@ -134,6 +134,21 @@
     );
   });
 
+  // Full-depth graph for views that need all leaves (e.g. bundle view).
+  // Applies focus subtree + filters but skips depth-based collapse.
+  let filteredFullGraph = $derived.by(() => {
+    if (!focusedGraph) return focusedGraph;
+    if (!filterStore.hasActiveFilters) return focusedGraph;
+    return filterGraph(
+      focusedGraph,
+      filterStore.nodeKinds,
+      filterStore.edgeKinds,
+      filterStore.subKinds,
+      filterStore.languages,
+      filterStore.testVisibility,
+    );
+  });
+
   /** Select a node and focus into it (or its parent if it's a leaf). */
   function selectNode(nodeId: string) {
     if (fullTraversalIndex) {
@@ -585,7 +600,7 @@
           >{item.label}</button>
         {/each}
       </span>
-      <span class="depth-controls">
+      <span class="depth-controls" class:depth-disabled={viewStore.mode === "bundle"}>
         <button
           class="depth-btn"
           onclick={() => {
@@ -600,9 +615,9 @@
             }
           }}
           aria-label="Decrease depth"
-          disabled={expansionStore.currentDepth <= 0}
+          disabled={expansionStore.currentDepth <= 0 || viewStore.mode === "bundle"}
         >&minus;</button>
-        <span class="depth-label">Depth {expansionStore.currentDepth}</span>
+        <span class="depth-label">{viewStore.mode === "bundle" ? "Full" : `Depth ${expansionStore.currentDepth}`}</span>
         <button
           class="depth-btn"
           onclick={() => {
@@ -617,6 +632,7 @@
             }
           }}
           aria-label="Increase depth"
+          disabled={viewStore.mode === "bundle"}
         >+</button>
         <button
           class="depth-btn"
@@ -631,6 +647,7 @@
             }
           }}
           aria-label="Expand all"
+          disabled={viewStore.mode === "bundle"}
         >All</button>
       </span>
       <SearchBar onsearch={handleSearch} />
@@ -721,7 +738,7 @@
           </ErrorBoundary>
         {:else if viewStore.mode === "bundle"}
           <ErrorBoundary name="Bundle View">
-            <BundleView graph={filteredVisibleGraph} onselectnode={(nodeId) => selectNode(nodeId)} />
+            <BundleView graph={filteredFullGraph} onselectnode={(nodeId) => selectNode(nodeId)} />
           </ErrorBoundary>
         {:else if viewStore.mode === "matrix"}
           <ErrorBoundary name="Matrix View">
@@ -924,6 +941,11 @@
     display: flex;
     align-items: center;
     gap: 0.2rem;
+  }
+
+  .depth-controls.depth-disabled {
+    opacity: 0.4;
+    pointer-events: none;
   }
 
   .depth-btn {
