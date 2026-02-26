@@ -4,7 +4,7 @@
   import { scaleSequential } from "d3-scale";
   import { interpolateRdYlGn, interpolateBlues } from "d3-scale-chromatic";
   import type { CytoscapeGraph } from "../lib/types";
-  import { buildHierarchy, sumByMetric, getMetric, type TreeNode } from "../lib/hierarchy";
+  import { buildHierarchy, sumByMetric, getMetric, isTestNode, type TreeNode } from "../lib/hierarchy";
   import { selectionStore } from "../stores/selection.svelte";
 
   /** A switchable metric preset for the treemap. */
@@ -281,6 +281,7 @@
           width: {width}px;
           height: {height}px;
           background-color: {getColor(rect)};
+          {isTestNode(rect.data) ? 'opacity: 0.5;' : ''}
         "
         role="button"
         tabindex="0"

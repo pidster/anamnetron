@@ -13,6 +13,12 @@ export interface TreeNode {
   children: TreeNode[];
 }
 
+/** Check if a tree node is tagged as test code. */
+export function isTestNode(node: TreeNode): boolean {
+  const tags = node.metadata?.tags as string[] | undefined;
+  return tags?.includes("test") ?? false;
+}
+
 /**
  * Build a d3-compatible hierarchy from a CytoscapeGraph.
  *

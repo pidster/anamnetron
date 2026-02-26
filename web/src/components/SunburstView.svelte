@@ -5,7 +5,7 @@
   import { scaleOrdinal, scaleSequential } from "d3-scale";
   import { schemeTableau10, interpolateRdYlGn, interpolateBlues } from "d3-scale-chromatic";
   import type { CytoscapeGraph } from "../lib/types";
-  import { buildHierarchy, sumByMetric, getMetric, type TreeNode } from "../lib/hierarchy";
+  import { buildHierarchy, sumByMetric, getMetric, isTestNode, type TreeNode } from "../lib/hierarchy";
   type ColourMode = "language" | "kind" | "depth" | "fan-out";
 
   interface Props {
@@ -261,6 +261,7 @@
           <path
             d={arcGen(node) ?? ""}
             fill={getColor(node)}
+            opacity={isTestNode(node.data) ? 0.5 : 1}
             class="sunburst-arc"
             role="button"
             tabindex="0"
