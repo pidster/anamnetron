@@ -87,6 +87,9 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 ### Additional Languages — PARTIALLY RESOLVED (M15)
 - ~~Only Rust and TypeScript analyzers exist.~~ Go and Python analyzers added in M15 with tree-sitter grammars. Java and other languages remain as future goals (PRINCIPLES.md: Extensibility).
 
+### Analyzer Feature Parity — OPEN
+- The Rust analyzer is significantly more capable than the TypeScript, Go, and Python analyzers. Key gaps: no test detection (TS/Go/Python), no module hierarchy (Go/Python), no call graph (TS/Go/Python), no class member extraction (TS), no cross-package dependency extraction (TS/Go/Python). See parity matrix and M24–M29 roadmap below.
+
 ### Git Integration — RESOLVED (M13 + M16)
 - ~~`analyze_project()` accepts an optional `commit_ref` but there is no automatic git-aware snapshot creation or change detection.~~ `svt analyze` now auto-detects git HEAD when `--commit-ref` is not provided. Change detection between snapshots is available via `svt diff`. Web UI diff view overlay added in M16.
 
@@ -348,13 +351,121 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 
 **Not yet done (deferred):** Provenance filtering (requires adding provenance to Cytoscape graph endpoint), URL hash persistence of filter state, filter count badges, component-level tests with @testing-library/svelte.
 
+## Analyzer Feature Parity
+
+The Rust analyzer is the most complete. Other analyzers need to reach parity across these dimensions:
+
+| Feature | Rust | TypeScript | Go | Python |
+|---------|:----:|:----------:|:--:|:------:|
+| **Structural** | | | | |
+| Functions | Y | Y (exports only) | Y | Y |
+| Methods (class/impl) | Y | — | Y (receiver) | Y |
+| Structs/Classes | Y | Y (exports only) | Y | Y |
+| Enums/Variants | Y | — | — | — |
+| Traits/Interfaces | Y | Y (exports only) | Y | — |
+| Module hierarchy | Y (file + `mod`) | Y (directory) | — | — |
+| **Edges** | | | | |
+| Depends (imports) | Y | Y (relative only) | Y (raw paths) | Y (basic) |
+| Calls (call graph) | Y | — | — | — |
+| Implements | Y | — | — | — |
+| Extends | — | — | — | — |
+| Exports (re-exports) | Y | — | — | — |
+| Cross-pkg deps | Y (Cargo metadata) | — | — | — |
+| **Resolution** | | | | |
+| Import path resolution | Y | Y (post-process) | — | — |
+| Method call resolution | Y (type inference) | — | — | — |
+| Use/import aliases | Y | — | — | — |
+| **Metadata** | | | | |
+| LOC | Y | Y | Y | Y |
+| Test detection/tagging | Y | — | — | — |
+| **Post-Processing** | | | | |
+| Qualified name rewriting | Y | Y | — | — |
+| Type registry | Y | — | — | — |
+| Structural item emission | Y | Y | — | — |
+
 ## Roadmap (Post-M23)
 
 Priority-ordered next milestones:
 
 | # | Milestone | Description | Key Challenge |
 |---|-----------|-------------|---------------|
-| **M24** | Additional Languages | Java analyzer (tree-sitter-java), others as community demand dictates | tree-sitter-java grammar, Maven/Gradle project discovery |
+| **M24** | Test Detection (All Languages) | Tag test code in TypeScript, Go, and Python analyzers | Including previously-excluded test files with proper tagging |
+| **M25** | Module Hierarchy & Post-Processing (Go + Python) | Emit synthetic module nodes, resolve import paths | Go package hierarchy, Python `__init__.py` detection, relative imports |
+| **M26** | TypeScript Structural Depth | Class methods/properties, extends/implements edges, enum members | Balancing exports-only vs full extraction, interface member extraction |
+| **M27** | Call Graph Analysis (TypeScript + Go + Python) | Extract `Calls` edges from function/method bodies in all non-Rust languages | Type inference for method call receivers, import-resolved call targets |
+| **M28** | Cross-Package Dependency Extraction | Extract workspace-internal dependencies from build tool metadata | npm/yarn/pnpm workspaces, `go.mod` require directives, `pyproject.toml` deps |
+| **M29** | Java Analyzer | New language: tree-sitter-java with full structural extraction and call graph | Maven/Gradle project discovery, class hierarchy, annotation processing |
+
+### M24: Test Detection (All Languages)
+
+**Goal:** Tag test code across all languages so visualizations can dim/filter test nodes (as they already can for Rust).
+
+**Scope:**
+- **TypeScript:** Detect `describe`/`it`/`test` from vitest/jest; tag files matching `*.test.ts`/`*.spec.ts`/`__tests__/*`
+- **Go:** Include `_test.go` files (currently excluded entirely) but tag all items with `test`; detect `func Test*`/`func Bench*`
+- **Python:** Include `test_*.py`/`*_test.py`/`conftest.py` (currently excluded entirely) but tag with `test`; detect `test_*` functions, `unittest.TestCase` subclasses
+
+**Key challenge:** Go and Python currently skip test files at the discovery level. Need to include them in analysis but tag them, matching the Rust pattern where `#[cfg(test)]` modules are analyzed but tagged.
+
+### M25: Module Hierarchy & Post-Processing (Go + Python)
+
+**Goal:** Both Go and Python lack synthetic module hierarchy nodes and import resolution post-processing. This is foundational for deeper analysis.
+
+**Scope:**
+- **Go:** Emit `Component` nodes for each Go package from the package directory structure; build parent-child hierarchy from package import paths; resolve raw import paths to qualified names in post-processing
+- **Python:** Emit module hierarchy from directory structure (`__init__.py` as package marker); resolve relative imports (`from . import foo`, `from ..sibling import bar`); add post-processing pass for item reparenting
+
+**Key challenge:** Go packages are identified by import path (not directory name) and can contain multiple files. Python has complex relative import semantics with `__init__.py` as both a package marker and code file.
+
+### M26: TypeScript Structural Depth
+
+**Goal:** TypeScript currently only extracts exported declarations. Bring it to structural parity with Rust's type-level extraction.
+
+**Scope:**
+- Extract class methods, properties, and constructors as `Unit` child nodes
+- Extract interface members
+- Emit `Extends` edges for class inheritance (`class Foo extends Bar`)
+- Emit `Implements` edges for class-interface relationships (`class Foo implements Bar`)
+- Extract enum members as variant nodes (matching Rust's enum variant extraction)
+- Consider extracting non-exported items (opt-in flag) for internal architecture analysis
+
+**Key challenge:** Balancing the current exports-only design (keeps graph small) with the need for structural depth. May need an analysis depth option.
+
+### M27: Call Graph Analysis (TypeScript + Go + Python)
+
+**Goal:** Only Rust currently extracts `Calls` edges. Add call graph analysis to the other three languages.
+
+**Scope:**
+- **TypeScript:** Function/method calls within bodies; import-resolved call targets; `new ClassName()` as calls
+- **Go:** Function calls; method calls with receiver type resolution (already has receiver type extraction); interface satisfaction detection → `Implements` edges
+- **Python:** Function calls; method calls; `ClassName()` instantiation as calls; decorator invocations
+
+**Key challenge:** Type inference for method call receivers — Go has receiver types on declarations but needs them at call sites; TypeScript/Python need heuristic type inference similar to Rust's `build_local_type_map()`. Could be split into per-language sub-milestones if scope is too large.
+
+### M28: Cross-Package Dependency Extraction
+
+**Goal:** Rust extracts workspace-internal dependencies from Cargo metadata. Other languages should extract equivalent information from their build tools.
+
+**Scope:**
+- **TypeScript:** Extract workspace dependencies from `package.json` (npm/yarn/pnpm workspaces); detect monorepo structure
+- **Go:** Extract module dependencies from `go.mod` `require` directives; filter to workspace-internal modules
+- **Python:** Extract dependencies from `pyproject.toml` `[project.dependencies]`; detect monorepo-internal packages
+
+**Key challenge:** Each ecosystem has different workspace/monorepo conventions. Need to reliably distinguish internal vs external dependencies.
+
+### M29: Java Analyzer
+
+**Goal:** New language analyzer following established patterns from M24–M28. Should launch with feature parity matching the enhanced TypeScript/Go/Python analyzers.
+
+**Scope:**
+- tree-sitter-java grammar integration
+- Maven (`pom.xml`) and Gradle (`build.gradle`/`build.gradle.kts`) project discovery
+- Class, interface, enum, annotation, method, field extraction
+- Package hierarchy from directory structure (`src/main/java/...`)
+- Import resolution and `Extends`/`Implements` edges
+- Call graph analysis (method calls with type resolution)
+- Test detection: JUnit `@Test`/`@ParameterizedTest`, TestNG `@Test`, files in `src/test/java/`
+- Cross-module dependencies from Maven/Gradle metadata
 
 ## Plan Documents
 
