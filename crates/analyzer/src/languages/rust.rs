@@ -47,6 +47,56 @@ const RUST_WELL_KNOWN_CONTAINERS: &[&str] = &[
     "IntoIter",
 ];
 
+/// Rust prelude types that are available without explicit imports.
+///
+/// When the analyzer encounters an impl for a prelude type (e.g.,
+/// `impl From<LocalType> for String`), and the type is not in `use_aliases`,
+/// we recognize it as an external prelude type rather than assuming it's
+/// a local type.
+const RUST_PRELUDE_TYPES: &[&str] = &[
+    // Core types
+    "String",
+    "Vec",
+    "Box",
+    "Option",
+    "Result",
+    // Traits
+    "Clone",
+    "Copy",
+    "Default",
+    "Debug",
+    "Display",
+    "From",
+    "Into",
+    "TryFrom",
+    "TryInto",
+    "ToString",
+    "Iterator",
+    "IntoIterator",
+    "Eq",
+    "PartialEq",
+    "Ord",
+    "PartialOrd",
+    "Hash",
+    "Drop",
+    "Send",
+    "Sync",
+    "Sized",
+    // Primitive wrappers
+    "bool",
+    "char",
+    "str",
+];
+
+/// Source location information for a use declaration.
+#[derive(Clone, Debug)]
+struct UseAliasInfo {
+    /// The fully qualified path being imported.
+    qualified_path: String,
+    /// Source reference (file:line) where the import was declared.
+    source_ref: String,
+}
+
 /// Accumulated mutable state for parsing a single file.
 ///
 /// Bundles all the per-file output collections and counters that were
@@ -60,12 +110,16 @@ struct FileParseState<'a> {
     warnings: Vec<AnalysisWarning>,
     unresolved_method_calls: usize,
     resolved_method_calls: usize,
-    use_aliases: HashMap<String, String>,
+    /// Map from local name to import info (qualified path + source location).
+    use_aliases: HashMap<String, UseAliasInfo>,
     local_types: HashSet<String>,
     well_known_containers: &'a [&'a str],
     /// Qualified names of modules already emitted (by explicit `mod` declarations
     /// or by file-path inference). Shared across all files in a crate to deduplicate.
     emitted_modules: &'a mut HashSet<String>,
+    /// Qualified names of external type nodes already emitted in this file.
+    /// Prevents duplicate external type nodes for the same type.
+    emitted_external_types: HashSet<String>,
 }
 
 /// Rust source code analyzer using tree-sitter-rust.
@@ -339,6 +393,7 @@ fn parse_file(
         local_types: HashSet::new(),
         well_known_containers: RUST_WELL_KNOWN_CONTAINERS,
         emitted_modules,
+        emitted_external_types: HashSet::new(),
     };
 
     visit_children(root, &mut state, &module_context, None, false);
@@ -635,6 +690,9 @@ fn visit_mod_item(
 ///
 /// When the impl target is a well-known container type (e.g., `Arc<Foo>`),
 /// the methods are parented under the inner type (`Foo`) instead.
+///
+/// When the impl target is an external type (from another crate or prelude),
+/// emit an external type node with a source reference to the import location.
 fn visit_impl_item(
     node: tree_sitter::Node<'_>,
     state: &mut FileParseState<'_>,
@@ -650,7 +708,7 @@ fn visit_impl_item(
     let type_params = impl_type_param_names(node, state.source);
 
     // Resolve the impl target type, potentially unwrapping well-known containers.
-    let (mut impl_type_qn, wrapper_type, is_dyn) = resolve_impl_target(
+    let (mut impl_type_qn, wrapper_type, is_dyn, is_external) = resolve_impl_target(
         type_node,
         state.source,
         &type_params,
@@ -664,6 +722,7 @@ fn visit_impl_item(
     // try to reparent under the local source type from the trait's type argument.
     let mut foreign_target: Option<String> = None;
     let mut trait_name_for_meta: Option<String> = None;
+    let mut reparented = false;
     if let Some(ref qn) = impl_type_qn {
         let current_crate = module_context.first().map(|s| s.as_str()).unwrap_or("");
         let target_crate = qn.split("::").next().unwrap_or("");
@@ -688,8 +747,17 @@ fn visit_impl_item(
                     trait_name_for_meta = type_name_without_generics(trait_n, state.source);
                     foreign_target = Some(qn.clone());
                     impl_type_qn = Some(local_source);
+                    reparented = true;
                 }
             }
+        }
+    }
+
+    // If the target is external and we couldn't reparent, emit an external type node.
+    // This provides a valid parent for methods implemented on external types.
+    if is_external && !reparented {
+        if let Some(ref qn) = impl_type_qn {
+            emit_external_type_node(state, qn, type_node, node, module_context);
         }
     }
 
@@ -707,7 +775,8 @@ fn visit_impl_item(
 
     // Find the body of the impl block and extract function items from it.
     // Annotate methods with wrapper/dispatch/cross-crate metadata as needed.
-    let needs_annotation = wrapper_type.is_some() || is_dyn || foreign_target.is_some();
+    let needs_annotation =
+        wrapper_type.is_some() || is_dyn || foreign_target.is_some() || is_external;
     if let Some(body) = node.child_by_field_name("body") {
         if needs_annotation {
             let items_before = state.items.len();
@@ -744,6 +813,12 @@ fn visit_impl_item(
                         if let Some(ref tn) = trait_name_for_meta {
                             obj.insert("trait".to_string(), serde_json::Value::String(tn.clone()));
                         }
+                        if is_external && !reparented {
+                            obj.insert(
+                                "external_impl".to_string(),
+                                serde_json::Value::Bool(true),
+                            );
+                        }
                     }
                 }
             }
@@ -759,28 +834,97 @@ fn visit_impl_item(
     }
 }
 
+/// Emit an external type node for an impl on an external type.
+///
+/// When an impl block targets an external type (from another crate or std prelude)
+/// and cannot be reparented under a local source type, we emit a placeholder node
+/// for the external type. The source reference points to either:
+/// - The `use` declaration where the type was imported, or
+/// - The impl block location if it's a prelude type without explicit import.
+fn emit_external_type_node(
+    state: &mut FileParseState<'_>,
+    qualified_name: &str,
+    type_node: Option<tree_sitter::Node<'_>>,
+    impl_node: tree_sitter::Node<'_>,
+    module_context: &[String],
+) {
+    // Don't emit duplicates.
+    if state.emitted_external_types.contains(qualified_name) {
+        return;
+    }
+    state
+        .emitted_external_types
+        .insert(qualified_name.to_string());
+
+    // Try to get the source reference from the use alias if available.
+    let type_name = type_node
+        .and_then(|tn| type_name_without_generics(tn, state.source))
+        .unwrap_or_default();
+
+    let source_ref = if let Some(info) = state.use_aliases.get(&type_name) {
+        // Use the import location.
+        info.source_ref.clone()
+    } else {
+        // Prelude type — use the impl block location.
+        format!(
+            "{}:{}",
+            state.file_path.display(),
+            impl_node.start_position().row + 1
+        )
+    };
+
+    // Determine the parent qualified name (the external crate/module).
+    let parent_qn = if qualified_name.contains("::") {
+        let parts: Vec<&str> = qualified_name.rsplitn(2, "::").collect();
+        if parts.len() == 2 {
+            Some(parts[1].to_string())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Emit the external type as a Unit node with sub_kind "external".
+    state.items.push(AnalysisItem {
+        qualified_name: qualified_name.to_string(),
+        kind: NodeKind::Unit,
+        sub_kind: "external".to_string(),
+        parent_qualified_name: parent_qn,
+        source_ref,
+        language: "rust".to_string(),
+        metadata: Some(serde_json::json!({ "external": true })),
+        tags: vec![],
+    });
+
+    // Also emit a container node for the parent if needed (e.g., "std" crate).
+    let _ = module_context; // Suppress unused warning for now.
+}
+
 /// Resolve the impl target type, unwrapping well-known containers if applicable.
 ///
-/// Returns `(resolved_qn, wrapper_type_name, is_dyn)`. When the outer type is a
-/// well-known container (e.g., `Arc<Foo>`), `resolved_qn` points to the inner
-/// type (`Foo`) and `wrapper_type_name` is `Some("Arc")`. When the inner type
-/// (or the base type itself) was a `dyn Trait`, `is_dyn` is `true`.
+/// Returns `(resolved_qn, wrapper_type_name, is_dyn, is_external)`. When the outer
+/// type is a well-known container (e.g., `Arc<Foo>`), `resolved_qn` points to the
+/// inner type (`Foo`) and `wrapper_type_name` is `Some("Arc")`. When the inner type
+/// (or the base type itself) was a `dyn Trait`, `is_dyn` is `true`. When the resolved
+/// type is external (from another crate or prelude without explicit import),
+/// `is_external` is `true`.
 fn resolve_impl_target(
     type_node: Option<tree_sitter::Node<'_>>,
     source: &[u8],
     type_params: &[String],
     module_context: &[String],
-    use_aliases: &HashMap<String, String>,
+    use_aliases: &HashMap<String, UseAliasInfo>,
     local_types: &HashSet<String>,
     well_known_containers: &[&str],
-) -> (Option<String>, Option<String>, bool) {
+) -> (Option<String>, Option<String>, bool, bool) {
     let Some(tn) = type_node else {
-        return (None, None, false);
+        return (None, None, false, false);
     };
 
     let base_name = match type_name_without_generics(tn, source) {
         Some(n) => n,
-        None => return (None, None, false),
+        None => return (None, None, false, false),
     };
 
     // Check if the base type itself is a `dyn Trait` (inherent impl on trait object).
@@ -800,22 +944,22 @@ fn resolve_impl_target(
             .iter()
             .find(|arg| !type_params.contains(arg) && !is_rust_primitive(arg))
         {
-            let inner_qn =
+            let (inner_qn, is_external) =
                 resolve_impl_type_qn(inner, type_params, module_context, use_aliases, local_types);
-            return (inner_qn, Some(base_name), inner_is_dyn);
+            return (inner_qn, Some(base_name), inner_is_dyn, is_external);
         }
         // All type args are params/primitives — skip entirely (no useful parent).
-        return (None, Some(base_name), false);
+        return (None, Some(base_name), false, false);
     }
 
-    let qn = resolve_impl_type_qn(
+    let (qn, is_external) = resolve_impl_type_qn(
         &base_name,
         type_params,
         module_context,
         use_aliases,
         local_types,
     );
-    (qn, None, is_base_dyn)
+    (qn, None, is_base_dyn, is_external)
 }
 
 /// Find the first concrete type argument node inside a `generic_type` node.
@@ -840,7 +984,7 @@ fn extract_trait_source_type(
     source: &[u8],
     type_params: &[String],
     module_context: &[String],
-    use_aliases: &HashMap<String, String>,
+    use_aliases: &HashMap<String, UseAliasInfo>,
     local_types: &HashSet<String>,
 ) -> Option<String> {
     let type_args = extract_type_arguments(trait_node, source);
@@ -848,14 +992,18 @@ fn extract_trait_source_type(
     if type_params.contains(first_arg) || is_rust_primitive(first_arg) {
         return None;
     }
-    let qn = resolve_impl_type_qn(
+    let (qn, is_external) = resolve_impl_type_qn(
         first_arg,
         type_params,
         module_context,
         use_aliases,
         local_types,
-    )?;
-    // Only reparent if the resolved type is local (same crate).
+    );
+    let qn = qn?;
+    // Only reparent if the resolved type is local (same crate) and not external.
+    if is_external {
+        return None;
+    }
     let current_crate = module_context.first().map(|s| s.as_str()).unwrap_or("");
     let resolved_crate = qn.split("::").next().unwrap_or("");
     if current_crate == resolved_crate {
@@ -876,9 +1024,23 @@ fn visit_use_declaration(
 ) {
     let source_qn = build_qualified_name(module_context);
     let is_pub = has_visibility_modifier(node);
+    // Capture the source location of the use declaration (1-indexed line).
+    let use_source_ref = format!(
+        "{}:{}",
+        state.file_path.display(),
+        node.start_position().row + 1
+    );
 
     if let Some(argument) = node.child_by_field_name("argument") {
-        parse_use_tree(argument, state.source, "", &source_qn, is_pub, state);
+        parse_use_tree(
+            argument,
+            state.source,
+            "",
+            &source_qn,
+            is_pub,
+            &use_source_ref,
+            state,
+        );
     }
 }
 
@@ -890,6 +1052,7 @@ fn parse_use_tree(
     prefix: &str,
     source_qn: &str,
     is_pub: bool,
+    use_source_ref: &str,
     state: &mut FileParseState<'_>,
 ) {
     match node.kind() {
@@ -903,9 +1066,13 @@ fn parse_use_tree(
             } else {
                 format!("{prefix}::{name}")
             };
-            state
-                .use_aliases
-                .insert(name.to_string(), full_path.clone());
+            state.use_aliases.insert(
+                name.to_string(),
+                UseAliasInfo {
+                    qualified_path: full_path.clone(),
+                    source_ref: use_source_ref.to_string(),
+                },
+            );
             emit_use_relation(source_qn, &full_path, is_pub, state);
         }
         "scoped_identifier" => {
@@ -920,9 +1087,13 @@ fn parse_use_tree(
             };
             // The alias is the last segment of the path.
             if let Some(last) = text.rsplit("::").next() {
-                state
-                    .use_aliases
-                    .insert(last.to_string(), full_path.clone());
+                state.use_aliases.insert(
+                    last.to_string(),
+                    UseAliasInfo {
+                        qualified_path: full_path.clone(),
+                        source_ref: use_source_ref.to_string(),
+                    },
+                );
             }
             emit_use_relation(source_qn, &full_path, is_pub, state);
         }
@@ -939,7 +1110,13 @@ fn parse_use_tree(
                     } else {
                         format!("{prefix}::{path_text}")
                     };
-                    state.use_aliases.insert(alias_text, full_path.clone());
+                    state.use_aliases.insert(
+                        alias_text,
+                        UseAliasInfo {
+                            qualified_path: full_path.clone(),
+                            source_ref: use_source_ref.to_string(),
+                        },
+                    );
                     emit_use_relation(source_qn, &full_path, is_pub, state);
                 }
             }
@@ -961,14 +1138,14 @@ fn parse_use_tree(
             };
 
             if let Some(ln) = list_node {
-                parse_use_tree(ln, source, &new_prefix, source_qn, is_pub, state);
+                parse_use_tree(ln, source, &new_prefix, source_qn, is_pub, use_source_ref, state);
             }
         }
         "use_list" => {
             // Iterate named children and recurse.
             for i in 0..node.named_child_count() {
                 if let Some(child) = node.named_child(i) {
-                    parse_use_tree(child, source, prefix, source_qn, is_pub, state);
+                    parse_use_tree(child, source, prefix, source_qn, is_pub, use_source_ref, state);
                 }
             }
         }
@@ -989,9 +1166,13 @@ fn parse_use_tree(
                 };
                 if let Some(last) = text.rsplit("::").next() {
                     if !last.contains('{') && !last.contains('*') {
-                        state
-                            .use_aliases
-                            .insert(last.to_string(), full_path.clone());
+                        state.use_aliases.insert(
+                            last.to_string(),
+                            UseAliasInfo {
+                                qualified_path: full_path.clone(),
+                                source_ref: use_source_ref.to_string(),
+                            },
+                        );
                     }
                 }
                 if !full_path.contains('{') {
@@ -1041,7 +1222,7 @@ fn build_local_type_map(
     body: tree_sitter::Node<'_>,
     source: &[u8],
     module_context: &[String],
-    use_aliases: &HashMap<String, String>,
+    use_aliases: &HashMap<String, UseAliasInfo>,
 ) -> HashMap<String, String> {
     let mut type_map = HashMap::new();
     collect_let_declarations(body, source, module_context, use_aliases, &mut type_map);
@@ -1053,7 +1234,7 @@ fn collect_let_declarations(
     node: tree_sitter::Node<'_>,
     source: &[u8],
     module_context: &[String],
-    use_aliases: &HashMap<String, String>,
+    use_aliases: &HashMap<String, UseAliasInfo>,
     type_map: &mut HashMap<String, String>,
 ) {
     for i in 0..node.named_child_count() {
@@ -1234,33 +1415,54 @@ fn is_rust_primitive(name: &str) -> bool {
 /// Resolution order:
 /// 1. Type parameter or primitive → `None`
 /// 2. Contains `::` → keep as-is (already qualified)
-/// 3. Found in `use_aliases` → return the resolved path
-/// 4. Default → prepend module context
+/// 3. Found in `local_types` → local type in current module
+/// 4. Found in `use_aliases` → return the resolved path
+/// 5. Prelude type (not imported) → return external type indicator
+/// 6. Default → prepend module context (assumed local)
+///
+/// Returns `(qualified_name, is_external)` where `is_external` is true
+/// when the type is a known prelude/external type not explicitly imported.
 fn resolve_impl_type_qn(
     type_name: &str,
     type_params: &[String],
     module_context: &[String],
-    use_aliases: &HashMap<String, String>,
+    use_aliases: &HashMap<String, UseAliasInfo>,
     local_types: &HashSet<String>,
-) -> Option<String> {
+) -> (Option<String>, bool) {
     if type_params.contains(&type_name.to_string()) || is_rust_primitive(type_name) {
-        return None;
+        return (None, false);
     }
     // Strip `dyn ` prefix — trait object qualifier, not part of type identity.
     let type_name = type_name.strip_prefix("dyn ").unwrap_or(type_name);
     if type_name.contains("::") {
         // Already scoped — normalize `crate::` to actual crate name.
-        Some(normalize_crate_prefix(type_name, module_context))
+        // Check if external by comparing crate prefix.
+        let qn = normalize_crate_prefix(type_name, module_context);
+        let current_crate = module_context.first().map(|s| s.as_str()).unwrap_or("");
+        let resolved_crate = qn.split("::").next().unwrap_or("");
+        let is_external = !current_crate.is_empty() && current_crate != resolved_crate;
+        (Some(qn), is_external)
     } else if local_types.contains(type_name) {
         // Local definition shadows any use-alias with the same name.
         let module_qn = build_qualified_name(module_context);
-        Some(format!("{module_qn}::{type_name}"))
-    } else if let Some(resolved) = use_aliases.get(type_name) {
+        (Some(format!("{module_qn}::{type_name}")), false)
+    } else if let Some(info) = use_aliases.get(type_name) {
         // Normalize `crate::` prefix from use-aliases to actual crate name.
-        Some(normalize_crate_prefix(resolved, module_context))
+        let qn = normalize_crate_prefix(&info.qualified_path, module_context);
+        // Check if external by comparing crate prefix.
+        let current_crate = module_context.first().map(|s| s.as_str()).unwrap_or("");
+        let resolved_crate = qn.split("::").next().unwrap_or("");
+        let is_external = !current_crate.is_empty() && current_crate != resolved_crate;
+        (Some(qn), is_external)
+    } else if RUST_PRELUDE_TYPES.contains(&type_name) {
+        // Prelude type without explicit import — treat as external.
+        // Use std:: prefix for standard prelude types.
+        (Some(format!("std::{type_name}")), true)
     } else {
+        // Unknown type — assume local (may create a phantom, but that's
+        // correct behavior for truly undefined types).
         let module_qn = build_qualified_name(module_context);
-        Some(format!("{module_qn}::{type_name}"))
+        (Some(format!("{module_qn}::{type_name}")), false)
     }
 }
 
@@ -1289,14 +1491,14 @@ fn extract_type_from_annotation(
     type_node: tree_sitter::Node<'_>,
     source: &[u8],
     module_context: &[String],
-    use_aliases: &HashMap<String, String>,
+    use_aliases: &HashMap<String, UseAliasInfo>,
 ) -> Option<String> {
     match type_node.kind() {
         "type_identifier" => {
             let name = type_node.utf8_text(source).ok()?;
             if name.starts_with(|c: char| c.is_uppercase()) {
-                if let Some(resolved) = use_aliases.get(name) {
-                    Some(resolved.clone())
+                if let Some(info) = use_aliases.get(name) {
+                    Some(info.qualified_path.clone())
                 } else {
                     let module_qn = build_qualified_name(module_context);
                     Some(format!("{module_qn}::{name}"))
@@ -1331,7 +1533,7 @@ fn infer_type_from_value(
     value: tree_sitter::Node<'_>,
     source: &[u8],
     module_context: &[String],
-    use_aliases: &HashMap<String, String>,
+    use_aliases: &HashMap<String, UseAliasInfo>,
 ) -> Option<String> {
     match value.kind() {
         "call_expression" => {
@@ -1343,8 +1545,8 @@ fn infer_type_from_value(
                 if segments.len() == 2 {
                     let type_seg = segments[0];
                     if type_seg.starts_with(|c: char| c.is_uppercase()) {
-                        if let Some(resolved) = use_aliases.get(type_seg) {
-                            return Some(resolved.clone());
+                        if let Some(info) = use_aliases.get(type_seg) {
+                            return Some(info.qualified_path.clone());
                         }
                         let module_qn = build_qualified_name(module_context);
                         return Some(format!("{module_qn}::{type_seg}"));
@@ -1358,8 +1560,8 @@ fn infer_type_from_value(
             let name_node = value.child_by_field_name("name")?;
             let name = name_node.utf8_text(source).ok()?;
             if name.starts_with(|c: char| c.is_uppercase()) {
-                if let Some(resolved) = use_aliases.get(name) {
-                    return Some(resolved.clone());
+                if let Some(info) = use_aliases.get(name) {
+                    return Some(info.qualified_path.clone());
                 }
                 let module_qn = build_qualified_name(module_context);
                 Some(format!("{module_qn}::{name}"))
@@ -1379,7 +1581,7 @@ fn extract_param_types(
     params_node: tree_sitter::Node<'_>,
     source: &[u8],
     module_context: &[String],
-    use_aliases: &HashMap<String, String>,
+    use_aliases: &HashMap<String, UseAliasInfo>,
 ) -> HashMap<String, String> {
     let mut type_map = HashMap::new();
 
@@ -1427,7 +1629,7 @@ fn resolve_scoped_call(
     callee: &str,
     module_context: &[String],
     impl_type: Option<&str>,
-    use_aliases: &HashMap<String, String>,
+    use_aliases: &HashMap<String, UseAliasInfo>,
 ) -> String {
     // Self::method → impl_type::method
     if let Some(rest) = callee.strip_prefix("Self::") {
@@ -1442,8 +1644,8 @@ fn resolve_scoped_call(
     if segments.len() == 2 {
         let first = segments[0];
         if first != "Self" && first.starts_with(|c: char| c.is_uppercase()) {
-            if let Some(resolved) = use_aliases.get(first) {
-                return format!("{resolved}::{}", segments[1]);
+            if let Some(info) = use_aliases.get(first) {
+                return format!("{}::{}", info.qualified_path, segments[1]);
             }
             let module_qn = build_qualified_name(module_context);
             return format!("{module_qn}::{callee}");
