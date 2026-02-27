@@ -757,7 +757,7 @@ fn visit_impl_item(
     // This provides a valid parent for methods implemented on external types.
     if is_external && !reparented {
         if let Some(ref qn) = impl_type_qn {
-            emit_external_type_node(state, qn, type_node, node, module_context);
+            emit_external_type_node(state, qn, type_node, node);
         }
     }
 
@@ -841,12 +841,13 @@ fn visit_impl_item(
 /// for the external type. The source reference points to either:
 /// - The `use` declaration where the type was imported, or
 /// - The impl block location if it's a prelude type without explicit import.
+///
+/// Also emits parent container nodes (crates/modules) to form a complete hierarchy.
 fn emit_external_type_node(
     state: &mut FileParseState<'_>,
     qualified_name: &str,
     type_node: Option<tree_sitter::Node<'_>>,
     impl_node: tree_sitter::Node<'_>,
-    module_context: &[String],
 ) {
     // Don't emit duplicates.
     if state.emitted_external_types.contains(qualified_name) {
@@ -873,6 +874,11 @@ fn emit_external_type_node(
         )
     };
 
+    // Emit parent container nodes for the full path hierarchy.
+    // For "bytes::Bytes", emit "bytes" as an external crate.
+    // For "tonic::transport::Endpoint", emit "tonic" and "tonic::transport".
+    emit_external_parent_hierarchy(state, qualified_name, &source_ref);
+
     // Determine the parent qualified name (the external crate/module).
     let parent_qn = if qualified_name.contains("::") {
         let parts: Vec<&str> = qualified_name.rsplitn(2, "::").collect();
@@ -896,9 +902,57 @@ fn emit_external_type_node(
         metadata: Some(serde_json::json!({ "external": true })),
         tags: vec![],
     });
+}
 
-    // Also emit a container node for the parent if needed (e.g., "std" crate).
-    let _ = module_context; // Suppress unused warning for now.
+/// Emit external container nodes for each segment of a qualified path.
+///
+/// For `tonic::transport::Endpoint`, emits:
+/// - `tonic` (external crate, no parent)
+/// - `tonic::transport` (external module, parent = `tonic`)
+fn emit_external_parent_hierarchy(
+    state: &mut FileParseState<'_>,
+    qualified_name: &str,
+    source_ref: &str,
+) {
+    let segments: Vec<&str> = qualified_name.split("::").collect();
+    if segments.len() <= 1 {
+        return; // No parent hierarchy to emit.
+    }
+
+    // Emit each parent segment (all except the final type name).
+    for depth in 1..segments.len() {
+        let container_qn = segments[..depth].join("::");
+
+        // Skip if already emitted.
+        if state.emitted_external_types.contains(&container_qn) {
+            continue;
+        }
+        state.emitted_external_types.insert(container_qn.clone());
+
+        let parent_qn = if depth == 1 {
+            None // Top-level crate has no parent.
+        } else {
+            Some(segments[..depth - 1].join("::"))
+        };
+
+        // First segment is an external crate, subsequent segments are modules.
+        let sub_kind = if depth == 1 {
+            "external-crate"
+        } else {
+            "external-module"
+        };
+
+        state.items.push(AnalysisItem {
+            qualified_name: container_qn,
+            kind: NodeKind::Component,
+            sub_kind: sub_kind.to_string(),
+            parent_qualified_name: parent_qn,
+            source_ref: source_ref.to_string(),
+            language: "rust".to_string(),
+            metadata: Some(serde_json::json!({ "external": true })),
+            tags: vec![],
+        });
+    }
 }
 
 /// Resolve the impl target type, unwrapping well-known containers if applicable.
