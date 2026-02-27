@@ -27,8 +27,9 @@
 | **21** | Analysis Depth | 2026-02-21 | 470 | Crate-level `Depends` edges from Cargo metadata, `Self::method()` and `Type::method()` resolution, heuristic local variable type inference (`let x: Foo`, `Foo::new()`, struct expressions, function params), method call resolution statistics |
 | **22** | Plugin Ecosystem | 2026-02-21 | 506 | Plugin manifest format (`svt-plugin.toml`), `svt plugin install\|remove\|info` commands, manifest-aware plugin loading with source tracking, sidecar manifest discovery, plugin authoring documentation |
 | **23** | Web UI Enhancements | 2026-02-21 | 533 | Error boundaries with retry, arrow-key graph traversal (Up/Down/Left/Right for containment hierarchy), filtering sidebar (node kind, edge kind, sub-kind, language) |
+| **24** | Multi-Tenancy (Project-Scoped Store) | 2026-02-27 | 763 | CozoDB schema v2 migration, `projects`+`snapshot_projects` relations, project CRUD API, `svt push` CLI command, web UI project selector, per-project versioning |
 
-**Current state:** 484 Rust tests + 49 vitest tests = 533 total. All passing. clippy/fmt/audit clean. CI pipeline operational.
+**Current state:** 569 Rust tests + 194 vitest tests = 763 total. All passing. clippy/fmt/audit clean. CI pipeline operational.
 
 ## What's Working Now
 
@@ -56,14 +57,17 @@ svt plugin install /path/to/plugin --global  # Install to user-global ~/.svt/plu
 svt plugin remove svt-plugin-foo         # Remove installed plugin
 svt plugin info /path/to/plugin          # Show plugin manifest metadata
 svt --plugin path/to/lib.dylib check     # Load a plugin and run conformance checks
+svt push --server http://host:3000       # Push analysis to remote server
+svt push --server http://host:3000 --project foo  # Push to specific project
 svt-server --design design/architecture.yaml --project .
                                          # Serve API + web UI at http://localhost:3000
 svt-server --store .svt/store            # Serve with persistent storage (data survives restart)
 svt-server --store .svt/store --design design/architecture.yaml
                                          # Persistent store + fresh design import at startup
+svt-server --project myapp              # Scope to a named project (default: "default")
 ```
 
-The web UI renders the architecture graph with compound nodes, click-to-inspect node details, search, layout switching (force-directed / hierarchical), conformance overlay, diff view overlay, error boundaries with retry, arrow-key graph traversal, and a filtering sidebar for node/edge/sub-kind/language filtering. With WASM loaded, node detail lookups and search run entirely in the browser — zero API round-trips after initial snapshot load.
+The web UI renders the architecture graph with compound nodes, click-to-inspect node details, search, layout switching (force-directed / hierarchical), conformance overlay, diff view overlay, error boundaries with retry, arrow-key graph traversal, a filtering sidebar for node/edge/sub-kind/language filtering, and a project selector (visible when multiple projects exist). With WASM loaded, node detail lookups and search run entirely in the browser — zero API round-trips after initial snapshot load.
 
 All 12 constraints in `design/architecture.yaml` are fully evaluated in both design-only and full conformance mode — zero `NotEvaluable`. Dog-food conformance: 12 passed, 0 failed, 0 warned, 0 not evaluable. There are 10 unimplemented design nodes (expected — some are future work like `/svt/web`) and ~518 undocumented analysis nodes (expected — analysis is much more granular than the design model).
 
@@ -88,7 +92,7 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 - ~~Only Rust and TypeScript analyzers exist.~~ Go and Python analyzers added in M15 with tree-sitter grammars. Java and other languages remain as future goals (PRINCIPLES.md: Extensibility).
 
 ### Analyzer Feature Parity — OPEN
-- The Rust analyzer is significantly more capable than the TypeScript, Go, and Python analyzers. Key gaps: no test detection (TS/Go/Python), no module hierarchy (Go/Python), no call graph (TS/Go/Python), no class member extraction (TS), no cross-package dependency extraction (TS/Go/Python). See parity matrix and M24–M29 roadmap below.
+- The Rust analyzer is significantly more capable than the TypeScript, Go, and Python analyzers. Key gaps: no test detection (TS/Go/Python), no module hierarchy (Go/Python), no call graph (TS/Go/Python), no class member extraction (TS), no cross-package dependency extraction (TS/Go/Python). See parity matrix and M25–M30 roadmap below.
 
 ### Git Integration — RESOLVED (M13 + M16)
 - ~~`analyze_project()` accepts an optional `commit_ref` but there is no automatic git-aware snapshot creation or change detection.~~ `svt analyze` now auto-detects git HEAD when `--commit-ref` is not provided. Change detection between snapshots is available via `svt diff`. Web UI diff view overlay added in M16.
@@ -101,6 +105,9 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 
 ### Store Persistence — RESOLVED (M19)
 - ~~The server always uses `CozoStore::new_in_memory()`, losing all data on restart. No schema migration system, no store management CLI commands, no way to inspect or compact the store.~~ Resolved: Schema version + migration framework (`CURRENT_SCHEMA_VERSION`, `schema_version()`, `migrate()`), `store_info()` with per-snapshot node/edge counts, `svt store info|compact|reset` CLI commands, `--store` flag for server persistent CozoDB storage, `GET /api/store/info` endpoint.
+
+### Multi-Tenancy — RESOLVED (M24)
+- ~~The server supports only a single project per store instance. No way to host multiple projects or push analysis results from a remote CLI.~~ Resolved: project-scoped store with CozoDB schema v2 migration, project CRUD API, per-project versioning, CLI `svt push` command, web UI project selector. Legacy routes default to `"default"` project for backwards compatibility.
 
 ### Incremental Analysis — RESOLVED (M20)
 - ~~Each `svt analyze` run re-parses every source file. For large codebases this is wasteful when only a few files changed.~~ Resolved: BLAKE3 content hashing for file change detection, `file_manifest` CozoDB relation storing per-file hashes grouped by language unit, `copy_nodes`/`copy_edges` store methods for carrying forward unchanged data, unit-level skip with copy-then-upsert strategy, `svt analyze --incremental` CLI flag with auto-detection of latest analysis version as previous.
@@ -351,6 +358,33 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 
 **Not yet done (deferred):** Provenance filtering (requires adding provenance to Cytoscape graph endpoint), URL hash persistence of filter state, filter count badges, component-level tests with @testing-library/svelte.
 
+### Milestone 24: Multi-Tenancy (Project-Scoped Store) — COMPLETE
+
+**Goal:** Enable a single server instance to host multiple independent projects, each with its own version numbering, snapshots, and data. Add a CLI `push` command for uploading analysis results to a remote server.
+
+**Delivered:**
+- `Project` model type with `id`, `name`, `created_at`, `description`, `metadata` fields
+- `validate_project_id()` — lowercase alphanumeric + hyphens/underscores, 1-128 chars
+- `ProjectNotFound`, `DuplicateProject`, `InvalidProjectId` error variants
+- `GraphStore` trait extended with `create_project()`, `list_projects()`, `get_project()`, `project_exists()`
+- `create_snapshot()`, `list_snapshots()`, `latest_version()`, `compact()` now project-scoped
+- CozoDB schema v2 migration: `projects` + `snapshot_projects` companion relations
+- Automatic migration of existing v1 stores: all snapshots tagged with `"default"` project
+- Server: `RwLock<CozoStore>` for safe concurrent access, `read_store()`/`write_store()` helpers
+- Server: project CRUD routes (`GET/POST /api/projects`, `GET /api/projects/{project}`)
+- Server: project-scoped routes (`/api/projects/{project}/snapshots/...`, etc.)
+- Server: push endpoint (`POST /api/projects/{project}/push`) for CLI uploads
+- Server: legacy routes default to `"default"` project for backwards compatibility
+- Server: `--project` flag for startup project scoping
+- CLI: `svt push --server URL [--project NAME]` command with project name auto-derivation from git remote
+- CLI: `--project` global flag threaded through all commands
+- WASM: `load_snapshot()` gains optional `project_id` parameter, default project seeded on init
+- Web UI: `ProjectSelector.svelte` dropdown (hidden when single project)
+- Web UI: project-scoped API functions, `projects`/`selectedProject` in graph store
+- Web UI: `p=<project>` hash parameter in URL routing
+- 85 new tests across all crates (569 Rust + 194 vitest)
+- **Result: 569 Rust tests + 194 vitest tests = 763 total**
+
 ## Analyzer Feature Parity
 
 The Rust analyzer is the most complete. Other analyzers need to reach parity across these dimensions:
@@ -383,20 +417,20 @@ The Rust analyzer is the most complete. Other analyzers need to reach parity acr
 | Type registry | Y | — | — | — |
 | Structural item emission | Y | Y | — | — |
 
-## Roadmap (Post-M23)
+## Roadmap (Post-M24)
 
 Priority-ordered next milestones:
 
 | # | Milestone | Description | Key Challenge |
 |---|-----------|-------------|---------------|
-| **M24** | Test Detection (All Languages) | Tag test code in TypeScript, Go, and Python analyzers | Including previously-excluded test files with proper tagging |
-| **M25** | Module Hierarchy & Post-Processing (Go + Python) | Emit synthetic module nodes, resolve import paths | Go package hierarchy, Python `__init__.py` detection, relative imports |
-| **M26** | TypeScript Structural Depth | Class methods/properties, extends/implements edges, enum members | Balancing exports-only vs full extraction, interface member extraction |
-| **M27** | Call Graph Analysis (TypeScript + Go + Python) | Extract `Calls` edges from function/method bodies in all non-Rust languages | Type inference for method call receivers, import-resolved call targets |
-| **M28** | Cross-Package Dependency Extraction | Extract workspace-internal dependencies from build tool metadata | npm/yarn/pnpm workspaces, `go.mod` require directives, `pyproject.toml` deps |
-| **M29** | Java Analyzer | New language: tree-sitter-java with full structural extraction and call graph | Maven/Gradle project discovery, class hierarchy, annotation processing |
+| **M25** | Test Detection (All Languages) | Tag test code in TypeScript, Go, and Python analyzers | Including previously-excluded test files with proper tagging |
+| **M26** | Module Hierarchy & Post-Processing (Go + Python) | Emit synthetic module nodes, resolve import paths | Go package hierarchy, Python `__init__.py` detection, relative imports |
+| **M27** | TypeScript Structural Depth | Class methods/properties, extends/implements edges, enum members | Balancing exports-only vs full extraction, interface member extraction |
+| **M28** | Call Graph Analysis (TypeScript + Go + Python) | Extract `Calls` edges from function/method bodies in all non-Rust languages | Type inference for method call receivers, import-resolved call targets |
+| **M29** | Cross-Package Dependency Extraction | Extract workspace-internal dependencies from build tool metadata | npm/yarn/pnpm workspaces, `go.mod` require directives, `pyproject.toml` deps |
+| **M30** | Java Analyzer | New language: tree-sitter-java with full structural extraction and call graph | Maven/Gradle project discovery, class hierarchy, annotation processing |
 
-### M24: Test Detection (All Languages)
+### M25: Test Detection (All Languages)
 
 **Goal:** Tag test code across all languages so visualizations can dim/filter test nodes (as they already can for Rust).
 
@@ -407,7 +441,7 @@ Priority-ordered next milestones:
 
 **Key challenge:** Go and Python currently skip test files at the discovery level. Need to include them in analysis but tag them, matching the Rust pattern where `#[cfg(test)]` modules are analyzed but tagged.
 
-### M25: Module Hierarchy & Post-Processing (Go + Python)
+### M26: Module Hierarchy & Post-Processing (Go + Python)
 
 **Goal:** Both Go and Python lack synthetic module hierarchy nodes and import resolution post-processing. This is foundational for deeper analysis.
 
@@ -417,7 +451,7 @@ Priority-ordered next milestones:
 
 **Key challenge:** Go packages are identified by import path (not directory name) and can contain multiple files. Python has complex relative import semantics with `__init__.py` as both a package marker and code file.
 
-### M26: TypeScript Structural Depth
+### M27: TypeScript Structural Depth
 
 **Goal:** TypeScript currently only extracts exported declarations. Bring it to structural parity with Rust's type-level extraction.
 
@@ -431,7 +465,7 @@ Priority-ordered next milestones:
 
 **Key challenge:** Balancing the current exports-only design (keeps graph small) with the need for structural depth. May need an analysis depth option.
 
-### M27: Call Graph Analysis (TypeScript + Go + Python)
+### M28: Call Graph Analysis (TypeScript + Go + Python)
 
 **Goal:** Only Rust currently extracts `Calls` edges. Add call graph analysis to the other three languages.
 
@@ -442,7 +476,7 @@ Priority-ordered next milestones:
 
 **Key challenge:** Type inference for method call receivers — Go has receiver types on declarations but needs them at call sites; TypeScript/Python need heuristic type inference similar to Rust's `build_local_type_map()`. Could be split into per-language sub-milestones if scope is too large.
 
-### M28: Cross-Package Dependency Extraction
+### M29: Cross-Package Dependency Extraction
 
 **Goal:** Rust extracts workspace-internal dependencies from Cargo metadata. Other languages should extract equivalent information from their build tools.
 
@@ -453,9 +487,9 @@ Priority-ordered next milestones:
 
 **Key challenge:** Each ecosystem has different workspace/monorepo conventions. Need to reliably distinguish internal vs external dependencies.
 
-### M29: Java Analyzer
+### M30: Java Analyzer
 
-**Goal:** New language analyzer following established patterns from M24–M28. Should launch with feature parity matching the enhanced TypeScript/Go/Python analyzers.
+**Goal:** New language analyzer following established patterns from M25–M29. Should launch with feature parity matching the enhanced TypeScript/Go/Python analyzers.
 
 **Scope:**
 - tree-sitter-java grammar integration

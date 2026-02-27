@@ -814,10 +814,7 @@ fn visit_impl_item(
                             obj.insert("trait".to_string(), serde_json::Value::String(tn.clone()));
                         }
                         if is_external && !reparented {
-                            obj.insert(
-                                "external_impl".to_string(),
-                                serde_json::Value::Bool(true),
-                            );
+                            obj.insert("external_impl".to_string(), serde_json::Value::Bool(true));
                         }
                     }
                 }
@@ -1192,14 +1189,30 @@ fn parse_use_tree(
             };
 
             if let Some(ln) = list_node {
-                parse_use_tree(ln, source, &new_prefix, source_qn, is_pub, use_source_ref, state);
+                parse_use_tree(
+                    ln,
+                    source,
+                    &new_prefix,
+                    source_qn,
+                    is_pub,
+                    use_source_ref,
+                    state,
+                );
             }
         }
         "use_list" => {
             // Iterate named children and recurse.
             for i in 0..node.named_child_count() {
                 if let Some(child) = node.named_child(i) {
-                    parse_use_tree(child, source, prefix, source_qn, is_pub, use_source_ref, state);
+                    parse_use_tree(
+                        child,
+                        source,
+                        prefix,
+                        source_qn,
+                        is_pub,
+                        use_source_ref,
+                        state,
+                    );
                 }
             }
         }
