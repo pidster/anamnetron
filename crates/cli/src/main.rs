@@ -23,6 +23,10 @@ struct Cli {
     #[arg(long, default_value = ".svt/store")]
     store: PathBuf,
 
+    /// Project name for multi-tenancy (default: "default").
+    #[arg(long, default_value = "default", global = true)]
+    project: String,
+
     /// Load external plugin(s) from shared library paths.
     #[arg(long = "plugin", global = true)]
     plugins: Vec<PathBuf>,
@@ -45,6 +49,8 @@ enum Commands {
     Diff(DiffArgs),
     /// Manage and list loaded plugins.
     Plugin(PluginArgs),
+    /// Push analysis data to a remote server.
+    Push(PushArgs),
     /// Manage the graph store (info, compact, reset).
     Store(StoreArgs),
 }
@@ -118,6 +124,16 @@ struct DiffArgs {
     /// Output format: human or json.
     #[arg(long, default_value = "human")]
     format: String,
+}
+
+#[derive(clap::Args, Debug)]
+struct PushArgs {
+    /// Remote server URL (e.g., http://localhost:3000).
+    #[arg(long)]
+    server: String,
+    /// Snapshot version to push (default: latest analysis).
+    #[arg(long)]
+    version: Option<u64>,
 }
 
 /// Arguments for the `svt plugin` subcommand.
@@ -223,7 +239,58 @@ fn open_store(path: &Path) -> Result<CozoStore> {
     CozoStore::new_persistent(path).map_err(|e| anyhow::anyhow!("{}", e))
 }
 
-fn run_import(store_path: &Path, args: &ImportArgs) -> Result<()> {
+/// Ensure a project exists in the store, creating it if necessary.
+fn ensure_project(store: &mut CozoStore, project_id: &str) -> Result<()> {
+    use svt_core::model::{validate_project_id, Project};
+    validate_project_id(project_id).map_err(|e| anyhow::anyhow!("{}", e))?;
+    if !store
+        .project_exists(project_id)
+        .map_err(|e| anyhow::anyhow!("{}", e))?
+    {
+        store
+            .create_project(&Project {
+                id: project_id.to_string(),
+                name: project_id.to_string(),
+                created_at: chrono::Utc::now().to_rfc3339(),
+                description: None,
+                metadata: None,
+            })
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+    }
+    Ok(())
+}
+
+/// Attempt to derive a project name from the git remote origin URL,
+/// falling back to the current directory name.
+#[allow(dead_code)]
+fn derive_project_name() -> Option<String> {
+    // Try git remote origin URL
+    let output = std::process::Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .output()
+        .ok()?;
+    if output.status.success() {
+        let url = String::from_utf8(output.stdout).ok()?.trim().to_string();
+        // Extract repo name from SSH (git@...:user/repo.git) or HTTPS (https://...user/repo.git)
+        let name = url
+            .rsplit('/')
+            .next()
+            .or_else(|| url.rsplit(':').next())?
+            .trim_end_matches(".git")
+            .to_string();
+        if !name.is_empty() {
+            return Some(name.to_lowercase().replace(' ', "-"));
+        }
+    }
+    // Fallback: current directory name
+    std::env::current_dir()
+        .ok()?
+        .file_name()?
+        .to_str()
+        .map(|s| s.to_lowercase().replace(' ', "-"))
+}
+
+fn run_import(store_path: &Path, project_id: &str, args: &ImportArgs) -> Result<()> {
     let content = std::fs::read_to_string(&args.file)
         .with_context(|| format!("reading {}", args.file.display()))?;
 
@@ -244,7 +311,8 @@ fn run_import(store_path: &Path, args: &ImportArgs) -> Result<()> {
     }
 
     let mut store = open_or_create_store(store_path)?;
-    let version = interchange_store::load_into_store(&mut store, &doc)
+    ensure_project(&mut store, project_id)?;
+    let version = interchange_store::load_into_store(&mut store, project_id, &doc)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     let node_count = store
@@ -269,7 +337,12 @@ fn run_import(store_path: &Path, args: &ImportArgs) -> Result<()> {
     Ok(())
 }
 
-fn run_check(store_path: &Path, args: &CheckArgs, loader: &plugin::PluginLoader) -> Result<()> {
+fn run_check(
+    store_path: &Path,
+    project_id: &str,
+    args: &CheckArgs,
+    loader: &plugin::PluginLoader,
+) -> Result<()> {
     use svt_core::conformance::{self, ConstraintRegistry, ConstraintStatus};
     use svt_core::model::{Severity, SnapshotKind};
 
@@ -280,7 +353,7 @@ fn run_check(store_path: &Path, args: &CheckArgs, loader: &plugin::PluginLoader)
     let design_version = match args.design {
         Some(v) => v,
         None => store
-            .latest_version(SnapshotKind::Design)
+            .latest_version(project_id, SnapshotKind::Design)
             .map_err(|e| anyhow::anyhow!("{}", e))?
             .ok_or_else(|| anyhow::anyhow!("No design versions found in store"))?,
     };
@@ -289,7 +362,7 @@ fn run_check(store_path: &Path, args: &CheckArgs, loader: &plugin::PluginLoader)
         let analysis_version = if analysis_version_arg == 0 {
             // 0 means "use latest analysis version"
             store
-                .latest_version(SnapshotKind::Analysis)
+                .latest_version(project_id, SnapshotKind::Analysis)
                 .map_err(|e| anyhow::anyhow!("{}", e))?
                 .ok_or_else(|| anyhow::anyhow!("No analysis versions found in store"))?
         } else {
@@ -423,8 +496,14 @@ fn detect_git_head(project_path: &Path) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-fn run_analyze(store_path: &Path, args: &AnalyzeArgs, loader: &plugin::PluginLoader) -> Result<()> {
+fn run_analyze(
+    store_path: &Path,
+    project_id: &str,
+    args: &AnalyzeArgs,
+    loader: &plugin::PluginLoader,
+) -> Result<()> {
     let mut store = open_or_create_store(store_path)?;
+    ensure_project(&mut store, project_id)?;
 
     let commit_ref = args
         .commit_ref
@@ -437,10 +516,11 @@ fn run_analyze(store_path: &Path, args: &AnalyzeArgs, loader: &plugin::PluginLoa
     let summary = if args.incremental {
         use svt_core::model::SnapshotKind;
         let previous = store
-            .latest_version(SnapshotKind::Analysis)
+            .latest_version(project_id, SnapshotKind::Analysis)
             .map_err(|e| anyhow::anyhow!("{}", e))?;
         svt_analyzer::analyze_project_incremental_with_registry(
             &mut store,
+            project_id,
             &args.path,
             commit_ref.as_deref(),
             previous,
@@ -450,6 +530,7 @@ fn run_analyze(store_path: &Path, args: &AnalyzeArgs, loader: &plugin::PluginLoa
     } else {
         svt_analyzer::analyze_project_with_registry(
             &mut store,
+            project_id,
             &args.path,
             commit_ref.as_deref(),
             registry,
@@ -506,7 +587,12 @@ fn run_analyze(store_path: &Path, args: &AnalyzeArgs, loader: &plugin::PluginLoa
     Ok(())
 }
 
-fn run_export(store_path: &Path, args: &ExportArgs, loader: &plugin::PluginLoader) -> Result<()> {
+fn run_export(
+    store_path: &Path,
+    project_id: &str,
+    args: &ExportArgs,
+    loader: &plugin::PluginLoader,
+) -> Result<()> {
     use svt_core::export::ExportRegistry;
     use svt_core::model::SnapshotKind;
 
@@ -517,7 +603,7 @@ fn run_export(store_path: &Path, args: &ExportArgs, loader: &plugin::PluginLoade
     let version = match args.version {
         Some(v) => v,
         None => store
-            .latest_version(SnapshotKind::Design)
+            .latest_version(project_id, SnapshotKind::Design)
             .map_err(|e| anyhow::anyhow!("{}", e))?
             .ok_or_else(|| anyhow::anyhow!("No design versions found in store"))?,
     };
@@ -759,7 +845,7 @@ fn run_store_info(store_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn run_store_compact(store_path: &Path, args: &CompactArgs) -> Result<()> {
+fn run_store_compact(store_path: &Path, project_id: &str, args: &CompactArgs) -> Result<()> {
     use svt_core::model::SnapshotKind;
 
     let mut store = open_store(store_path)?;
@@ -768,13 +854,13 @@ fn run_store_compact(store_path: &Path, args: &CompactArgs) -> Result<()> {
         // Default: keep latest design + latest analysis
         let mut versions = Vec::new();
         if let Some(v) = store
-            .latest_version(SnapshotKind::Design)
+            .latest_version(project_id, SnapshotKind::Design)
             .map_err(|e| anyhow::anyhow!("{}", e))?
         {
             versions.push(v);
         }
         if let Some(v) = store
-            .latest_version(SnapshotKind::Analysis)
+            .latest_version(project_id, SnapshotKind::Analysis)
             .map_err(|e| anyhow::anyhow!("{}", e))?
         {
             versions.push(v);
@@ -785,16 +871,16 @@ fn run_store_compact(store_path: &Path, args: &CompactArgs) -> Result<()> {
     };
 
     let before = store
-        .list_snapshots()
+        .list_snapshots(project_id)
         .map_err(|e| anyhow::anyhow!("{}", e))?
         .len();
 
     store
-        .compact(&keep_versions)
+        .compact(project_id, &keep_versions)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     let after = store
-        .list_snapshots()
+        .list_snapshots(project_id)
         .map_err(|e| anyhow::anyhow!("{}", e))?
         .len();
 
@@ -838,16 +924,76 @@ fn run_store_reset(store_path: &Path, args: &ResetArgs) -> Result<()> {
     Ok(())
 }
 
+fn run_push(store_path: &Path, project_id: &str, args: &PushArgs) -> Result<()> {
+    use svt_core::model::SnapshotKind;
+
+    let store = open_store(store_path)?;
+
+    let version = match args.version {
+        Some(v) => v,
+        None => store
+            .latest_version(project_id, SnapshotKind::Analysis)
+            .map_err(|e| anyhow::anyhow!("{}", e))?
+            .ok_or_else(|| anyhow::anyhow!("No analysis versions found"))?,
+    };
+
+    let nodes = store
+        .get_all_nodes(version)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let edges = store
+        .get_all_edges(version, None)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let constraints = store
+        .get_constraints(version)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let snapshots = store
+        .list_snapshots(project_id)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let snapshot = snapshots
+        .iter()
+        .find(|s| s.version == version)
+        .ok_or_else(|| anyhow::anyhow!("Snapshot v{} not found", version))?;
+
+    let payload = serde_json::json!({
+        "kind": snapshot.kind,
+        "commit_ref": snapshot.commit_ref,
+        "nodes": nodes,
+        "edges": edges,
+        "constraints": constraints,
+    });
+
+    let url = format!(
+        "{}/api/projects/{}/push",
+        args.server.trim_end_matches('/'),
+        project_id
+    );
+
+    match ureq::post(&url).send_json(&payload) {
+        Ok(_resp) => {
+            println!("Pushed v{} to {}", version, url);
+            Ok(())
+        }
+        Err(ureq::Error::Status(code, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            bail!("push failed (HTTP {}): {}", code, body);
+        }
+        Err(e) => {
+            bail!("push to {} failed: {}", url, e);
+        }
+    }
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let loader = build_plugin_loader(&cli.plugins);
 
     match &cli.command {
-        Commands::Import(args) => run_import(&cli.store, args),
-        Commands::Check(args) => run_check(&cli.store, args, &loader),
-        Commands::Analyze(args) => run_analyze(&cli.store, args, &loader),
-        Commands::Export(args) => run_export(&cli.store, args, &loader),
+        Commands::Import(args) => run_import(&cli.store, &cli.project, args),
+        Commands::Check(args) => run_check(&cli.store, &cli.project, args, &loader),
+        Commands::Analyze(args) => run_analyze(&cli.store, &cli.project, args, &loader),
+        Commands::Export(args) => run_export(&cli.store, &cli.project, args, &loader),
         Commands::Diff(args) => run_diff(&cli.store, args),
+        Commands::Push(args) => run_push(&cli.store, &cli.project, args),
         Commands::Plugin(args) => match &args.command {
             PluginCommands::List => run_plugin_list(&loader),
             PluginCommands::Install(install_args) => plugin_commands::run_install(
@@ -862,7 +1008,9 @@ fn main() -> Result<()> {
         },
         Commands::Store(args) => match &args.command {
             StoreCommands::Info => run_store_info(&cli.store),
-            StoreCommands::Compact(compact_args) => run_store_compact(&cli.store, compact_args),
+            StoreCommands::Compact(compact_args) => {
+                run_store_compact(&cli.store, &cli.project, compact_args)
+            }
             StoreCommands::Reset(reset_args) => run_store_reset(&cli.store, reset_args),
         },
     }

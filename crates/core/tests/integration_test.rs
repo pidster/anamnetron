@@ -7,7 +7,10 @@ use svt_core::validation;
 #[test]
 fn simple_service_containment_navigation() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+        .unwrap();
     helpers::create_simple_service(&mut store, v);
 
     // Service has two children: handlers and models
@@ -33,7 +36,10 @@ fn simple_service_containment_navigation() {
 #[test]
 fn simple_service_dependency_query() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+        .unwrap();
     helpers::create_simple_service(&mut store, v);
 
     // create depends on order
@@ -54,7 +60,10 @@ fn simple_service_dependency_query() {
 #[test]
 fn simple_service_descendants_with_filter() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+        .unwrap();
     helpers::create_simple_service(&mut store, v);
 
     // All descendants of svc
@@ -81,7 +90,10 @@ fn simple_service_descendants_with_filter() {
 #[test]
 fn layered_architecture_transitive_dependencies_follow_layer_order() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+        .unwrap();
     helpers::create_layered_architecture(&mut store, v);
 
     // api transitively depends on service, repo, db
@@ -110,7 +122,10 @@ fn layered_architecture_transitive_dependencies_follow_layer_order() {
 #[test]
 fn layered_architecture_containment() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+        .unwrap();
     helpers::create_layered_architecture(&mut store, v);
 
     // app has 4 children
@@ -126,7 +141,10 @@ fn layered_architecture_containment() {
 #[test]
 fn layered_architecture_passes_validation() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+        .unwrap();
     helpers::create_layered_architecture(&mut store, v);
 
     let cycles = validation::validate_contains_acyclic(&store, v).unwrap();
@@ -142,9 +160,12 @@ fn layered_architecture_passes_validation() {
 #[test]
 fn design_and_analysis_snapshots_coexist() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let design_v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let design_v = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+        .unwrap();
     let analysis_v = store
-        .create_snapshot(SnapshotKind::Analysis, Some("abc123"))
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, Some("abc123"))
         .unwrap();
 
     helpers::create_simple_service(&mut store, design_v);
@@ -152,11 +173,15 @@ fn design_and_analysis_snapshots_coexist() {
 
     // latest_version returns correct values
     assert_eq!(
-        store.latest_version(SnapshotKind::Design).unwrap(),
+        store
+            .latest_version(DEFAULT_PROJECT_ID, SnapshotKind::Design)
+            .unwrap(),
         Some(design_v)
     );
     assert_eq!(
-        store.latest_version(SnapshotKind::Analysis).unwrap(),
+        store
+            .latest_version(DEFAULT_PROJECT_ID, SnapshotKind::Analysis)
+            .unwrap(),
         Some(analysis_v)
     );
 

@@ -1,7 +1,9 @@
-import type { Snapshot, CytoscapeGraph, ConformanceReport, SnapshotDiff, Version } from "../lib/types";
+import type { Project, Snapshot, CytoscapeGraph, ConformanceReport, SnapshotDiff, Version } from "../lib/types";
 
 /** Reactive store for graph data and snapshot state. */
 class GraphStore {
+  projects = $state<Project[]>([]);
+  selectedProject = $state<string | null>(null);
   snapshots = $state<Snapshot[]>([]);
   selectedVersion = $state<Version | null>(null);
   graph = $state<CytoscapeGraph | null>(null);

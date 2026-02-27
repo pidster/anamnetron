@@ -33,8 +33,12 @@ fn infer_provenance(kind: SnapshotKind) -> Provenance {
 ///
 /// Assigns UUIDs, resolves canonical path references to node IDs,
 /// and infers missing fields (name, sub_kind, provenance).
-pub fn load_into_store(store: &mut impl GraphStore, doc: &InterchangeDocument) -> Result<Version> {
-    let version = store.create_snapshot(doc.kind, None)?;
+pub fn load_into_store(
+    store: &mut impl GraphStore,
+    project_id: &str,
+    doc: &InterchangeDocument,
+) -> Result<Version> {
+    let version = store.create_snapshot(project_id, doc.kind, None)?;
 
     // Build nodes with UUIDs, collecting path->ID mapping
     let mut path_to_id: HashMap<String, String> = HashMap::new();
@@ -115,9 +119,13 @@ pub fn load_into_store(store: &mut impl GraphStore, doc: &InterchangeDocument) -
 }
 
 /// Build an InterchangeDocument from store data for a given version.
-fn build_export_document(store: &dyn GraphStore, version: Version) -> Result<InterchangeDocument> {
+fn build_export_document(
+    store: &dyn GraphStore,
+    project_id: &str,
+    version: Version,
+) -> Result<InterchangeDocument> {
     // Find the snapshot for metadata
-    let snapshots = store.list_snapshots()?;
+    let snapshots = store.list_snapshots(project_id)?;
     let snapshot = snapshots
         .iter()
         .find(|s| s.version == version)
@@ -188,14 +196,14 @@ fn build_export_document(store: &dyn GraphStore, version: Version) -> Result<Int
 }
 
 /// Export a version from the store as YAML (flat format).
-pub fn export_yaml(store: &dyn GraphStore, version: Version) -> Result<String> {
-    let doc = build_export_document(store, version)?;
+pub fn export_yaml(store: &dyn GraphStore, project_id: &str, version: Version) -> Result<String> {
+    let doc = build_export_document(store, project_id, version)?;
     serde_yaml::to_string(&doc).map_err(|e| StoreError::Internal(e.to_string()))
 }
 
 /// Export a version from the store as JSON (flat format).
-pub fn export_json(store: &dyn GraphStore, version: Version) -> Result<String> {
-    let doc = build_export_document(store, version)?;
+pub fn export_json(store: &dyn GraphStore, project_id: &str, version: Version) -> Result<String> {
+    let doc = build_export_document(store, project_id, version)?;
     serde_json::to_string_pretty(&doc).map_err(|e| StoreError::Internal(e.to_string()))
 }
 
@@ -203,7 +211,19 @@ pub fn export_json(store: &dyn GraphStore, version: Version) -> Result<String> {
 mod tests {
     use super::*;
     use crate::interchange::parse_yaml;
+    use crate::model::DEFAULT_PROJECT_ID;
     use crate::store::CozoStore;
+
+    /// Helper to create the default project in a fresh store.
+    fn create_default_project(store: &mut CozoStore) {
+        let _ = store.create_project(&crate::model::Project {
+            id: DEFAULT_PROJECT_ID.to_string(),
+            name: "Default Project".to_string(),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            description: None,
+            metadata: None,
+        });
+    }
 
     #[test]
     fn load_flat_document_creates_snapshot_and_nodes() {
@@ -233,7 +253,8 @@ constraints:
 "#;
         let doc = parse_yaml(yaml).unwrap();
         let mut store = CozoStore::new_in_memory().unwrap();
-        let version = load_into_store(&mut store, &doc).unwrap();
+        create_default_project(&mut store);
+        let version = load_into_store(&mut store, DEFAULT_PROJECT_ID, &doc).unwrap();
 
         let nodes = store.get_all_nodes(version).unwrap();
         assert_eq!(nodes.len(), 2);
@@ -257,7 +278,8 @@ nodes:
 "#;
         let doc = parse_yaml(yaml).unwrap();
         let mut store = CozoStore::new_in_memory().unwrap();
-        let version = load_into_store(&mut store, &doc).unwrap();
+        create_default_project(&mut store);
+        let version = load_into_store(&mut store, DEFAULT_PROJECT_ID, &doc).unwrap();
 
         let node = store
             .get_node_by_path(version, "/app/my-service")
@@ -277,7 +299,8 @@ nodes:
 "#;
         let doc = parse_yaml(yaml).unwrap();
         let mut store = CozoStore::new_in_memory().unwrap();
-        let version = load_into_store(&mut store, &doc).unwrap();
+        create_default_project(&mut store);
+        let version = load_into_store(&mut store, DEFAULT_PROJECT_ID, &doc).unwrap();
 
         let node = store.get_node_by_path(version, "/app").unwrap().unwrap();
         assert_eq!(node.provenance, Provenance::Design);
@@ -297,7 +320,8 @@ nodes:
 "#;
         let doc = parse_yaml(yaml).unwrap();
         let mut store = CozoStore::new_in_memory().unwrap();
-        let version = load_into_store(&mut store, &doc).unwrap();
+        create_default_project(&mut store);
+        let version = load_into_store(&mut store, DEFAULT_PROJECT_ID, &doc).unwrap();
 
         let nodes = store.get_all_nodes(version).unwrap();
         assert_eq!(nodes.len(), 2);
@@ -339,9 +363,10 @@ constraints: []
 "#;
         let doc = parse_yaml(yaml).unwrap();
         let mut store = CozoStore::new_in_memory().unwrap();
-        let version = load_into_store(&mut store, &doc).unwrap();
+        create_default_project(&mut store);
+        let version = load_into_store(&mut store, DEFAULT_PROJECT_ID, &doc).unwrap();
 
-        let exported = export_yaml(&store, version).unwrap();
+        let exported = export_yaml(&store, DEFAULT_PROJECT_ID, version).unwrap();
         let re_parsed = parse_yaml(&exported).unwrap();
         assert_eq!(re_parsed.nodes.len(), 2);
         assert_eq!(re_parsed.edges.len(), 1);
@@ -362,9 +387,10 @@ constraints: []
 "#;
         let doc = parse_yaml(yaml).unwrap();
         let mut store = CozoStore::new_in_memory().unwrap();
-        let version = load_into_store(&mut store, &doc).unwrap();
+        create_default_project(&mut store);
+        let version = load_into_store(&mut store, DEFAULT_PROJECT_ID, &doc).unwrap();
 
-        let json_str = export_json(&store, version).unwrap();
+        let json_str = export_json(&store, DEFAULT_PROJECT_ID, version).unwrap();
         let re_parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
         assert_eq!(re_parsed["format"], "svt/v1");
     }

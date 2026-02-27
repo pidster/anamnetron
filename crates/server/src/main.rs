@@ -17,7 +17,7 @@ use tracing::info;
 use svt_analyzer::analyze_project;
 use svt_core::interchange;
 use svt_core::interchange_store;
-use svt_core::model::SnapshotKind;
+use svt_core::model::{validate_project_id, Project, DEFAULT_PROJECT_ID};
 use svt_core::store::{CozoStore, GraphStore};
 
 use crate::state::AppState;
@@ -39,6 +39,10 @@ struct Args {
     #[arg(long)]
     store: Option<PathBuf>,
 
+    /// Project name/ID to use for imported data.
+    #[arg(long, default_value = DEFAULT_PROJECT_ID)]
+    project_name: String,
+
     /// Port to listen on.
     #[arg(long, default_value = "3000")]
     port: u16,
@@ -59,6 +63,10 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
 
+    // Validate project name
+    validate_project_id(&args.project_name)
+        .map_err(|e| anyhow::anyhow!("invalid --project-name: {e}"))?;
+
     // Create persistent or in-memory store
     let mut store = if let Some(store_path) = &args.store {
         if let Some(parent) = store_path.parent() {
@@ -72,9 +80,19 @@ async fn main() -> anyhow::Result<()> {
         CozoStore::new_in_memory()?
     };
 
-    // Read existing versions from persistent store
-    let mut design_version = store.latest_version(SnapshotKind::Design)?;
-    let mut analysis_version = store.latest_version(SnapshotKind::Analysis)?;
+    // Ensure the project exists
+    let project_id = &args.project_name;
+    if !store.project_exists(project_id)? {
+        let now = chrono::Utc::now().to_rfc3339();
+        store.create_project(&Project {
+            id: project_id.clone(),
+            name: project_id.clone(),
+            created_at: now,
+            description: None,
+            metadata: None,
+        })?;
+        info!(project = %project_id, "created project");
+    }
 
     // If no store and no flags, require at least one input source
     if args.store.is_none() && args.project.is_none() && args.design.is_none() {
@@ -87,18 +105,17 @@ async fn main() -> anyhow::Result<()> {
             .with_context(|| format!("failed to read {}", design_path.display()))?;
         let doc = interchange::parse_yaml(&content)
             .with_context(|| format!("failed to parse {}", design_path.display()))?;
-        let version = interchange_store::load_into_store(&mut store, &doc)?;
-        design_version = Some(version);
-        info!(version, path = %design_path.display(), "imported design");
+        let version = interchange_store::load_into_store(&mut store, project_id, &doc)?;
+        info!(version, project = %project_id, path = %design_path.display(), "imported design");
     }
 
     // Analyze project if provided (layers on top of existing data)
     if let Some(project_path) = &args.project {
-        let summary = analyze_project(&mut store, project_path, None)
+        let summary = analyze_project(&mut store, project_id, project_path, None)
             .with_context(|| format!("failed to analyze {}", project_path.display()))?;
-        analysis_version = Some(summary.version);
         info!(
             version = summary.version,
+            project = %project_id,
             crates = summary.crates_analyzed,
             nodes = summary.nodes_created,
             edges = summary.edges_created,
@@ -106,18 +123,9 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    if design_version.is_some() || analysis_version.is_some() {
-        info!(
-            design = ?design_version,
-            analysis = ?analysis_version,
-            "serving versions"
-        );
-    }
-
     let state = Arc::new(AppState {
-        store,
-        design_version,
-        analysis_version,
+        store: std::sync::RwLock::new(store),
+        default_project: project_id.clone(),
     });
 
     let static_dir = std::path::PathBuf::from("web/dist");

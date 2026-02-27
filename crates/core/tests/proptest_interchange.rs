@@ -1,5 +1,7 @@
 //! Property-based tests for interchange round-trips.
 
+mod helpers;
+
 use proptest::prelude::*;
 
 use svt_core::interchange::{InterchangeDocument, InterchangeEdge, InterchangeNode};
@@ -77,9 +79,10 @@ proptest! {
     #[test]
     fn import_export_round_trip_preserves_node_count(doc in arb_document(10)) {
         let mut store = CozoStore::new_in_memory().unwrap();
-        let version = interchange_store::load_into_store(&mut store, &doc).unwrap();
+        helpers::ensure_default_project(&mut store);
+        let version = interchange_store::load_into_store(&mut store, DEFAULT_PROJECT_ID, &doc).unwrap();
 
-        let exported_yaml = interchange_store::export_yaml(&store, version).unwrap();
+        let exported_yaml = interchange_store::export_yaml(&store, DEFAULT_PROJECT_ID, version).unwrap();
         let re_parsed = svt_core::interchange::parse_yaml(&exported_yaml).unwrap();
 
         prop_assert_eq!(re_parsed.nodes.len(), doc.nodes.len());
@@ -88,9 +91,10 @@ proptest! {
     #[test]
     fn import_export_round_trip_preserves_edge_count(doc in arb_document(10)) {
         let mut store = CozoStore::new_in_memory().unwrap();
-        let version = interchange_store::load_into_store(&mut store, &doc).unwrap();
+        helpers::ensure_default_project(&mut store);
+        let version = interchange_store::load_into_store(&mut store, DEFAULT_PROJECT_ID, &doc).unwrap();
 
-        let exported_yaml = interchange_store::export_yaml(&store, version).unwrap();
+        let exported_yaml = interchange_store::export_yaml(&store, DEFAULT_PROJECT_ID, version).unwrap();
         let re_parsed = svt_core::interchange::parse_yaml(&exported_yaml).unwrap();
 
         prop_assert_eq!(re_parsed.edges.len(), doc.edges.len());

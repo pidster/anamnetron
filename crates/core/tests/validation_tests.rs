@@ -7,7 +7,10 @@ use svt_core::validation;
 #[test]
 fn clean_graph_passes_both_validations() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+        .unwrap();
 
     store
         .add_node(
@@ -35,7 +38,10 @@ fn clean_graph_passes_both_validations() {
 #[test]
 fn contains_cycle_is_detected() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+        .unwrap();
 
     store
         .add_node(
@@ -65,7 +71,10 @@ fn contains_cycle_is_detected() {
 #[test]
 fn self_referencing_contains_edge_is_detected() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+        .unwrap();
 
     store
         .add_node(
@@ -89,7 +98,10 @@ fn self_referencing_contains_edge_is_detected() {
 #[test]
 fn edge_referencing_nonexistent_node_is_flagged() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+        .unwrap();
 
     store
         .add_node(
@@ -118,7 +130,10 @@ fn edge_referencing_nonexistent_node_is_flagged() {
 #[test]
 fn edge_with_missing_source_is_flagged() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+        .unwrap();
 
     store
         .add_node(

@@ -9,7 +9,10 @@ use svt_core::store::{CozoStore, GraphStore};
 fn file_manifest_relation_exists_in_new_store() {
     // init_schema creates the file_manifest relation. Verify we can write to and read from it.
     let mut store = CozoStore::new_in_memory().unwrap();
-    let v = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+        .unwrap();
     let entries = vec![FileManifestEntry {
         path: "src/lib.rs".to_string(),
         hash: "a".repeat(64),
@@ -25,7 +28,10 @@ fn file_manifest_relation_exists_in_new_store() {
 #[test]
 fn add_and_get_file_manifest_round_trips() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let v = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+        .unwrap();
 
     let entries = vec![
         FileManifestEntry {
@@ -75,7 +81,10 @@ fn add_and_get_file_manifest_round_trips() {
 #[test]
 fn get_file_manifest_empty_version_returns_empty() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let v = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+        .unwrap();
 
     // Don't add any manifest entries
     let loaded = store.get_file_manifest(v).unwrap();
@@ -85,7 +94,10 @@ fn get_file_manifest_empty_version_returns_empty() {
 #[test]
 fn copy_nodes_duplicates_all_to_new_version() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let v1 = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v1 = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+        .unwrap();
 
     // Add several nodes to v1
     store
@@ -98,7 +110,9 @@ fn copy_nodes_duplicates_all_to_new_version() {
         .add_node(v1, &helpers::make_node_default("n3", "/svc/c"))
         .unwrap();
 
-    let v2 = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+    let v2 = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+        .unwrap();
 
     let copied = store.copy_nodes(v1, v2).unwrap();
     assert_eq!(copied, 3);
@@ -115,7 +129,10 @@ fn copy_nodes_duplicates_all_to_new_version() {
 #[test]
 fn copy_edges_duplicates_all_to_new_version() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let v1 = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v1 = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+        .unwrap();
 
     store
         .add_node(v1, &helpers::make_node_default("n1", "/svc/a"))
@@ -133,7 +150,9 @@ fn copy_edges_duplicates_all_to_new_version() {
         )
         .unwrap();
 
-    let v2 = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+    let v2 = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+        .unwrap();
 
     let copied = store.copy_edges(v1, v2).unwrap();
     assert_eq!(copied, 2);
@@ -150,7 +169,10 @@ fn copy_edges_duplicates_all_to_new_version() {
 #[test]
 fn copy_preserves_all_node_fields() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let v1 = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v1 = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+        .unwrap();
 
     let node = Node {
         id: "full-node".to_string(),
@@ -167,7 +189,9 @@ fn copy_preserves_all_node_fields() {
 
     store.add_node(v1, &node).unwrap();
 
-    let v2 = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+    let v2 = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+        .unwrap();
     store.copy_nodes(v1, v2).unwrap();
 
     let copied_node = store
@@ -190,8 +214,11 @@ fn copy_preserves_all_node_fields() {
 #[test]
 fn compact_deletes_file_manifest_entries() {
     let mut store = CozoStore::new_in_memory().unwrap();
+    helpers::ensure_default_project(&mut store);
 
-    let v1 = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+    let v1 = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+        .unwrap();
     store
         .add_file_manifest(
             v1,
@@ -204,7 +231,9 @@ fn compact_deletes_file_manifest_entries() {
         )
         .unwrap();
 
-    let v2 = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+    let v2 = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+        .unwrap();
     store
         .add_file_manifest(
             v2,
@@ -218,7 +247,7 @@ fn compact_deletes_file_manifest_entries() {
         .unwrap();
 
     // Compact keeping only v2
-    store.compact(&[v2]).unwrap();
+    store.compact(DEFAULT_PROJECT_ID, &[v2]).unwrap();
 
     // v1 manifest should be gone
     assert!(store.get_file_manifest(v1).unwrap().is_empty());
@@ -232,8 +261,13 @@ fn compact_deletes_file_manifest_entries() {
 #[test]
 fn copy_nodes_returns_zero_for_empty_version() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let v1 = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
-    let v2 = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v1 = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+        .unwrap();
+    let v2 = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+        .unwrap();
 
     // No nodes in v1
     let copied = store.copy_nodes(v1, v2).unwrap();
@@ -243,8 +277,13 @@ fn copy_nodes_returns_zero_for_empty_version() {
 #[test]
 fn copy_edges_returns_zero_for_empty_version() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let v1 = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
-    let v2 = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v1 = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+        .unwrap();
+    let v2 = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+        .unwrap();
 
     // No edges in v1
     let copied = store.copy_edges(v1, v2).unwrap();
@@ -254,7 +293,10 @@ fn copy_edges_returns_zero_for_empty_version() {
 #[test]
 fn add_file_manifest_with_empty_entries_is_noop() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let v = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+        .unwrap();
 
     // Empty entries should be a no-op
     store.add_file_manifest(v, &[]).unwrap();

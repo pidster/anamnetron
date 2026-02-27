@@ -1,3 +1,5 @@
+mod helpers;
+
 use svt_core::model::*;
 use svt_core::store::{CozoStore, GraphStore};
 
@@ -17,7 +19,10 @@ fn make_constraint(id: &str, kind: &str, scope: &str, target: Option<&str>) -> C
 #[test]
 fn add_constraint_then_get_constraints_round_trips() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+        .unwrap();
     let c = make_constraint("c1", "must_not_depend", "/payments/**", Some("/user/**"));
     store.add_constraint(v, &c).unwrap();
 
@@ -33,7 +38,10 @@ fn add_constraint_then_get_constraints_round_trips() {
 #[test]
 fn multiple_constraints_per_version_all_returned() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+        .unwrap();
     store
         .add_constraint(
             v,
@@ -57,7 +65,10 @@ fn multiple_constraints_per_version_all_returned() {
 #[test]
 fn get_constraints_for_empty_version_returns_empty() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+        .unwrap();
     let constraints = store.get_constraints(v).unwrap();
     assert!(constraints.is_empty());
 }
@@ -65,7 +76,10 @@ fn get_constraints_for_empty_version_returns_empty() {
 #[test]
 fn optional_fields_survive_as_none() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+        .unwrap();
     let c = Constraint {
         id: "c1".to_string(),
         kind: "boundary".to_string(),
@@ -88,8 +102,13 @@ fn optional_fields_survive_as_none() {
 #[test]
 fn constraints_are_version_scoped() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let v1 = store.create_snapshot(SnapshotKind::Design, None).unwrap();
-    let v2 = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v1 = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+        .unwrap();
+    let v2 = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+        .unwrap();
 
     store
         .add_constraint(

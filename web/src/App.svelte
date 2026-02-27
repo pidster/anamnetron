@@ -10,6 +10,7 @@
   import NodeDetail from "./components/NodeDetail.svelte";
   import ConformanceReport from "./components/ConformanceReport.svelte";
   import ErrorBoundary from "./components/ErrorBoundary.svelte";
+  import ProjectSelector from "./components/ProjectSelector.svelte";
   import SnapshotSelector from "./components/SnapshotSelector.svelte";
   import SearchBar from "./components/SearchBar.svelte";
   import NavigationPanel from "./components/NavigationPanel.svelte";
@@ -162,6 +163,9 @@
     function onHashChange() {
       const state = parseHash(window.location.hash);
       suppressHashWrite = true;
+      if (state.project && state.project !== graphStore.selectedProject) {
+        selectProject(state.project);
+      }
       if (state.version && state.version !== graphStore.selectedVersion) {
         selectVersion(state.version);
       }
@@ -194,17 +198,46 @@
     }
     window.addEventListener("hashchange", onHashChange);
 
-    // Initialize async: load WASM, snapshots, and apply initial hash state
+    // Initialize async: load WASM, projects, snapshots, and apply initial hash state
     (async () => {
       try {
         graphStore.loading = true;
-        const [, snapshots] = await Promise.all([
-          initWasm(),
-          api.getSnapshots(),
-        ]);
-        graphStore.snapshots = snapshots;
-
         const initial = parseHash(window.location.hash);
+
+        // Load WASM and projects in parallel
+        let projects: import("./lib/types").Project[] = [];
+        try {
+          const [, p] = await Promise.all([
+            initWasm(),
+            api.getProjects(),
+          ]);
+          projects = p;
+        } catch {
+          // Projects endpoint may not exist (older server) — fall back to no projects
+          await initWasm();
+        }
+
+        graphStore.projects = projects;
+
+        // Determine the active project
+        let activeProject: string | null = null;
+        if (projects.length > 0) {
+          if (initial.project && projects.some((p) => p.id === initial.project)) {
+            activeProject = initial.project;
+          } else {
+            activeProject = projects[0].id;
+          }
+        }
+        graphStore.selectedProject = activeProject;
+
+        // Load snapshots — project-scoped if we have a project, global otherwise
+        let snapshots: import("./lib/types").Snapshot[];
+        if (activeProject) {
+          snapshots = await api.getProjectSnapshots(activeProject);
+        } else {
+          snapshots = await api.getSnapshots();
+        }
+        graphStore.snapshots = snapshots;
 
         const initialVersion = initial.version && snapshots.some((s) => s.version === initial.version)
           ? initial.version
@@ -246,6 +279,35 @@
     return () => window.removeEventListener("hashchange", onHashChange);
   });
 
+  async function selectProject(projectId: string) {
+    try {
+      graphStore.loading = true;
+      graphStore.error = null;
+      graphStore.selectedProject = projectId;
+      graphStore.selectedVersion = null;
+      graphStore.graph = null;
+      graphStore.conformanceReport = null;
+      showConformance = false;
+      compareVersion = null;
+      graphStore.clearDiff();
+      selectionStore.clear();
+      focusStore.clear();
+      wasmVersion = null;
+
+      const snapshots = await api.getProjectSnapshots(projectId);
+      graphStore.snapshots = snapshots;
+
+      // Auto-select first snapshot if available
+      if (snapshots.length > 0) {
+        await selectVersion(snapshots[0].version);
+      }
+    } catch (e) {
+      graphStore.error = e instanceof Error ? e.message : "Failed to load project";
+    } finally {
+      graphStore.loading = false;
+    }
+  }
+
   async function selectVersion(version: Version) {
     try {
       graphStore.loading = true;
@@ -258,19 +320,22 @@
       selectionStore.clear();
       wasmVersion = null;
 
+      const project = graphStore.selectedProject;
       const wasmStore = getWasmStore();
       if (wasmStore) {
         // Fetch graph, nodes, and edges in parallel for WASM loading
         const [graph, nodes, edges] = await Promise.all([
-          api.getGraph(version),
-          api.getNodes(version),
-          api.getEdges(version),
+          project ? api.getProjectGraph(project, version) : api.getGraph(version),
+          project ? api.getProjectNodes(project, version) : api.getNodes(version),
+          project ? api.getProjectEdges(project, version) : api.getEdges(version),
         ]);
         graphStore.graph = graph;
         filterStore.populateFromGraph(graph.elements.nodes);
         wasmVersion = wasmStore.loadSnapshot(nodes, edges);
       } else {
-        const graph = await api.getGraph(version);
+        const graph = project
+          ? await api.getProjectGraph(project, version)
+          : await api.getGraph(version);
         graphStore.graph = graph;
         filterStore.populateFromGraph(graph.elements.nodes);
       }
@@ -305,18 +370,23 @@
     const currentDiff = graphStore.diffVersion;
     const currentMermaid = mermaidStore.diagramType;
     const currentIdToPath = idToPath;
+    const currentProject = graphStore.selectedProject;
+    const projectCount = graphStore.projects.length;
 
     if (suppressHashWrite) return;
 
     // Path = focused node (priority) or selected node
     const locationId = focusId ?? selectedId;
     const locationPath = locationId ? (currentIdToPath.get(locationId) ?? locationId) : undefined;
+    // Only include project in hash when there are multiple projects
+    const projectParam = projectCount > 1 ? (currentProject ?? undefined) : undefined;
     const hash = buildHash({
       version: currentVersion ?? undefined,
       path: locationPath,
       diff: currentDiff ?? undefined,
       mermaid: currentView === "mermaid" ? currentMermaid : undefined,
       view: currentView ?? undefined,
+      project: projectParam,
     });
     if (hash !== window.location.hash) {
       // Push a new history entry when view or focus changes (for browser back/forward)
@@ -634,6 +704,11 @@
         >All</button>
       </span>
       <SearchBar onsearch={handleSearch} />
+      <ProjectSelector
+        projects={graphStore.projects}
+        selectedProject={graphStore.selectedProject}
+        onselect={selectProject}
+      />
       <SnapshotSelector
         snapshots={graphStore.snapshots}
         selectedVersion={graphStore.selectedVersion}

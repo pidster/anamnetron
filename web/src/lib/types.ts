@@ -26,11 +26,21 @@ export type Severity = "error" | "warning" | "info";
 /** Constraint evaluation status. */
 export type ConstraintStatus = "pass" | "fail" | "not_evaluable";
 
+/** A project in the graph store. */
+export interface Project {
+  id: string;
+  name: string;
+  created_at: string;
+  description: string | null;
+  metadata: Record<string, unknown> | null;
+}
+
 /** GET /api/snapshots response item. */
 export interface Snapshot {
   version: Version;
   kind: SnapshotKind;
   commit_ref: string | null;
+  project_id?: string;
 }
 
 /** GET /api/snapshots/{v}/nodes response item (also from search). */

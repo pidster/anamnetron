@@ -6,7 +6,7 @@ use tempfile::TempDir;
 #[test]
 fn new_in_memory_store_has_schema_version_one() {
     let store = CozoStore::new_in_memory().unwrap();
-    assert_eq!(store.schema_version().unwrap(), 1);
+    assert_eq!(store.schema_version().unwrap(), 2);
 }
 
 #[test]
@@ -17,13 +17,13 @@ fn schema_version_survives_persistent_reopen() {
     // Create store and verify version
     {
         let store = CozoStore::new_persistent(&path).unwrap();
-        assert_eq!(store.schema_version().unwrap(), 1);
+        assert_eq!(store.schema_version().unwrap(), 2);
     }
 
     // Reopen and verify version persists
     {
         let store = CozoStore::new_persistent(&path).unwrap();
-        assert_eq!(store.schema_version().unwrap(), 1);
+        assert_eq!(store.schema_version().unwrap(), 2);
     }
 }
 
@@ -35,7 +35,7 @@ fn migration_is_idempotent() {
     // Open the same store multiple times — migration should be idempotent
     for _ in 0..3 {
         let store = CozoStore::new_persistent(&path).unwrap();
-        assert_eq!(store.schema_version().unwrap(), 1);
+        assert_eq!(store.schema_version().unwrap(), 2);
     }
 }
 
@@ -47,7 +47,7 @@ fn future_schema_version_returns_mismatch_error() {
     // Create a store and manually set a future schema version
     {
         let store = CozoStore::new_persistent(&path).unwrap();
-        assert_eq!(store.schema_version().unwrap(), 1);
+        assert_eq!(store.schema_version().unwrap(), 2);
         // Manually set schema version to a future value by using the public API indirectly
         // We need to create a store that has a higher version — simulate by direct DB manipulation
         // Since set_schema_version is private, we'll use the store's internal mechanism
@@ -56,7 +56,7 @@ fn future_schema_version_returns_mismatch_error() {
     // We can't easily set a future version since set_schema_version is private.
     // Instead, verify the error type format using a direct construction test.
     let err = StoreError::SchemaMismatch {
-        expected: 1,
+        expected: 2,
         found: 99,
     };
     let msg = err.to_string();
@@ -65,7 +65,7 @@ fn future_schema_version_returns_mismatch_error() {
         "error message should contain the found version"
     );
     assert!(
-        msg.contains("1"),
+        msg.contains("2"),
         "error message should contain the expected version"
     );
 }

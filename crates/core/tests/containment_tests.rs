@@ -8,7 +8,10 @@ use svt_core::store::{CozoStore, GraphStore};
 /// system -> service -> comp1 -> comp2 -> unit
 fn setup_hierarchy() -> (CozoStore, Version) {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+        .unwrap();
 
     store
         .add_node(
@@ -246,7 +249,8 @@ proptest! {
     #[test]
     fn ancestor_chain_has_no_duplicates(depth in 2usize..8) {
         let mut store = CozoStore::new_in_memory().unwrap();
-        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        helpers::ensure_default_project(&mut store);
+        let v = store.create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None).unwrap();
 
         // Build a chain of `depth` nodes connected by Contains edges.
         let ids: Vec<String> = (0..depth).map(|i| format!("n{i}")).collect();

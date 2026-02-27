@@ -23,26 +23,45 @@ pub async fn list_edges(
     Path(version): Path<Version>,
     Query(filter): Query<EdgeFilter>,
 ) -> Result<Json<Vec<Edge>>, ApiError> {
-    let edges = state.store.get_all_edges(version, filter.kind)?;
+    let store = state.read_store()?;
+    let edges = store.get_all_edges(version, filter.kind)?;
+    Ok(Json(edges))
+}
+
+/// GET /api/projects/{project}/snapshots/{version}/edges
+pub async fn list_project_edges(
+    State(state): State<SharedState>,
+    Path((_project, version)): Path<(String, Version)>,
+    Query(filter): Query<EdgeFilter>,
+) -> Result<Json<Vec<Edge>>, ApiError> {
+    let store = state.read_store()?;
+    let edges = store.get_all_edges(version, filter.kind)?;
     Ok(Json(edges))
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
 
     use http_body_util::BodyExt;
-    use svt_core::model::{Edge, EdgeKind, NodeKind, Provenance, SnapshotKind};
+    use svt_core::model::{Edge, EdgeKind, NodeKind, Provenance, SnapshotKind, DEFAULT_PROJECT_ID};
     use svt_core::store::{CozoStore, GraphStore};
     use tower::ServiceExt;
 
     use crate::routes::api_router;
     use crate::state::AppState;
 
+    /// The default project is automatically created by the v1->v2 migration.
+    fn make_store_with_project() -> CozoStore {
+        CozoStore::new_in_memory().unwrap()
+    }
+
     #[tokio::test]
     async fn list_edges_returns_all() {
-        let mut store = CozoStore::new_in_memory().unwrap();
-        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        let mut store = make_store_with_project();
+        let v = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+            .unwrap();
         store
             .add_node(
                 v,
@@ -92,9 +111,8 @@ mod tests {
             .unwrap();
 
         let state = Arc::new(AppState {
-            store,
-            design_version: Some(v),
-            analysis_version: None,
+            store: RwLock::new(store),
+            default_project: DEFAULT_PROJECT_ID.to_string(),
         });
         let app = api_router(state);
         let resp = app
@@ -115,8 +133,10 @@ mod tests {
 
     #[tokio::test]
     async fn list_edges_with_kind_filter() {
-        let mut store = CozoStore::new_in_memory().unwrap();
-        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        let mut store = make_store_with_project();
+        let v = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+            .unwrap();
         store
             .add_node(
                 v,
@@ -179,9 +199,8 @@ mod tests {
             .unwrap();
 
         let state = Arc::new(AppState {
-            store,
-            design_version: Some(v),
-            analysis_version: None,
+            store: RwLock::new(store),
+            default_project: DEFAULT_PROJECT_ID.to_string(),
         });
         let app = api_router(state);
         let resp = app

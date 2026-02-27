@@ -132,7 +132,18 @@ pub fn to_dot(store: &dyn GraphStore, version: Version) -> Result<String> {
 mod tests {
     use crate::interchange::parse_yaml;
     use crate::interchange_store::load_into_store;
-    use crate::store::CozoStore;
+    use crate::model::{Project, DEFAULT_PROJECT_ID};
+    use crate::store::{CozoStore, GraphStore};
+
+    fn ensure_default_project(store: &mut CozoStore) {
+        let _ = store.create_project(&Project {
+            id: DEFAULT_PROJECT_ID.to_string(),
+            name: "Default Project".to_string(),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            description: None,
+            metadata: None,
+        });
+    }
 
     #[test]
     fn simple_graph_produces_valid_dot() {
@@ -155,7 +166,8 @@ constraints: []
 "#;
         let doc = parse_yaml(yaml).unwrap();
         let mut store = CozoStore::new_in_memory().unwrap();
-        let version = load_into_store(&mut store, &doc).unwrap();
+        ensure_default_project(&mut store);
+        let version = load_into_store(&mut store, DEFAULT_PROJECT_ID, &doc).unwrap();
 
         let output = super::to_dot(&store, version).unwrap();
 
@@ -191,7 +203,8 @@ constraints: []
 "#;
         let doc = parse_yaml(yaml).unwrap();
         let mut store = CozoStore::new_in_memory().unwrap();
-        let version = load_into_store(&mut store, &doc).unwrap();
+        ensure_default_project(&mut store);
+        let version = load_into_store(&mut store, DEFAULT_PROJECT_ID, &doc).unwrap();
 
         let output = super::to_dot(&store, version).unwrap();
 
@@ -226,7 +239,8 @@ constraints: []
 "#;
         let doc = parse_yaml(yaml).unwrap();
         let mut store = CozoStore::new_in_memory().unwrap();
-        let version = load_into_store(&mut store, &doc).unwrap();
+        ensure_default_project(&mut store);
+        let version = load_into_store(&mut store, DEFAULT_PROJECT_ID, &doc).unwrap();
 
         let output = super::to_dot(&store, version).unwrap();
         insta::assert_snapshot!(output);

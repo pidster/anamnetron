@@ -794,7 +794,17 @@ pub fn evaluate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::CozoStore;
+    use crate::store::{CozoStore, GraphStore};
+
+    fn ensure_default_project(store: &mut CozoStore) {
+        let _ = store.create_project(&Project {
+            id: DEFAULT_PROJECT_ID.to_string(),
+            name: "Default Project".to_string(),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            description: None,
+            metadata: None,
+        });
+    }
 
     fn make_node(id: &str, path: &str, kind: NodeKind, sub_kind: &str) -> Node {
         Node {
@@ -825,7 +835,10 @@ mod tests {
     #[test]
     fn must_not_depend_passes_when_no_violations() {
         let mut store = CozoStore::new_in_memory().unwrap();
-        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        ensure_default_project(&mut store);
+        let v = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+            .unwrap();
 
         let app = make_node("n1", "/app", NodeKind::System, "workspace");
         let core = make_node("n2", "/app/core", NodeKind::Service, "crate");
@@ -858,7 +871,10 @@ mod tests {
     #[test]
     fn must_not_depend_fails_with_violation() {
         let mut store = CozoStore::new_in_memory().unwrap();
-        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        ensure_default_project(&mut store);
+        let v = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+            .unwrap();
 
         let app = make_node("n1", "/app", NodeKind::System, "workspace");
         let core = make_node("n2", "/app/core", NodeKind::Service, "crate");
@@ -899,7 +915,8 @@ mod tests {
 
         let doc = parse_yaml(yaml).unwrap();
         let mut store = CozoStore::new_in_memory().unwrap();
-        let version = load_into_store(&mut store, &doc).unwrap();
+        ensure_default_project(&mut store);
+        let version = load_into_store(&mut store, DEFAULT_PROJECT_ID, &doc).unwrap();
         (store, version)
     }
 
@@ -992,9 +1009,12 @@ constraints:
     #[test]
     fn evaluate_finds_unimplemented_design_nodes() {
         let mut store = CozoStore::new_in_memory().unwrap();
+        ensure_default_project(&mut store);
 
         // Create design with 2 nodes
-        let dv = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        let dv = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+            .unwrap();
         store
             .add_node(dv, &make_node("d1", "/app", NodeKind::System, "workspace"))
             .unwrap();
@@ -1006,7 +1026,9 @@ constraints:
             .unwrap();
 
         // Create analysis with only 1 matching node
-        let av = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+        let av = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+            .unwrap();
         store
             .add_node(av, &make_node("a1", "/app", NodeKind::System, "workspace"))
             .unwrap();
@@ -1026,9 +1048,12 @@ constraints:
     #[test]
     fn evaluate_finds_undocumented_analysis_nodes() {
         let mut store = CozoStore::new_in_memory().unwrap();
+        ensure_default_project(&mut store);
 
         // Design has /app and /app/core
-        let dv = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        let dv = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+            .unwrap();
         store
             .add_node(dv, &make_node("d1", "/app", NodeKind::System, "workspace"))
             .unwrap();
@@ -1040,7 +1065,9 @@ constraints:
             .unwrap();
 
         // Analysis has /app, /app/core, and /app/extra (undocumented, same depth as design)
-        let av = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+        let av = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+            .unwrap();
         store
             .add_node(av, &make_node("a1", "/app", NodeKind::System, "workspace"))
             .unwrap();
@@ -1074,9 +1101,12 @@ constraints:
     #[test]
     fn evaluate_depth_tolerance_design_node_with_descendants() {
         let mut store = CozoStore::new_in_memory().unwrap();
+        ensure_default_project(&mut store);
 
         // Design has /app and /app/core
-        let dv = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        let dv = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+            .unwrap();
         store
             .add_node(dv, &make_node("d1", "/app", NodeKind::System, "workspace"))
             .unwrap();
@@ -1088,7 +1118,9 @@ constraints:
             .unwrap();
 
         // Analysis has /app, /app/core, and /app/core/model (deeper)
-        let av = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+        let av = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+            .unwrap();
         store
             .add_node(av, &make_node("a1", "/app", NodeKind::System, "workspace"))
             .unwrap();
@@ -1117,9 +1149,12 @@ constraints:
     #[test]
     fn evaluate_runs_constraints_against_analysis() {
         let mut store = CozoStore::new_in_memory().unwrap();
+        ensure_default_project(&mut store);
 
         // Load design
-        let dv = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        let dv = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+            .unwrap();
         store
             .add_node(dv, &make_node("d1", "/app", NodeKind::System, "workspace"))
             .unwrap();
@@ -1149,7 +1184,9 @@ constraints:
             .unwrap();
 
         // Create analysis with a forbidden dependency
-        let av = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+        let av = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+            .unwrap();
         store
             .add_node(av, &make_node("a1", "/app", NodeKind::System, "workspace"))
             .unwrap();
@@ -1252,9 +1289,12 @@ constraints:
     #[test]
     fn evaluate_empty_analysis_reports_all_design_as_unimplemented() {
         let mut store = CozoStore::new_in_memory().unwrap();
+        ensure_default_project(&mut store);
 
         // Design has 2 nodes
-        let dv = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        let dv = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+            .unwrap();
         store
             .add_node(dv, &make_node("d1", "/app", NodeKind::System, "workspace"))
             .unwrap();
@@ -1266,7 +1306,9 @@ constraints:
             .unwrap();
 
         // Analysis is empty
-        let av = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+        let av = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+            .unwrap();
 
         let registry = ConstraintRegistry::with_defaults();
         let report = evaluate(&store, dv, av, &registry).unwrap();
@@ -1280,9 +1322,14 @@ constraints:
     #[test]
     fn evaluate_both_empty_produces_clean_report() {
         let mut store = CozoStore::new_in_memory().unwrap();
+        ensure_default_project(&mut store);
 
-        let dv = store.create_snapshot(SnapshotKind::Design, None).unwrap();
-        let av = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+        let dv = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+            .unwrap();
+        let av = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+            .unwrap();
 
         let registry = ConstraintRegistry::with_defaults();
         let report = evaluate(&store, dv, av, &registry).unwrap();
@@ -1298,8 +1345,11 @@ constraints:
     #[test]
     fn evaluate_summary_counts_are_correct() {
         let mut store = CozoStore::new_in_memory().unwrap();
+        ensure_default_project(&mut store);
 
-        let dv = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        let dv = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+            .unwrap();
         store
             .add_node(dv, &make_node("d1", "/app", NodeKind::System, "workspace"))
             .unwrap();
@@ -1316,7 +1366,9 @@ constraints:
             )
             .unwrap();
 
-        let av = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+        let av = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+            .unwrap();
         store
             .add_node(av, &make_node("a1", "/app", NodeKind::System, "workspace"))
             .unwrap();
@@ -1345,7 +1397,10 @@ constraints:
     #[test]
     fn boundary_passes_when_no_external_deps_on_internal() {
         let mut store = CozoStore::new_in_memory().unwrap();
-        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        ensure_default_project(&mut store);
+        let v = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+            .unwrap();
 
         let app = make_node("n1", "/app", NodeKind::System, "workspace");
         let store_mod = make_node("n2", "/app/store", NodeKind::Component, "module");
@@ -1381,7 +1436,10 @@ constraints:
     #[test]
     fn boundary_fails_when_external_depends_on_internal() {
         let mut store = CozoStore::new_in_memory().unwrap();
-        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        ensure_default_project(&mut store);
+        let v = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+            .unwrap();
 
         let app = make_node("n1", "/app", NodeKind::System, "workspace");
         let store_mod = make_node("n2", "/app/store", NodeKind::Component, "module");
@@ -1422,7 +1480,10 @@ constraints:
     #[test]
     fn boundary_allows_internal_to_internal_deps() {
         let mut store = CozoStore::new_in_memory().unwrap();
-        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        ensure_default_project(&mut store);
+        let v = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+            .unwrap();
 
         let app = make_node("n1", "/app", NodeKind::System, "workspace");
         let cozo = make_node("n2", "/app/store/cozo", NodeKind::Component, "module");
@@ -1457,7 +1518,10 @@ constraints:
     #[test]
     fn must_contain_passes_when_child_exists() {
         let mut store = CozoStore::new_in_memory().unwrap();
-        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        ensure_default_project(&mut store);
+        let v = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+            .unwrap();
 
         let cli = make_node("n1", "/app/cli", NodeKind::Service, "crate");
         let cmds = make_node("n2", "/app/cli/commands", NodeKind::Component, "module");
@@ -1492,7 +1556,10 @@ constraints:
     #[test]
     fn must_contain_fails_when_child_missing() {
         let mut store = CozoStore::new_in_memory().unwrap();
-        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        ensure_default_project(&mut store);
+        let v = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+            .unwrap();
 
         let cli = make_node("n1", "/app/cli", NodeKind::Service, "crate");
         let cmds = make_node("n2", "/app/cli/commands", NodeKind::Component, "module");
@@ -1523,7 +1590,10 @@ constraints:
     #[test]
     fn must_contain_fails_when_name_matches_but_kind_does_not() {
         let mut store = CozoStore::new_in_memory().unwrap();
-        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        ensure_default_project(&mut store);
+        let v = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+            .unwrap();
 
         let cmds = make_node("n1", "/app/cli/commands", NodeKind::Component, "module");
         // Child named "check" but kind is Component, not Unit
@@ -1560,7 +1630,10 @@ constraints:
     #[test]
     fn max_fan_in_passes_when_under_limit() {
         let mut store = CozoStore::new_in_memory().unwrap();
-        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        ensure_default_project(&mut store);
+        let v = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+            .unwrap();
 
         let model = make_node("n1", "/app/model", NodeKind::Component, "module");
         let api = make_node("n2", "/app/api", NodeKind::Component, "module");
@@ -1591,7 +1664,10 @@ constraints:
     #[test]
     fn max_fan_in_fails_when_over_limit() {
         let mut store = CozoStore::new_in_memory().unwrap();
-        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        ensure_default_project(&mut store);
+        let v = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+            .unwrap();
 
         let model = make_node("n1", "/app/model", NodeKind::Component, "module");
         let a = make_node("n2", "/app/a", NodeKind::Component, "module");
@@ -1633,7 +1709,10 @@ constraints:
     #[test]
     fn max_fan_in_with_level_filter_counts_only_matching_kind() {
         let mut store = CozoStore::new_in_memory().unwrap();
-        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        ensure_default_project(&mut store);
+        let v = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+            .unwrap();
 
         let model = make_node("n1", "/app/model", NodeKind::Component, "module");
         let api = make_node("n2", "/app/api", NodeKind::Component, "module");
@@ -1708,9 +1787,12 @@ constraints:
     #[test]
     fn evaluate_design_node_with_only_descendant_is_implemented() {
         let mut store = CozoStore::new_in_memory().unwrap();
+        ensure_default_project(&mut store);
 
         // Design has /app/core but analysis only has /app/core/model (descendant)
-        let dv = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        let dv = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+            .unwrap();
         store
             .add_node(dv, &make_node("d1", "/app", NodeKind::System, "workspace"))
             .unwrap();
@@ -1721,7 +1803,9 @@ constraints:
             )
             .unwrap();
 
-        let av = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+        let av = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+            .unwrap();
         store
             .add_node(av, &make_node("a1", "/app", NodeKind::System, "workspace"))
             .unwrap();

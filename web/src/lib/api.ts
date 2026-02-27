@@ -1,4 +1,5 @@
 import type {
+  Project,
   Snapshot,
   ApiNode,
   ApiEdge,
@@ -88,4 +89,30 @@ export function searchNodes(path: string, version: Version): Promise<ApiNode[]> 
 /** GET /api/diff?from=V1&to=V2 */
 export function getDiff(from: Version, to: Version): Promise<SnapshotDiff> {
   return fetchJson(`${BASE}/api/diff?from=${from}&to=${to}`);
+}
+
+/** GET /api/projects */
+export function getProjects(): Promise<Project[]> {
+  return fetchJson(`${BASE}/api/projects`);
+}
+
+/** GET /api/projects/{project}/snapshots */
+export function getProjectSnapshots(project: string): Promise<Snapshot[]> {
+  return fetchJson(`${BASE}/api/projects/${encodeURIComponent(project)}/snapshots`);
+}
+
+/** GET /api/projects/{project}/snapshots/{v}/graph */
+export function getProjectGraph(project: string, version: Version): Promise<CytoscapeGraph> {
+  return fetchJson(`${BASE}/api/projects/${encodeURIComponent(project)}/snapshots/${version}/graph`);
+}
+
+/** GET /api/projects/{project}/snapshots/{v}/nodes */
+export function getProjectNodes(project: string, version: Version): Promise<ApiNode[]> {
+  return fetchJson(`${BASE}/api/projects/${encodeURIComponent(project)}/snapshots/${version}/nodes`);
+}
+
+/** GET /api/projects/{project}/snapshots/{v}/edges */
+export function getProjectEdges(project: string, version: Version, kind?: string): Promise<ApiEdge[]> {
+  const params = kind ? `?kind=${encodeURIComponent(kind)}` : "";
+  return fetchJson(`${BASE}/api/projects/${encodeURIComponent(project)}/snapshots/${version}/edges${params}`);
 }

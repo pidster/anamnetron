@@ -16,6 +16,9 @@ pub enum ApiError {
     /// Internal store error.
     #[error("internal error: {0}")]
     StoreError(#[from] svt_core::store::StoreError),
+    /// Internal server error (e.g., lock poisoning).
+    #[error("internal error: {0}")]
+    Internal(String),
 }
 
 /// JSON error response body.
@@ -30,6 +33,7 @@ impl IntoResponse for ApiError {
             ApiError::NotFound(_) => StatusCode::NOT_FOUND,
             ApiError::BadRequest(_) => StatusCode::BAD_REQUEST,
             ApiError::StoreError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         let body = ErrorBody {
             error: self.to_string(),

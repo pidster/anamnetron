@@ -32,12 +32,21 @@ export class WasmGraphStore {
 
   /**
    * Load a snapshot from arrays of nodes and edges.
-   * Returns the new snapshot version number.
+   *
+   * @param nodes - Array of nodes to load
+   * @param edges - Array of edges to load
+   * @param projectId - Optional project ID (defaults to `"default"`)
+   * @returns The new snapshot version number
    */
-  loadSnapshot(nodes: ApiNode[], edges: ApiEdge[]): Version {
+  loadSnapshot(
+    nodes: ApiNode[],
+    edges: ApiEdge[],
+    projectId?: string,
+  ): Version {
     const version = this.store.load_snapshot(
       JSON.stringify(nodes),
       JSON.stringify(edges),
+      projectId ?? undefined,
     );
     return Number(version);
   }

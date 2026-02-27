@@ -269,7 +269,17 @@ fn diff_node_fields(a: &Node, b: &Node) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::CozoStore;
+    use crate::store::{CozoStore, GraphStore};
+
+    fn ensure_default_project(store: &mut CozoStore) {
+        let _ = store.create_project(&Project {
+            id: DEFAULT_PROJECT_ID.to_string(),
+            name: "Default Project".to_string(),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            description: None,
+            metadata: None,
+        });
+    }
 
     fn make_node(path: &str, kind: NodeKind, sub_kind: &str) -> Node {
         Node {
@@ -300,11 +310,16 @@ mod tests {
     #[test]
     fn identical_snapshots_produce_empty_diff() {
         let mut store = CozoStore::new_in_memory().unwrap();
-        let v1 = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+        ensure_default_project(&mut store);
+        let v1 = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+            .unwrap();
         let node = make_node("/app/core", NodeKind::Service, "crate");
         store.add_node(v1, &node).unwrap();
 
-        let v2 = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+        let v2 = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+            .unwrap();
         let node2 = make_node("/app/core", NodeKind::Service, "crate");
         store.add_node(v2, &node2).unwrap();
 
@@ -320,11 +335,16 @@ mod tests {
     #[test]
     fn detects_added_nodes() {
         let mut store = CozoStore::new_in_memory().unwrap();
-        let v1 = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+        ensure_default_project(&mut store);
+        let v1 = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+            .unwrap();
         let n1 = make_node("/app/core", NodeKind::Service, "crate");
         store.add_node(v1, &n1).unwrap();
 
-        let v2 = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+        let v2 = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+            .unwrap();
         let n2a = make_node("/app/core", NodeKind::Service, "crate");
         let n2b = make_node("/app/cli", NodeKind::Service, "crate");
         store.add_nodes_batch(v2, &[n2a, n2b]).unwrap();
@@ -340,12 +360,17 @@ mod tests {
     #[test]
     fn detects_removed_nodes() {
         let mut store = CozoStore::new_in_memory().unwrap();
-        let v1 = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+        ensure_default_project(&mut store);
+        let v1 = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+            .unwrap();
         let n1a = make_node("/app/core", NodeKind::Service, "crate");
         let n1b = make_node("/app/cli", NodeKind::Service, "crate");
         store.add_nodes_batch(v1, &[n1a, n1b]).unwrap();
 
-        let v2 = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+        let v2 = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+            .unwrap();
         let n2 = make_node("/app/core", NodeKind::Service, "crate");
         store.add_node(v2, &n2).unwrap();
 
@@ -364,11 +389,16 @@ mod tests {
     #[test]
     fn detects_changed_node_kind() {
         let mut store = CozoStore::new_in_memory().unwrap();
-        let v1 = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+        ensure_default_project(&mut store);
+        let v1 = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+            .unwrap();
         let n1 = make_node("/app/core", NodeKind::Service, "crate");
         store.add_node(v1, &n1).unwrap();
 
-        let v2 = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+        let v2 = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+            .unwrap();
         let n2 = make_node("/app/core", NodeKind::Component, "module");
         store.add_node(v2, &n2).unwrap();
 
@@ -384,15 +414,20 @@ mod tests {
     #[test]
     fn detects_added_edges() {
         let mut store = CozoStore::new_in_memory().unwrap();
+        ensure_default_project(&mut store);
 
-        let v1 = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+        let v1 = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+            .unwrap();
         let n1a = make_node("/app/core", NodeKind::Service, "crate");
         let n1b = make_node("/app/cli", NodeKind::Service, "crate");
         store
             .add_nodes_batch(v1, &[n1a.clone(), n1b.clone()])
             .unwrap();
 
-        let v2 = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+        let v2 = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+            .unwrap();
         let n2a = make_node("/app/core", NodeKind::Service, "crate");
         let n2b = make_node("/app/cli", NodeKind::Service, "crate");
         store
@@ -413,8 +448,11 @@ mod tests {
     #[test]
     fn detects_removed_edges() {
         let mut store = CozoStore::new_in_memory().unwrap();
+        ensure_default_project(&mut store);
 
-        let v1 = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+        let v1 = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+            .unwrap();
         let n1a = make_node("/app/core", NodeKind::Service, "crate");
         let n1b = make_node("/app/cli", NodeKind::Service, "crate");
         store
@@ -423,7 +461,9 @@ mod tests {
         let edge = make_edge(&n1b.id, &n1a.id, EdgeKind::Depends);
         store.add_edge(v1, &edge).unwrap();
 
-        let v2 = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+        let v2 = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+            .unwrap();
         let n2a = make_node("/app/core", NodeKind::Service, "crate");
         let n2b = make_node("/app/cli", NodeKind::Service, "crate");
         store.add_nodes_batch(v2, &[n2a, n2b]).unwrap();
@@ -437,12 +477,17 @@ mod tests {
     #[test]
     fn diff_symmetry_swaps_added_and_removed() {
         let mut store = CozoStore::new_in_memory().unwrap();
+        ensure_default_project(&mut store);
 
-        let v1 = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+        let v1 = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+            .unwrap();
         let n1 = make_node("/app/core", NodeKind::Service, "crate");
         store.add_node(v1, &n1).unwrap();
 
-        let v2 = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+        let v2 = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+            .unwrap();
         let n2a = make_node("/app/core", NodeKind::Service, "crate");
         let n2b = make_node("/app/cli", NodeKind::Service, "crate");
         store.add_nodes_batch(v2, &[n2a, n2b]).unwrap();
@@ -457,8 +502,13 @@ mod tests {
     #[test]
     fn empty_snapshots_produce_empty_diff() {
         let mut store = CozoStore::new_in_memory().unwrap();
-        let v1 = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
-        let v2 = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+        ensure_default_project(&mut store);
+        let v1 = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+            .unwrap();
+        let v2 = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+            .unwrap();
 
         let diff = diff_snapshots(&store, v1, v2).unwrap();
 
@@ -469,8 +519,13 @@ mod tests {
     #[test]
     fn diff_serializes_to_json() {
         let mut store = CozoStore::new_in_memory().unwrap();
-        let v1 = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
-        let v2 = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+        ensure_default_project(&mut store);
+        let v1 = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+            .unwrap();
+        let v2 = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+            .unwrap();
         let n2 = make_node("/app/new", NodeKind::Service, "crate");
         store.add_node(v2, &n2).unwrap();
 

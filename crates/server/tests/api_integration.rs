@@ -19,7 +19,7 @@ use tower::ServiceExt;
 use svt_core::conformance::{self, ConstraintRegistry};
 use svt_core::interchange;
 use svt_core::interchange_store;
-use svt_core::model::Version;
+use svt_core::model::{Version, DEFAULT_PROJECT_ID};
 use svt_core::store::{CozoStore, GraphStore};
 
 /// Shared test state: the store plus the design version.
@@ -28,7 +28,7 @@ type TestState = Arc<(CozoStore, Version)>;
 // -- Inline handler functions that mirror the real server routes --
 
 async fn list_snapshots(State(state): State<TestState>) -> Json<serde_json::Value> {
-    let snapshots = state.0.list_snapshots().unwrap();
+    let snapshots = state.0.list_snapshots(DEFAULT_PROJECT_ID).unwrap();
     Json(serde_json::to_value(snapshots).unwrap())
 }
 
@@ -71,8 +71,9 @@ fn test_router_with_design() -> axum::Router {
     let doc = interchange::parse_yaml(&content)
         .unwrap_or_else(|e| panic!("failed to parse {}: {e}", design_path.display()));
 
+    // The default project is automatically created by the v1->v2 migration
     let mut store = CozoStore::new_in_memory().unwrap();
-    let version = interchange_store::load_into_store(&mut store, &doc).unwrap();
+    let version = interchange_store::load_into_store(&mut store, DEFAULT_PROJECT_ID, &doc).unwrap();
 
     let state: TestState = Arc::new((store, version));
 

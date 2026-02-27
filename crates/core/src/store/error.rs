@@ -1,6 +1,6 @@
 //! Error types for graph store operations.
 
-use crate::model::{NodeId, Version};
+use crate::model::{NodeId, ProjectId, Version};
 
 /// Errors that can occur during graph store operations.
 #[derive(Debug, thiserror::Error)]
@@ -46,4 +46,16 @@ pub enum StoreError {
     /// An internal store error.
     #[error("store error: {0}")]
     Internal(String),
+
+    /// A project was not found.
+    #[error("project not found: {0}")]
+    ProjectNotFound(ProjectId),
+
+    /// Attempted to create a project with a duplicate ID.
+    #[error("duplicate project: {0}")]
+    DuplicateProject(ProjectId),
+
+    /// An invalid project ID was provided.
+    #[error("invalid project ID: {0}")]
+    InvalidProjectId(String),
 }

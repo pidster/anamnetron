@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use svt_core::model::DEFAULT_PROJECT_ID;
 use svt_core::store::{CozoStore, GraphStore};
 
 fn workspace_root() -> PathBuf {
@@ -19,12 +20,24 @@ fn incremental_and_full_produce_same_node_set() {
     let mut store = CozoStore::new_in_memory().unwrap();
 
     // First run: incremental with no previous (= full analysis, stores manifest)
-    let first = svt_analyzer::analyze_project_incremental(&mut store, &root, None, None).unwrap();
+    let first = svt_analyzer::analyze_project_incremental(
+        &mut store,
+        DEFAULT_PROJECT_ID,
+        &root,
+        None,
+        None,
+    )
+    .unwrap();
 
     // Second run: incremental with previous (nothing changed, copies all data)
-    let second =
-        svt_analyzer::analyze_project_incremental(&mut store, &root, None, Some(first.version))
-            .unwrap();
+    let second = svt_analyzer::analyze_project_incremental(
+        &mut store,
+        DEFAULT_PROJECT_ID,
+        &root,
+        None,
+        Some(first.version),
+    )
+    .unwrap();
 
     // Compare node canonical paths between versions
     let v1_nodes = store.get_all_nodes(first.version).unwrap();
@@ -55,7 +68,14 @@ fn incremental_without_previous_does_full_analysis() {
     let root = workspace_root();
     let mut store = CozoStore::new_in_memory().unwrap();
 
-    let summary = svt_analyzer::analyze_project_incremental(&mut store, &root, None, None).unwrap();
+    let summary = svt_analyzer::analyze_project_incremental(
+        &mut store,
+        DEFAULT_PROJECT_ID,
+        &root,
+        None,
+        None,
+    )
+    .unwrap();
 
     assert!(!summary.incremental, "first run should not be incremental");
     assert!(summary.nodes_created > 0);
@@ -70,7 +90,14 @@ fn file_manifest_stored_and_retrievable() {
     let root = workspace_root();
     let mut store = CozoStore::new_in_memory().unwrap();
 
-    let summary = svt_analyzer::analyze_project_incremental(&mut store, &root, None, None).unwrap();
+    let summary = svt_analyzer::analyze_project_incremental(
+        &mut store,
+        DEFAULT_PROJECT_ID,
+        &root,
+        None,
+        None,
+    )
+    .unwrap();
 
     let manifest = store.get_file_manifest(summary.version).unwrap();
     assert!(!manifest.is_empty(), "manifest should have entries");
@@ -94,12 +121,24 @@ fn incremental_summary_has_correct_stats() {
     let mut store = CozoStore::new_in_memory().unwrap();
 
     // First run: stores manifest
-    let first = svt_analyzer::analyze_project_incremental(&mut store, &root, None, None).unwrap();
+    let first = svt_analyzer::analyze_project_incremental(
+        &mut store,
+        DEFAULT_PROJECT_ID,
+        &root,
+        None,
+        None,
+    )
+    .unwrap();
 
     // Second run: nothing changed
-    let second =
-        svt_analyzer::analyze_project_incremental(&mut store, &root, None, Some(first.version))
-            .unwrap();
+    let second = svt_analyzer::analyze_project_incremental(
+        &mut store,
+        DEFAULT_PROJECT_ID,
+        &root,
+        None,
+        Some(first.version),
+    )
+    .unwrap();
 
     assert!(second.incremental, "should be incremental");
     assert!(

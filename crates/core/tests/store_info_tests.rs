@@ -10,7 +10,7 @@ fn store_info_empty_store_returns_zero_snapshots() {
     let store = CozoStore::new_in_memory().unwrap();
     let info = store.store_info().unwrap();
 
-    assert_eq!(info.schema_version, 1);
+    assert_eq!(info.schema_version, 2);
     assert_eq!(info.snapshot_count, 0);
     assert!(info.snapshots.is_empty());
 }
@@ -18,7 +18,10 @@ fn store_info_empty_store_returns_zero_snapshots() {
 #[test]
 fn store_info_includes_node_and_edge_counts() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+        .unwrap();
 
     store
         .add_node(v, &helpers::make_node_default("n1", "/svc/a"))
@@ -44,14 +47,17 @@ fn store_info_includes_node_and_edge_counts() {
 #[test]
 fn store_info_with_multiple_versions_reports_each() {
     let mut store = CozoStore::new_in_memory().unwrap();
+    helpers::ensure_default_project(&mut store);
 
-    let v1 = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+    let v1 = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+        .unwrap();
     store
         .add_node(v1, &helpers::make_node_default("n1", "/svc/a"))
         .unwrap();
 
     let v2 = store
-        .create_snapshot(SnapshotKind::Analysis, Some("abc123"))
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, Some("abc123"))
         .unwrap();
     store
         .add_node(v2, &helpers::make_node_default("n2", "/svc/b"))

@@ -4,7 +4,7 @@ pub mod dot;
 pub mod mermaid;
 pub mod svg;
 
-use crate::model::Version;
+use crate::model::{Version, DEFAULT_PROJECT_ID};
 use crate::store::{GraphStore, Result};
 
 /// Extension point for export formats.
@@ -37,7 +37,7 @@ impl ExportFormat for JsonExporter {
         "json"
     }
     fn export(&self, store: &dyn GraphStore, version: Version) -> Result<String> {
-        crate::interchange_store::export_json(store, version)
+        crate::interchange_store::export_json(store, DEFAULT_PROJECT_ID, version)
     }
 }
 

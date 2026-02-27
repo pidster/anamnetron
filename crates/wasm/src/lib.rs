@@ -6,7 +6,7 @@
 
 #![warn(missing_docs)]
 
-use svt_core::model::{Direction, Edge, EdgeKind, Node, SnapshotKind};
+use svt_core::model::{Direction, Edge, EdgeKind, Node, Project, SnapshotKind, DEFAULT_PROJECT_ID};
 use svt_core::store::{CozoStore, GraphStore};
 use wasm_bindgen::prelude::*;
 
@@ -19,17 +19,37 @@ pub struct WasmStore {
 #[wasm_bindgen]
 impl WasmStore {
     /// Create a new empty in-memory store.
+    ///
+    /// Automatically creates the default project so that snapshots can be
+    /// loaded without an explicit `create_project` call.
     #[wasm_bindgen(constructor)]
     pub fn new() -> Result<WasmStore, JsError> {
-        let store = CozoStore::new_in_memory().map_err(|e| JsError::new(&e.to_string()))?;
+        let mut store = CozoStore::new_in_memory().map_err(|e| JsError::new(&e.to_string()))?;
+        // Seed the default project (silently ignore if it already exists).
+        let _ = store.create_project(&Project {
+            id: DEFAULT_PROJECT_ID.to_string(),
+            name: "Default Project".to_string(),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            description: None,
+            metadata: None,
+        });
         Ok(WasmStore { store })
     }
 
     /// Load a snapshot from JSON arrays of nodes and edges.
     ///
     /// The JSON format matches the `svt_core::model::Node` and `Edge` serialization.
+    /// An optional `project_id` scopes the snapshot to a specific project; when
+    /// `None`, the default project (`"default"`) is used.
     /// Returns the new snapshot version number.
-    pub fn load_snapshot(&mut self, nodes_json: &str, edges_json: &str) -> Result<u64, JsError> {
+    pub fn load_snapshot(
+        &mut self,
+        nodes_json: &str,
+        edges_json: &str,
+        project_id: Option<String>,
+    ) -> Result<u64, JsError> {
+        let pid = project_id.as_deref().unwrap_or(DEFAULT_PROJECT_ID);
+
         let nodes: Vec<Node> =
             serde_json::from_str(nodes_json).map_err(|e| JsError::new(&e.to_string()))?;
         let edges: Vec<Edge> =
@@ -37,7 +57,7 @@ impl WasmStore {
 
         let version = self
             .store
-            .create_snapshot(SnapshotKind::Import, None)
+            .create_snapshot(pid, SnapshotKind::Import, None)
             .map_err(|e| JsError::new(&e.to_string()))?;
 
         self.store
@@ -304,7 +324,7 @@ mod tests {
         .unwrap();
 
         let version = store
-            .load_snapshot(&nodes_json, &edges_json)
+            .load_snapshot(&nodes_json, &edges_json, None)
             .expect("failed to load snapshot");
         assert_eq!(version, 1, "first snapshot should be version 1");
 
@@ -316,7 +336,7 @@ mod tests {
         let store = WasmStore::new().expect("store creation should succeed");
         let snapshots = store
             .store
-            .list_snapshots()
+            .list_snapshots(DEFAULT_PROJECT_ID)
             .expect("list_snapshots should succeed");
         assert!(snapshots.is_empty(), "new store should have no snapshots");
     }
@@ -339,7 +359,7 @@ mod tests {
         .unwrap();
 
         let version = store
-            .load_snapshot(&nodes_json, "[]")
+            .load_snapshot(&nodes_json, "[]", None)
             .expect("load_snapshot should succeed");
         assert_eq!(version, 1, "first snapshot should be version 1");
 

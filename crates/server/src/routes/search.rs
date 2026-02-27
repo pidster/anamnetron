@@ -30,7 +30,8 @@ pub async fn search_nodes(
             "path parameter is required".to_string(),
         ));
     }
-    let all_nodes = state.store.get_all_nodes(params.version)?;
+    let store = state.read_store()?;
+    let all_nodes = store.get_all_nodes(params.version)?;
     let matched: Vec<Node> = all_nodes
         .into_iter()
         .filter(|n| canonical_path_matches(&n.canonical_path, &params.path))
@@ -41,11 +42,11 @@ pub async fn search_nodes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
 
     use axum::{routing::get, Router};
     use http_body_util::BodyExt;
-    use svt_core::model::{NodeKind, Provenance, SnapshotKind};
+    use svt_core::model::{NodeKind, Provenance, SnapshotKind, DEFAULT_PROJECT_ID};
     use svt_core::store::{CozoStore, GraphStore};
     use tower::ServiceExt;
 
@@ -66,6 +67,11 @@ mod tests {
         }
     }
 
+    /// The default project is automatically created by the v1->v2 migration.
+    fn make_store_with_project() -> CozoStore {
+        CozoStore::new_in_memory().unwrap()
+    }
+
     fn test_app(state: Arc<AppState>) -> Router {
         Router::new()
             .route("/api/search", get(search_nodes))
@@ -74,8 +80,10 @@ mod tests {
 
     #[tokio::test]
     async fn search_by_glob_pattern() {
-        let mut store = CozoStore::new_in_memory().unwrap();
-        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        let mut store = make_store_with_project();
+        let v = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+            .unwrap();
         store
             .add_node(v, &make_node("n1", "/app", NodeKind::System))
             .unwrap();
@@ -90,9 +98,8 @@ mod tests {
             .unwrap();
 
         let state = Arc::new(AppState {
-            store,
-            design_version: Some(v),
-            analysis_version: None,
+            store: RwLock::new(store),
+            default_project: DEFAULT_PROJECT_ID.to_string(),
         });
         let app = test_app(state);
         let resp = app
@@ -119,9 +126,8 @@ mod tests {
     async fn search_empty_path_returns_400() {
         let store = CozoStore::new_in_memory().unwrap();
         let state = Arc::new(AppState {
-            store,
-            design_version: None,
-            analysis_version: None,
+            store: RwLock::new(store),
+            default_project: DEFAULT_PROJECT_ID.to_string(),
         });
         let app = test_app(state);
         let resp = app

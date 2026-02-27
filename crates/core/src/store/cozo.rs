@@ -12,7 +12,7 @@ use crate::model::*;
 ///
 /// Increment this whenever the schema changes. Each increment requires a
 /// corresponding migration step in [`CozoStore::migrate`].
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 
 /// CozoDB-backed graph store.
 ///
@@ -61,6 +61,8 @@ impl CozoStore {
             "{ :create edges { id: String, version: Int => source: String, target: String, kind: String, provenance: String, metadata: Json? } }",
             "{ :create constraints { id: String, version: Int => kind: String, name: String, scope: String, target: String?, params: Json?, message: String, severity: String } }",
             "{ :create file_manifest { path: String, version: Int => hash: String, unit_name: String, language: String } }",
+            "{ :create projects { id: String => name: String, created_at: String, description: String?, metadata: Json? } }",
+            "{ :create snapshot_projects { version: Int => project_id: String } }",
         ];
 
         for query in queries {
@@ -138,9 +140,48 @@ impl CozoStore {
                 self.set_schema_version(1)?;
             }
 
-            // Future migrations go here:
-            // if current < 2 { ... self.set_schema_version(2)?; }
+            // v1 → v2: add projects and snapshot_projects relations,
+            // insert "default" project, tag all existing snapshots with "default"
+            if current < 2 {
+                self.migrate_v1_to_v2()?;
+                self.set_schema_version(2)?;
+            }
         }
+
+        Ok(())
+    }
+
+    /// Migration from v1 to v2: add project scoping.
+    ///
+    /// 1. Creates `projects` and `snapshot_projects` relations (already in init_schema).
+    /// 2. Inserts a "default" project.
+    /// 3. Tags all existing snapshots with `project_id = "default"`.
+    fn migrate_v1_to_v2(&self) -> Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+
+        // Insert the default project
+        let mut params = BTreeMap::new();
+        params.insert(
+            "id".to_string(),
+            DataValue::Str(crate::model::DEFAULT_PROJECT_ID.into()),
+        );
+        params.insert("name".to_string(), DataValue::Str("Default Project".into()));
+        params.insert("created_at".to_string(), DataValue::Str(now.into()));
+        params.insert("description".to_string(), DataValue::Null);
+        params.insert("metadata".to_string(), DataValue::Null);
+
+        self.run_query(
+            "?[id, name, created_at, description, metadata] <- [[$id, $name, $created_at, $description, $metadata]]
+             :put projects { id => name, created_at, description, metadata }",
+            params,
+        )?;
+
+        // Tag all existing snapshots with the default project
+        self.run_query(
+            "?[version, project_id] := *snapshots{version}, project_id = 'default'
+             :put snapshot_projects { version => project_id }",
+            Default::default(),
+        )?;
 
         Ok(())
     }
@@ -286,7 +327,94 @@ fn row_to_edge(row: &[DataValue]) -> Result<Edge> {
 }
 
 impl GraphStore for CozoStore {
-    fn create_snapshot(&mut self, kind: SnapshotKind, commit_ref: Option<&str>) -> Result<Version> {
+    fn create_project(&mut self, project: &crate::model::Project) -> Result<()> {
+        crate::model::validate_project_id(&project.id).map_err(StoreError::InvalidProjectId)?;
+
+        // Check for duplicates
+        if self.project_exists(&project.id)? {
+            return Err(StoreError::DuplicateProject(project.id.clone()));
+        }
+
+        let mut params = BTreeMap::new();
+        params.insert("id".to_string(), DataValue::Str(project.id.clone().into()));
+        params.insert(
+            "name".to_string(),
+            DataValue::Str(project.name.clone().into()),
+        );
+        params.insert(
+            "created_at".to_string(),
+            DataValue::Str(project.created_at.clone().into()),
+        );
+        params.insert("description".to_string(), opt_to_dv(&project.description));
+        params.insert("metadata".to_string(), json_to_dv(&project.metadata));
+
+        self.run_query(
+            "?[id, name, created_at, description, metadata] <- [[$id, $name, $created_at, $description, $metadata]]
+             :put projects { id => name, created_at, description, metadata }",
+            params,
+        )?;
+
+        Ok(())
+    }
+
+    fn list_projects(&self) -> Result<Vec<crate::model::Project>> {
+        let result = self.run_query_immutable(
+            "?[id, name, created_at, description, metadata] := *projects{id, name, created_at, description, metadata}
+             :order id",
+            Default::default(),
+        )?;
+
+        result
+            .rows
+            .iter()
+            .map(|row| {
+                Ok(crate::model::Project {
+                    id: req_str(&row[0])?,
+                    name: req_str(&row[1])?,
+                    created_at: req_str(&row[2])?,
+                    description: opt_str(&row[3]),
+                    metadata: opt_json(&row[4]),
+                })
+            })
+            .collect()
+    }
+
+    fn get_project(&self, project_id: &str) -> Result<Option<crate::model::Project>> {
+        let mut params = BTreeMap::new();
+        params.insert("id".to_string(), DataValue::Str(project_id.into()));
+
+        let result = self.run_query_immutable(
+            "?[id, name, created_at, description, metadata] := *projects{id, name, created_at, description, metadata}, id == $id",
+            params,
+        )?;
+
+        match result.rows.first() {
+            Some(row) => Ok(Some(crate::model::Project {
+                id: req_str(&row[0])?,
+                name: req_str(&row[1])?,
+                created_at: req_str(&row[2])?,
+                description: opt_str(&row[3]),
+                metadata: opt_json(&row[4]),
+            })),
+            None => Ok(None),
+        }
+    }
+
+    fn project_exists(&self, project_id: &str) -> Result<bool> {
+        let mut params = BTreeMap::new();
+        params.insert("id".to_string(), DataValue::Str(project_id.into()));
+
+        let result = self.run_query_immutable("?[id] := *projects{id}, id == $id", params)?;
+
+        Ok(!result.rows.is_empty())
+    }
+
+    fn create_snapshot(
+        &mut self,
+        project_id: &str,
+        kind: SnapshotKind,
+        commit_ref: Option<&str>,
+    ) -> Result<Version> {
         // Get the next version number by finding the current max
         let result = self.run_query_immutable(
             "?[version] := *snapshots{version}
@@ -332,14 +460,30 @@ impl GraphStore for CozoStore {
             params,
         )?;
 
+        // Also insert into snapshot_projects
+        let mut sp_params = BTreeMap::new();
+        sp_params.insert("version".to_string(), DataValue::from(new_version as i64));
+        sp_params.insert("project_id".to_string(), DataValue::Str(project_id.into()));
+
+        self.run_query(
+            "?[version, project_id] <- [[$version, $project_id]]
+             :put snapshot_projects { version => project_id }",
+            sp_params,
+        )?;
+
         Ok(new_version)
     }
 
-    fn list_snapshots(&self) -> Result<Vec<Snapshot>> {
+    fn list_snapshots(&self, project_id: &str) -> Result<Vec<Snapshot>> {
+        let mut params = BTreeMap::new();
+        params.insert("project_id".to_string(), DataValue::Str(project_id.into()));
+
         let result = self.run_query_immutable(
-            "?[version, kind, commit_ref, created_at, metadata] := *snapshots{version, kind, commit_ref, created_at, metadata}
+            "?[version, kind, commit_ref, created_at, metadata] :=
+                *snapshot_projects{version, project_id}, project_id == $project_id,
+                *snapshots{version, kind, commit_ref, created_at, metadata}
              :order version",
-            Default::default(),
+            params,
         )?;
 
         result
@@ -355,12 +499,13 @@ impl GraphStore for CozoStore {
                     commit_ref: opt_str(&row[2]),
                     created_at: req_str(&row[3])?,
                     metadata: opt_json(&row[4]),
+                    project_id: project_id.to_string(),
                 })
             })
             .collect()
     }
 
-    fn latest_version(&self, kind: SnapshotKind) -> Result<Option<Version>> {
+    fn latest_version(&self, project_id: &str, kind: SnapshotKind) -> Result<Option<Version>> {
         let kind_str = serde_json::to_value(kind)
             .map_err(|e| StoreError::Internal(e.to_string()))?
             .as_str()
@@ -369,9 +514,12 @@ impl GraphStore for CozoStore {
 
         let mut params = BTreeMap::new();
         params.insert("kind".to_string(), DataValue::Str(kind_str.into()));
+        params.insert("project_id".to_string(), DataValue::Str(project_id.into()));
 
         let result = self.run_query_immutable(
-            "?[version] := *snapshots{version, kind}, kind == $kind
+            "?[version] :=
+                *snapshot_projects{version, project_id}, project_id == $project_id,
+                *snapshots{version, kind}, kind == $kind
              :order -version
              :limit 1",
             params,
@@ -833,8 +981,8 @@ impl GraphStore for CozoStore {
             .collect()
     }
 
-    fn compact(&mut self, keep_versions: &[Version]) -> Result<()> {
-        // Build a list of versions to keep as CozoDB input data
+    fn compact(&mut self, project_id: &str, keep_versions: &[Version]) -> Result<()> {
+        // Get versions belonging to this project that are NOT in keep list
         let keep_list: Vec<DataValue> = keep_versions
             .iter()
             .map(|v| DataValue::from(*v as i64))
@@ -842,19 +990,14 @@ impl GraphStore for CozoStore {
 
         let mut params = BTreeMap::new();
         params.insert("keep".to_string(), DataValue::List(keep_list));
+        params.insert("project_id".to_string(), DataValue::Str(project_id.into()));
 
-        // Delete snapshots not in keep list
+        // Delete nodes not in keep list (scoped to project's versions)
+        // Note: snapshot_projects must remain intact until all entity deletions
+        // are complete, since they are used to resolve which versions belong to
+        // this project.
         self.run_query(
-            "to_remove[version] := *snapshots{version}, not keep_set[version]
-             keep_set[v] := v in $keep
-             ?[version] := to_remove[version]
-             :rm snapshots {version}",
-            params.clone(),
-        )?;
-
-        // Delete nodes not in keep list
-        self.run_query(
-            "to_remove[id, version] := *nodes{id, version}, not keep_set[version]
+            "to_remove[id, version] := *nodes{id, version}, *snapshot_projects{version, project_id}, project_id == $project_id, not keep_set[version]
              keep_set[v] := v in $keep
              ?[id, version] := to_remove[id, version]
              :rm nodes {id, version}",
@@ -863,7 +1006,7 @@ impl GraphStore for CozoStore {
 
         // Delete edges not in keep list
         self.run_query(
-            "to_remove[id, version] := *edges{id, version}, not keep_set[version]
+            "to_remove[id, version] := *edges{id, version}, *snapshot_projects{version, project_id}, project_id == $project_id, not keep_set[version]
              keep_set[v] := v in $keep
              ?[id, version] := to_remove[id, version]
              :rm edges {id, version}",
@@ -872,7 +1015,7 @@ impl GraphStore for CozoStore {
 
         // Delete constraints not in keep list
         self.run_query(
-            "to_remove[id, version] := *constraints{id, version}, not keep_set[version]
+            "to_remove[id, version] := *constraints{id, version}, *snapshot_projects{version, project_id}, project_id == $project_id, not keep_set[version]
              keep_set[v] := v in $keep
              ?[id, version] := to_remove[id, version]
              :rm constraints {id, version}",
@@ -881,10 +1024,28 @@ impl GraphStore for CozoStore {
 
         // Delete file_manifest entries not in keep list
         self.run_query(
-            "to_remove[path, version] := *file_manifest{path, version}, not keep_set[version]
+            "to_remove[path, version] := *file_manifest{path, version}, *snapshot_projects{version, project_id}, project_id == $project_id, not keep_set[version]
              keep_set[v] := v in $keep
              ?[path, version] := to_remove[path, version]
              :rm file_manifest {path, version}",
+            params.clone(),
+        )?;
+
+        // Delete snapshots for this project not in keep list
+        self.run_query(
+            "to_remove[version] := *snapshot_projects{version, project_id}, project_id == $project_id, not keep_set[version]
+             keep_set[v] := v in $keep
+             ?[version] := to_remove[version]
+             :rm snapshots {version}",
+            params.clone(),
+        )?;
+
+        // Delete snapshot_projects entries last (other deletions depend on this table)
+        self.run_query(
+            "to_remove[version] := *snapshot_projects{version, project_id}, project_id == $project_id, not keep_set[version]
+             keep_set[v] := v in $keep
+             ?[version] := to_remove[version]
+             :rm snapshot_projects {version}",
             params,
         )?;
 
@@ -1020,28 +1181,57 @@ impl GraphStore for CozoStore {
 
     fn store_info(&self) -> Result<super::StoreInfo> {
         let schema_version = self.schema_version()?;
-        let snapshots = self.list_snapshots()?;
+        let projects = self.list_projects()?;
 
-        let summaries: Vec<super::SnapshotSummary> = snapshots
+        // Get all snapshots across all projects
+        let all_snapshots_result = self.run_query_immutable(
+            "?[version, kind, commit_ref, created_at, metadata, project_id] :=
+                *snapshots{version, kind, commit_ref, created_at, metadata},
+                *snapshot_projects{version, project_id}
+             :order version",
+            Default::default(),
+        )?;
+
+        let summaries: Vec<super::SnapshotSummary> = all_snapshots_result
+            .rows
             .iter()
-            .map(|s| {
-                let node_count = self.count_nodes(s.version)?;
-                let edge_count = self.count_edges(s.version)?;
+            .map(|row| {
+                let version = match &row[0] {
+                    DataValue::Num(Num::Int(i)) => *i as Version,
+                    _ => 0,
+                };
+                let node_count = self.count_nodes(version)?;
+                let edge_count = self.count_edges(version)?;
                 Ok(super::SnapshotSummary {
-                    version: s.version,
-                    kind: s.kind,
-                    commit_ref: s.commit_ref.clone(),
+                    version,
+                    kind: str_to_enum(&req_str(&row[1])?)?,
+                    commit_ref: opt_str(&row[2]),
                     node_count,
                     edge_count,
-                    created_at: s.created_at.clone(),
+                    created_at: req_str(&row[3])?,
+                    project_id: req_str(&row[5])?,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
+
+        let project_summaries: Vec<super::ProjectSummary> = projects
+            .iter()
+            .map(|p| {
+                let count = summaries.iter().filter(|s| s.project_id == p.id).count();
+                super::ProjectSummary {
+                    id: p.id.clone(),
+                    name: p.name.clone(),
+                    snapshot_count: count,
+                }
+            })
+            .collect();
 
         Ok(super::StoreInfo {
             schema_version,
             snapshot_count: summaries.len(),
             snapshots: summaries,
+            project_count: project_summaries.len(),
+            projects: project_summaries,
         })
     }
 }

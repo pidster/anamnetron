@@ -14,7 +14,18 @@ pub async fn list_nodes(
     State(state): State<SharedState>,
     Path(version): Path<Version>,
 ) -> Result<Json<Vec<Node>>, ApiError> {
-    let nodes = state.store.get_all_nodes(version)?;
+    let store = state.read_store()?;
+    let nodes = store.get_all_nodes(version)?;
+    Ok(Json(nodes))
+}
+
+/// GET /api/projects/{project}/snapshots/{version}/nodes
+pub async fn list_project_nodes(
+    State(state): State<SharedState>,
+    Path((_project, version)): Path<(String, Version)>,
+) -> Result<Json<Vec<Node>>, ApiError> {
+    let store = state.read_store()?;
+    let nodes = store.get_all_nodes(version)?;
     Ok(Json(nodes))
 }
 
@@ -23,8 +34,20 @@ pub async fn get_node(
     State(state): State<SharedState>,
     Path((version, id)): Path<(Version, String)>,
 ) -> Result<Json<Node>, ApiError> {
-    let node = state
-        .store
+    let store = state.read_store()?;
+    let node = store
+        .get_node(version, &id)?
+        .ok_or_else(|| ApiError::NotFound(format!("node {id} not found")))?;
+    Ok(Json(node))
+}
+
+/// GET /api/projects/{project}/snapshots/{version}/nodes/{id}
+pub async fn get_project_node(
+    State(state): State<SharedState>,
+    Path((_project, version, id)): Path<(String, Version, String)>,
+) -> Result<Json<Node>, ApiError> {
+    let store = state.read_store()?;
+    let node = store
         .get_node(version, &id)?
         .ok_or_else(|| ApiError::NotFound(format!("node {id} not found")))?;
     Ok(Json(node))
@@ -35,12 +58,24 @@ pub async fn get_children(
     State(state): State<SharedState>,
     Path((version, id)): Path<(Version, String)>,
 ) -> Result<Json<Vec<Node>>, ApiError> {
-    // Verify node exists
-    state
-        .store
+    let store = state.read_store()?;
+    store
         .get_node(version, &id)?
         .ok_or_else(|| ApiError::NotFound(format!("node {id} not found")))?;
-    let children = state.store.get_children(version, &id)?;
+    let children = store.get_children(version, &id)?;
+    Ok(Json(children))
+}
+
+/// GET /api/projects/{project}/snapshots/{version}/nodes/{id}/children
+pub async fn get_project_children(
+    State(state): State<SharedState>,
+    Path((_project, version, id)): Path<(String, Version, String)>,
+) -> Result<Json<Vec<Node>>, ApiError> {
+    let store = state.read_store()?;
+    store
+        .get_node(version, &id)?
+        .ok_or_else(|| ApiError::NotFound(format!("node {id} not found")))?;
+    let children = store.get_children(version, &id)?;
     Ok(Json(children))
 }
 
@@ -49,11 +84,24 @@ pub async fn get_ancestors(
     State(state): State<SharedState>,
     Path((version, id)): Path<(Version, String)>,
 ) -> Result<Json<Vec<Node>>, ApiError> {
-    state
-        .store
+    let store = state.read_store()?;
+    store
         .get_node(version, &id)?
         .ok_or_else(|| ApiError::NotFound(format!("node {id} not found")))?;
-    let ancestors = state.store.query_ancestors(version, &id)?;
+    let ancestors = store.query_ancestors(version, &id)?;
+    Ok(Json(ancestors))
+}
+
+/// GET /api/projects/{project}/snapshots/{version}/nodes/{id}/ancestors
+pub async fn get_project_ancestors(
+    State(state): State<SharedState>,
+    Path((_project, version, id)): Path<(String, Version, String)>,
+) -> Result<Json<Vec<Node>>, ApiError> {
+    let store = state.read_store()?;
+    store
+        .get_node(version, &id)?
+        .ok_or_else(|| ApiError::NotFound(format!("node {id} not found")))?;
+    let ancestors = store.query_ancestors(version, &id)?;
     Ok(Json(ancestors))
 }
 
@@ -62,14 +110,24 @@ pub async fn get_dependencies(
     State(state): State<SharedState>,
     Path((version, id)): Path<(Version, String)>,
 ) -> Result<Json<Vec<Edge>>, ApiError> {
-    state
-        .store
+    let store = state.read_store()?;
+    store
         .get_node(version, &id)?
         .ok_or_else(|| ApiError::NotFound(format!("node {id} not found")))?;
-    let edges =
-        state
-            .store
-            .get_edges(version, &id, Direction::Outgoing, Some(EdgeKind::Depends))?;
+    let edges = store.get_edges(version, &id, Direction::Outgoing, Some(EdgeKind::Depends))?;
+    Ok(Json(edges))
+}
+
+/// GET /api/projects/{project}/snapshots/{version}/nodes/{id}/dependencies
+pub async fn get_project_dependencies(
+    State(state): State<SharedState>,
+    Path((_project, version, id)): Path<(String, Version, String)>,
+) -> Result<Json<Vec<Edge>>, ApiError> {
+    let store = state.read_store()?;
+    store
+        .get_node(version, &id)?
+        .ok_or_else(|| ApiError::NotFound(format!("node {id} not found")))?;
+    let edges = store.get_edges(version, &id, Direction::Outgoing, Some(EdgeKind::Depends))?;
     Ok(Json(edges))
 }
 
@@ -78,24 +136,34 @@ pub async fn get_dependents(
     State(state): State<SharedState>,
     Path((version, id)): Path<(Version, String)>,
 ) -> Result<Json<Vec<Edge>>, ApiError> {
-    state
-        .store
+    let store = state.read_store()?;
+    store
         .get_node(version, &id)?
         .ok_or_else(|| ApiError::NotFound(format!("node {id} not found")))?;
-    let edges =
-        state
-            .store
-            .get_edges(version, &id, Direction::Incoming, Some(EdgeKind::Depends))?;
+    let edges = store.get_edges(version, &id, Direction::Incoming, Some(EdgeKind::Depends))?;
+    Ok(Json(edges))
+}
+
+/// GET /api/projects/{project}/snapshots/{version}/nodes/{id}/dependents
+pub async fn get_project_dependents(
+    State(state): State<SharedState>,
+    Path((_project, version, id)): Path<(String, Version, String)>,
+) -> Result<Json<Vec<Edge>>, ApiError> {
+    let store = state.read_store()?;
+    store
+        .get_node(version, &id)?
+        .ok_or_else(|| ApiError::NotFound(format!("node {id} not found")))?;
+    let edges = store.get_edges(version, &id, Direction::Incoming, Some(EdgeKind::Depends))?;
     Ok(Json(edges))
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
 
     use axum::Router;
     use http_body_util::BodyExt;
-    use svt_core::model::{EdgeKind, Node, NodeKind, Provenance, SnapshotKind};
+    use svt_core::model::{EdgeKind, Node, NodeKind, Provenance, SnapshotKind, DEFAULT_PROJECT_ID};
     use svt_core::store::{CozoStore, GraphStore};
     use tower::ServiceExt;
 
@@ -118,8 +186,11 @@ mod tests {
     }
 
     fn test_app_with_data() -> Router<()> {
+        // The default project is automatically created by the v1->v2 migration
         let mut store = CozoStore::new_in_memory().unwrap();
-        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        let v = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+            .unwrap();
         store
             .add_node(v, &make_node("n1", "/app", NodeKind::System))
             .unwrap();
@@ -140,9 +211,8 @@ mod tests {
             )
             .unwrap();
         let state = Arc::new(AppState {
-            store,
-            design_version: Some(v),
-            analysis_version: None,
+            store: RwLock::new(store),
+            default_project: DEFAULT_PROJECT_ID.to_string(),
         });
         api_router(state)
     }

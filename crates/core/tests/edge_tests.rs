@@ -5,7 +5,10 @@ use svt_core::store::{CozoStore, GraphStore};
 
 fn setup_two_nodes() -> (CozoStore, Version) {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+        .unwrap();
     store
         .add_node(
             v,
@@ -109,7 +112,10 @@ fn filter_by_edge_kind_returns_only_matching() {
 #[test]
 fn add_edges_batch_then_all_retrievable() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let v = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+        .unwrap();
 
     // Create a chain of nodes
     for i in 0..10 {

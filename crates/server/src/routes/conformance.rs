@@ -24,8 +24,9 @@ pub async fn evaluate_design(
     State(state): State<SharedState>,
     Path(version): Path<Version>,
 ) -> Result<Json<ConformanceReport>, ApiError> {
+    let store = state.read_store()?;
     let registry = ConstraintRegistry::with_defaults();
-    let report = conformance::evaluate_design(&state.store, version, &registry)?;
+    let report = conformance::evaluate_design(&*store, version, &registry)?;
     Ok(Json(report))
 }
 
@@ -34,19 +35,20 @@ pub async fn evaluate_conformance(
     State(state): State<SharedState>,
     Query(params): Query<ConformanceParams>,
 ) -> Result<Json<ConformanceReport>, ApiError> {
+    let store = state.read_store()?;
     let registry = ConstraintRegistry::with_defaults();
-    let report = conformance::evaluate(&state.store, params.design, params.analysis, &registry)?;
+    let report = conformance::evaluate(&*store, params.design, params.analysis, &registry)?;
     Ok(Json(report))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
 
     use axum::{routing::get, Router};
     use http_body_util::BodyExt;
-    use svt_core::model::{Node, NodeKind, Provenance, SnapshotKind};
+    use svt_core::model::{Node, NodeKind, Provenance, SnapshotKind, DEFAULT_PROJECT_ID};
     use svt_core::store::{CozoStore, GraphStore};
     use tower::ServiceExt;
 
@@ -74,18 +76,24 @@ mod tests {
             .with_state(state)
     }
 
+    /// The default project is automatically created by the v1->v2 migration.
+    fn make_store_with_project() -> CozoStore {
+        CozoStore::new_in_memory().unwrap()
+    }
+
     #[tokio::test]
     async fn design_conformance_returns_report() {
-        let mut store = CozoStore::new_in_memory().unwrap();
-        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        let mut store = make_store_with_project();
+        let v = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+            .unwrap();
         store
             .add_node(v, &make_node("n1", "/app", NodeKind::System))
             .unwrap();
 
         let state = Arc::new(AppState {
-            store,
-            design_version: Some(v),
-            analysis_version: None,
+            store: RwLock::new(store),
+            default_project: DEFAULT_PROJECT_ID.to_string(),
         });
         let app = test_app(state);
         let resp = app
@@ -106,21 +114,24 @@ mod tests {
 
     #[tokio::test]
     async fn full_conformance_returns_report() {
-        let mut store = CozoStore::new_in_memory().unwrap();
-        let dv = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        let mut store = make_store_with_project();
+        let dv = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+            .unwrap();
         store
             .add_node(dv, &make_node("d1", "/app", NodeKind::System))
             .unwrap();
 
-        let av = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+        let av = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+            .unwrap();
         store
             .add_node(av, &make_node("a1", "/app", NodeKind::System))
             .unwrap();
 
         let state = Arc::new(AppState {
-            store,
-            design_version: Some(dv),
-            analysis_version: Some(av),
+            store: RwLock::new(store),
+            default_project: DEFAULT_PROJECT_ID.to_string(),
         });
         let app = test_app(state);
         let resp = app

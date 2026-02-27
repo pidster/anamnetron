@@ -46,11 +46,12 @@ pub enum AnalyzerError {
 /// the default orchestrator registry (built-in languages only).
 pub fn analyze_project(
     store: &mut impl GraphStore,
+    project_id: &str,
     project_root: &Path,
     commit_ref: Option<&str>,
 ) -> Result<AnalysisSummary, AnalyzerError> {
     let registry = OrchestratorRegistry::with_defaults();
-    analyze_project_with_registry(store, project_root, commit_ref, registry)
+    analyze_project_with_registry(store, project_id, project_root, commit_ref, registry)
 }
 
 /// Analyze a project using a custom [`OrchestratorRegistry`].
@@ -64,6 +65,7 @@ pub fn analyze_project(
 /// plugins) beyond the built-in defaults.
 pub fn analyze_project_with_registry(
     store: &mut impl GraphStore,
+    project_id: &str,
     project_root: &Path,
     commit_ref: Option<&str>,
     registry: OrchestratorRegistry,
@@ -166,7 +168,7 @@ pub fn analyze_project_with_registry(
         aggregate_method_call_stats(&all_warnings);
 
     // Create snapshot and insert.
-    let version = store.create_snapshot(SnapshotKind::Analysis, commit_ref)?;
+    let version = store.create_snapshot(project_id, SnapshotKind::Analysis, commit_ref)?;
     store.add_nodes_batch(version, &nodes)?;
     store.add_edges_batch(version, &edges)?;
 
@@ -196,6 +198,7 @@ pub fn analyze_project_with_registry(
 /// that uses the default orchestrator registry.
 pub fn analyze_project_incremental(
     store: &mut impl GraphStore,
+    project_id: &str,
     project_root: &Path,
     commit_ref: Option<&str>,
     previous_version: Option<Version>,
@@ -203,6 +206,7 @@ pub fn analyze_project_incremental(
     let registry = OrchestratorRegistry::with_defaults();
     analyze_project_incremental_with_registry(
         store,
+        project_id,
         project_root,
         commit_ref,
         previous_version,
@@ -220,6 +224,7 @@ pub fn analyze_project_incremental(
 /// file manifest, but still stores a manifest for future incremental runs.
 pub fn analyze_project_incremental_with_registry(
     store: &mut impl GraphStore,
+    project_id: &str,
     project_root: &Path,
     commit_ref: Option<&str>,
     previous_version: Option<Version>,
@@ -272,7 +277,7 @@ pub fn analyze_project_incremental_with_registry(
     };
 
     // Phase 4: Create new snapshot version.
-    let version = store.create_snapshot(SnapshotKind::Analysis, commit_ref)?;
+    let version = store.create_snapshot(project_id, SnapshotKind::Analysis, commit_ref)?;
 
     // Phase 5: Copy all nodes and edges from previous version (if incremental).
     let mut nodes_copied = 0;
@@ -442,6 +447,7 @@ fn aggregate_method_call_stats(warnings: &[crate::types::AnalysisWarning]) -> (u
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use svt_core::model::DEFAULT_PROJECT_ID;
     use svt_core::store::CozoStore;
 
     #[test]
@@ -454,7 +460,7 @@ mod tests {
             .to_path_buf();
 
         let mut store = CozoStore::new_in_memory().unwrap();
-        let summary = analyze_project(&mut store, &project_root, None).unwrap();
+        let summary = analyze_project(&mut store, DEFAULT_PROJECT_ID, &project_root, None).unwrap();
 
         assert!(summary.version > 0);
         assert!(summary.crates_analyzed >= 4);
@@ -472,7 +478,13 @@ mod tests {
             .to_path_buf();
 
         let mut store = CozoStore::new_in_memory().unwrap();
-        let summary = analyze_project(&mut store, &project_root, Some("abc123")).unwrap();
+        let summary = analyze_project(
+            &mut store,
+            DEFAULT_PROJECT_ID,
+            &project_root,
+            Some("abc123"),
+        )
+        .unwrap();
 
         assert!(summary.version > 0);
     }
@@ -487,7 +499,9 @@ mod tests {
             .to_path_buf();
 
         let mut store = CozoStore::new_in_memory().unwrap();
-        let summary = analyze_project_incremental(&mut store, &project_root, None, None).unwrap();
+        let summary =
+            analyze_project_incremental(&mut store, DEFAULT_PROJECT_ID, &project_root, None, None)
+                .unwrap();
 
         // Should do full analysis (no previous version)
         assert!(!summary.incremental);
@@ -506,7 +520,9 @@ mod tests {
             .to_path_buf();
 
         let mut store = CozoStore::new_in_memory().unwrap();
-        let summary = analyze_project_incremental(&mut store, &project_root, None, None).unwrap();
+        let summary =
+            analyze_project_incremental(&mut store, DEFAULT_PROJECT_ID, &project_root, None, None)
+                .unwrap();
 
         let manifest = store.get_file_manifest(summary.version).unwrap();
         assert!(
@@ -531,13 +547,20 @@ mod tests {
         let mut store = CozoStore::new_in_memory().unwrap();
 
         // First run: full analysis (stores manifest)
-        let first = analyze_project_incremental(&mut store, &project_root, None, None).unwrap();
+        let first =
+            analyze_project_incremental(&mut store, DEFAULT_PROJECT_ID, &project_root, None, None)
+                .unwrap();
         assert!(!first.incremental);
 
         // Second run: incremental (no files changed)
-        let second =
-            analyze_project_incremental(&mut store, &project_root, None, Some(first.version))
-                .unwrap();
+        let second = analyze_project_incremental(
+            &mut store,
+            DEFAULT_PROJECT_ID,
+            &project_root,
+            None,
+            Some(first.version),
+        )
+        .unwrap();
 
         assert!(second.incremental, "second run should be incremental");
         assert!(

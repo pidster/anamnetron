@@ -7,8 +7,11 @@ use svt_core::store::{CozoStore, GraphStore};
 #[test]
 fn compact_preserves_kept_version_and_removes_other() {
     let mut store = CozoStore::new_in_memory().unwrap();
+    helpers::ensure_default_project(&mut store);
 
-    let v1 = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+    let v1 = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+        .unwrap();
     store
         .add_node(v1, &helpers::make_node_default("n1", "/svc/a"))
         .unwrap();
@@ -19,7 +22,9 @@ fn compact_preserves_kept_version_and_removes_other() {
         .add_constraint(v1, &helpers::make_constraint("c1"))
         .unwrap();
 
-    let v2 = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+    let v2 = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+        .unwrap();
     store
         .add_node(v2, &helpers::make_node_default("n2", "/svc/b"))
         .unwrap();
@@ -31,7 +36,7 @@ fn compact_preserves_kept_version_and_removes_other() {
         .unwrap();
 
     // Keep only v2
-    store.compact(&[v2]).unwrap();
+    store.compact(DEFAULT_PROJECT_ID, &[v2]).unwrap();
 
     // v2 data should still exist
     assert!(store.get_node(v2, &"n2".to_string()).unwrap().is_some());
@@ -53,7 +58,7 @@ fn compact_preserves_kept_version_and_removes_other() {
     assert!(store.get_constraints(v1).unwrap().is_empty());
 
     // v1 snapshot should be gone
-    let snapshots = store.list_snapshots().unwrap();
+    let snapshots = store.list_snapshots(DEFAULT_PROJECT_ID).unwrap();
     assert_eq!(snapshots.len(), 1);
     assert_eq!(snapshots[0].version, v2);
 }
@@ -61,14 +66,17 @@ fn compact_preserves_kept_version_and_removes_other() {
 #[test]
 fn compact_with_empty_keep_removes_all() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+        .unwrap();
     store
         .add_node(v, &helpers::make_node_default("n1", "/svc/a"))
         .unwrap();
 
-    store.compact(&[]).unwrap();
+    store.compact(DEFAULT_PROJECT_ID, &[]).unwrap();
 
-    let snapshots = store.list_snapshots().unwrap();
+    let snapshots = store.list_snapshots(DEFAULT_PROJECT_ID).unwrap();
     assert!(snapshots.is_empty());
     assert!(store.get_node(v, &"n1".to_string()).unwrap().is_none());
 }
@@ -76,29 +84,36 @@ fn compact_with_empty_keep_removes_all() {
 #[test]
 fn compact_preserves_multiple_kept_versions() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let v1 = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v1 = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+        .unwrap();
     store
         .add_node(v1, &helpers::make_node_default("n1", "/svc/a"))
         .unwrap();
 
-    let v2 = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+    let v2 = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+        .unwrap();
     store
         .add_node(v2, &helpers::make_node_default("n2", "/svc/b"))
         .unwrap();
 
-    let v3 = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+    let v3 = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+        .unwrap();
     store
         .add_node(v3, &helpers::make_node_default("n3", "/svc/c"))
         .unwrap();
 
     // Keep v1 and v3, remove v2
-    store.compact(&[v1, v3]).unwrap();
+    store.compact(DEFAULT_PROJECT_ID, &[v1, v3]).unwrap();
 
     assert!(store.get_node(v1, &"n1".to_string()).unwrap().is_some());
     assert!(store.get_node(v2, &"n2".to_string()).unwrap().is_none());
     assert!(store.get_node(v3, &"n3".to_string()).unwrap().is_some());
 
-    let snapshots = store.list_snapshots().unwrap();
+    let snapshots = store.list_snapshots(DEFAULT_PROJECT_ID).unwrap();
     assert_eq!(snapshots.len(), 2);
 }
 
@@ -106,11 +121,12 @@ proptest! {
     #[test]
     fn compact_preserves_kept_versions_and_removes_the_rest(total in 2usize..5) {
         let mut store = CozoStore::new_in_memory().unwrap();
+        helpers::ensure_default_project(&mut store);
 
         // Create `total` versions, each with a node
         let mut versions = Vec::new();
         for i in 0..total {
-            let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+            let v = store.create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None).unwrap();
             store.add_node(v, &helpers::make_node_default(&format!("n{i}"), &format!("/svc/v{i}"))).unwrap();
             versions.push(v);
         }
@@ -126,7 +142,7 @@ proptest! {
             .map(|(i, &v)| (i, v))
             .collect();
 
-        store.compact(&keep).unwrap();
+        store.compact(DEFAULT_PROJECT_ID, &keep).unwrap();
 
         // Kept versions should still have their data
         for (idx, &v) in keep.iter().enumerate() {
@@ -142,7 +158,7 @@ proptest! {
         }
 
         // Snapshot count should match kept versions
-        let snapshots = store.list_snapshots().unwrap();
+        let snapshots = store.list_snapshots(DEFAULT_PROJECT_ID).unwrap();
         prop_assert_eq!(snapshots.len(), keep.len());
     }
 }

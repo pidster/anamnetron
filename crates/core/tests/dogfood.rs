@@ -1,8 +1,11 @@
 //! Dog-food test: load design/architecture.yaml and run conformance checks.
 
+mod helpers;
+
 use svt_core::conformance::{self, ConstraintRegistry, ConstraintStatus};
 use svt_core::interchange;
 use svt_core::interchange_store;
+use svt_core::model::DEFAULT_PROJECT_ID;
 use svt_core::store::{CozoStore, GraphStore};
 
 #[test]
@@ -14,7 +17,8 @@ fn dogfood_architecture_yaml_loads_successfully() {
     assert!(warnings.is_empty(), "unexpected warnings: {:?}", warnings);
 
     let mut store = CozoStore::new_in_memory().unwrap();
-    let version = interchange_store::load_into_store(&mut store, &doc).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let version = interchange_store::load_into_store(&mut store, DEFAULT_PROJECT_ID, &doc).unwrap();
 
     let nodes = store.get_all_nodes(version).unwrap();
     assert!(
@@ -43,7 +47,8 @@ fn dogfood_conformance_all_must_not_depend_pass() {
     let yaml = include_str!("../../../design/architecture.yaml");
     let doc = interchange::parse_yaml(yaml).unwrap();
     let mut store = CozoStore::new_in_memory().unwrap();
-    let version = interchange_store::load_into_store(&mut store, &doc).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let version = interchange_store::load_into_store(&mut store, DEFAULT_PROJECT_ID, &doc).unwrap();
 
     let registry = ConstraintRegistry::with_defaults();
     let report = conformance::evaluate_design(&store, version, &registry).unwrap();
@@ -96,7 +101,8 @@ fn dogfood_conformance_report_serialises_to_json() {
     let yaml = include_str!("../../../design/architecture.yaml");
     let doc = interchange::parse_yaml(yaml).unwrap();
     let mut store = CozoStore::new_in_memory().unwrap();
-    let version = interchange_store::load_into_store(&mut store, &doc).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let version = interchange_store::load_into_store(&mut store, DEFAULT_PROJECT_ID, &doc).unwrap();
 
     let registry = ConstraintRegistry::with_defaults();
     let report = conformance::evaluate_design(&store, version, &registry).unwrap();

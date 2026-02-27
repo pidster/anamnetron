@@ -20,6 +20,21 @@ pub struct StoreInfo {
     pub snapshot_count: usize,
     /// Per-snapshot summaries.
     pub snapshots: Vec<SnapshotSummary>,
+    /// Number of projects in the store.
+    pub project_count: usize,
+    /// Per-project summaries.
+    pub projects: Vec<ProjectSummary>,
+}
+
+/// Summary of a single project within the store.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ProjectSummary {
+    /// Project ID.
+    pub id: ProjectId,
+    /// Human-readable name.
+    pub name: String,
+    /// Number of snapshots in this project.
+    pub snapshot_count: usize,
 }
 
 /// Summary of a single snapshot within the store.
@@ -37,6 +52,8 @@ pub struct SnapshotSummary {
     pub edge_count: usize,
     /// When the snapshot was created (RFC 3339).
     pub created_at: String,
+    /// Project this snapshot belongs to.
+    pub project_id: ProjectId,
 }
 
 /// Abstract interface for the graph store.
@@ -45,14 +62,35 @@ pub struct SnapshotSummary {
 /// "current version". This keeps the store stateless and makes
 /// conformance (comparing two versions) natural.
 pub trait GraphStore {
-    /// Create a new snapshot and return its version number.
-    fn create_snapshot(&mut self, kind: SnapshotKind, commit_ref: Option<&str>) -> Result<Version>;
+    // -- Project methods --
 
-    /// List all snapshots in version order.
-    fn list_snapshots(&self) -> Result<Vec<Snapshot>>;
+    /// Create a new project.
+    fn create_project(&mut self, project: &Project) -> Result<()>;
 
-    /// Get the latest version for a given snapshot kind, or None if no snapshots exist.
-    fn latest_version(&self, kind: SnapshotKind) -> Result<Option<Version>>;
+    /// List all projects.
+    fn list_projects(&self) -> Result<Vec<Project>>;
+
+    /// Get a project by ID.
+    fn get_project(&self, project_id: &str) -> Result<Option<Project>>;
+
+    /// Check whether a project exists.
+    fn project_exists(&self, project_id: &str) -> Result<bool>;
+
+    // -- Snapshot methods (project-scoped) --
+
+    /// Create a new snapshot within a project and return its version number.
+    fn create_snapshot(
+        &mut self,
+        project_id: &str,
+        kind: SnapshotKind,
+        commit_ref: Option<&str>,
+    ) -> Result<Version>;
+
+    /// List all snapshots for a project in version order.
+    fn list_snapshots(&self, project_id: &str) -> Result<Vec<Snapshot>>;
+
+    /// Get the latest version for a given snapshot kind within a project, or None if no snapshots exist.
+    fn latest_version(&self, project_id: &str, kind: SnapshotKind) -> Result<Option<Version>>;
 
     /// Add a single node to the store.
     fn add_node(&mut self, version: Version, node: &Node) -> Result<()>;
@@ -124,8 +162,8 @@ pub trait GraphStore {
     /// Get all constraints for a version.
     fn get_constraints(&self, version: Version) -> Result<Vec<Constraint>>;
 
-    /// Remove all data for versions not in the keep list.
-    fn compact(&mut self, keep_versions: &[Version]) -> Result<()>;
+    /// Remove all data for versions not in the keep list, scoped to a project.
+    fn compact(&mut self, project_id: &str, keep_versions: &[Version]) -> Result<()>;
 
     /// Get all nodes for a version.
     fn get_all_nodes(&self, version: Version) -> Result<Vec<Node>>;

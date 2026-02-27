@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use svt_core::conformance::{self, ConstraintRegistry};
 use svt_core::interchange::parse_yaml;
 use svt_core::interchange_store::load_into_store;
+use svt_core::model::DEFAULT_PROJECT_ID;
 use svt_core::store::{CozoStore, GraphStore};
 
 use svt_analyzer::analyze_project;
@@ -21,7 +22,7 @@ fn project_root() -> PathBuf {
 #[test]
 fn dogfood_analyze_produces_meaningful_results() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let summary = analyze_project(&mut store, &project_root(), None).unwrap();
+    let summary = analyze_project(&mut store, DEFAULT_PROJECT_ID, &project_root(), None).unwrap();
 
     // Should find all workspace crates
     assert!(
@@ -67,7 +68,7 @@ fn dogfood_analyze_produces_meaningful_results() {
 #[test]
 fn dogfood_typescript_nodes_in_store() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let summary = analyze_project(&mut store, &project_root(), None).unwrap();
+    let summary = analyze_project(&mut store, DEFAULT_PROJECT_ID, &project_root(), None).unwrap();
 
     let nodes = store.get_all_nodes(summary.version).unwrap();
 
@@ -105,10 +106,10 @@ fn dogfood_conformance_comparison() {
     let design_yaml =
         std::fs::read_to_string(project_root().join("design/architecture.yaml")).unwrap();
     let doc = parse_yaml(&design_yaml).unwrap();
-    let design_version = load_into_store(&mut store, &doc).unwrap();
+    let design_version = load_into_store(&mut store, DEFAULT_PROJECT_ID, &doc).unwrap();
 
     // Run analysis
-    let summary = analyze_project(&mut store, &project_root(), None).unwrap();
+    let summary = analyze_project(&mut store, DEFAULT_PROJECT_ID, &project_root(), None).unwrap();
 
     // Compare
     let registry = ConstraintRegistry::with_defaults();

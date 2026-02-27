@@ -3,6 +3,17 @@
 use svt_core::model::*;
 use svt_core::store::{CozoStore, GraphStore};
 
+/// Create a default project in the store. Call this before creating snapshots.
+pub fn ensure_default_project(store: &mut CozoStore) {
+    let _ = store.create_project(&Project {
+        id: DEFAULT_PROJECT_ID.to_string(),
+        name: "Default Project".to_string(),
+        created_at: "2024-01-01T00:00:00Z".to_string(),
+        description: None,
+        metadata: None,
+    });
+}
+
 /// Create a node with all fields specified.
 pub fn make_node(id: &str, path: &str, kind: NodeKind, sub_kind: &str) -> Node {
     Node {

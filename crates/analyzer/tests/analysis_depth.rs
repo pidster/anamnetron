@@ -33,7 +33,7 @@ fn node_path_map(store: &CozoStore, version: Version) -> HashMap<NodeId, String>
 #[test]
 fn crate_level_dependencies_exist() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let summary = analyze_project(&mut store, &project_root(), None).unwrap();
+    let summary = analyze_project(&mut store, DEFAULT_PROJECT_ID, &project_root(), None).unwrap();
 
     let paths = node_path_map(&store, summary.version);
     let edges = store.get_all_edges(summary.version, None).unwrap();
@@ -71,7 +71,7 @@ fn crate_level_dependencies_exist() {
 #[test]
 fn method_call_resolution_improved() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let summary = analyze_project(&mut store, &project_root(), None).unwrap();
+    let summary = analyze_project(&mut store, DEFAULT_PROJECT_ID, &project_root(), None).unwrap();
 
     // With heuristic resolution, some method calls should be resolved.
     assert!(
@@ -100,7 +100,7 @@ fn method_call_resolution_improved() {
 #[test]
 fn self_type_calls_resolved_in_real_code() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let summary = analyze_project(&mut store, &project_root(), None).unwrap();
+    let summary = analyze_project(&mut store, DEFAULT_PROJECT_ID, &project_root(), None).unwrap();
 
     let paths = node_path_map(&store, summary.version);
     let edges = store.get_all_edges(summary.version, None).unwrap();

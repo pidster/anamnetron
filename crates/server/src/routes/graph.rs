@@ -83,13 +83,33 @@ pub struct CytoscapeElements {
     pub edges: Vec<CyEdge>,
 }
 
+/// GET /api/projects/{project}/snapshots/{version}/graph
+///
+/// Project-scoped variant. The project path segment is validated but the version
+/// is globally unique so the store query does not need the project ID.
+pub async fn get_project_graph(
+    State(state): State<SharedState>,
+    Path((_project, version)): Path<(String, Version)>,
+) -> Result<Json<CytoscapeGraph>, ApiError> {
+    get_graph_inner(&state, version)
+}
+
 /// GET /api/snapshots/{version}/graph
 pub async fn get_graph(
     State(state): State<SharedState>,
     Path(version): Path<Version>,
 ) -> Result<Json<CytoscapeGraph>, ApiError> {
-    let all_nodes = state.store.get_all_nodes(version)?;
-    let all_edges = state.store.get_all_edges(version, None)?;
+    get_graph_inner(&state, version)
+}
+
+/// Shared implementation for graph retrieval.
+fn get_graph_inner(
+    state: &crate::state::AppState,
+    version: Version,
+) -> Result<Json<CytoscapeGraph>, ApiError> {
+    let store = state.read_store()?;
+    let all_nodes = store.get_all_nodes(version)?;
+    let all_edges = store.get_all_edges(version, None)?;
 
     // Build parent map from Contains edges: child_id -> parent_id
     let mut parent_map: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
@@ -210,11 +230,11 @@ pub async fn get_graph(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
 
     use axum::{routing::get, Router};
     use http_body_util::BodyExt;
-    use svt_core::model::{Edge, Node, NodeKind, Provenance, SnapshotKind};
+    use svt_core::model::{Edge, Node, NodeKind, Provenance, SnapshotKind, DEFAULT_PROJECT_ID};
     use svt_core::store::{CozoStore, GraphStore};
     use tower::ServiceExt;
 
@@ -235,6 +255,11 @@ mod tests {
         }
     }
 
+    /// The default project is automatically created by the v1->v2 migration.
+    fn make_store_with_project() -> CozoStore {
+        CozoStore::new_in_memory().unwrap()
+    }
+
     fn test_app(state: Arc<AppState>) -> Router {
         Router::new()
             .route("/api/snapshots/{version}/graph", get(get_graph))
@@ -243,8 +268,10 @@ mod tests {
 
     #[tokio::test]
     async fn graph_contains_edges_become_parent_field() {
-        let mut store = CozoStore::new_in_memory().unwrap();
-        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        let mut store = make_store_with_project();
+        let v = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+            .unwrap();
         store
             .add_node(v, &make_node("n1", "/app", NodeKind::System))
             .unwrap();
@@ -282,9 +309,8 @@ mod tests {
             .unwrap();
 
         let state = Arc::new(AppState {
-            store,
-            design_version: Some(v),
-            analysis_version: None,
+            store: RwLock::new(store),
+            default_project: DEFAULT_PROJECT_ID.to_string(),
         });
         let app = test_app(state);
         let resp = app
@@ -325,8 +351,10 @@ mod tests {
 
     #[tokio::test]
     async fn phantom_parent_gets_synthetic_node() {
-        let mut store = CozoStore::new_in_memory().unwrap();
-        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        let mut store = make_store_with_project();
+        let v = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+            .unwrap();
 
         // Add only the child node — no parent node "phantom-parent"
         store
@@ -352,9 +380,8 @@ mod tests {
             .unwrap();
 
         let state = Arc::new(AppState {
-            store,
-            design_version: Some(v),
-            analysis_version: None,
+            store: RwLock::new(store),
+            default_project: DEFAULT_PROJECT_ID.to_string(),
         });
         let app = test_app(state);
         let resp = app
@@ -401,17 +428,18 @@ mod tests {
 
     #[tokio::test]
     async fn node_metadata_survives_pipeline() {
-        let mut store = CozoStore::new_in_memory().unwrap();
-        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        let mut store = make_store_with_project();
+        let v = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+            .unwrap();
 
         let mut node = make_node("n1", "/app/service", NodeKind::Service);
         node.metadata = Some(serde_json::json!({"loc": 42, "fan_out": 3}));
         store.add_node(v, &node).unwrap();
 
         let state = Arc::new(AppState {
-            store,
-            design_version: Some(v),
-            analysis_version: None,
+            store: RwLock::new(store),
+            default_project: DEFAULT_PROJECT_ID.to_string(),
         });
         let app = test_app(state);
         let resp = app
@@ -444,8 +472,10 @@ mod tests {
 
     #[tokio::test]
     async fn edge_metadata_survives_pipeline() {
-        let mut store = CozoStore::new_in_memory().unwrap();
-        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        let mut store = make_store_with_project();
+        let v = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+            .unwrap();
 
         store
             .add_node(v, &make_node("n1", "/app/a", NodeKind::Service))
@@ -469,9 +499,8 @@ mod tests {
             .unwrap();
 
         let state = Arc::new(AppState {
-            store,
-            design_version: Some(v),
-            analysis_version: None,
+            store: RwLock::new(store),
+            default_project: DEFAULT_PROJECT_ID.to_string(),
         });
         let app = test_app(state);
         let resp = app
@@ -503,16 +532,17 @@ mod tests {
 
     #[tokio::test]
     async fn node_without_metadata_omits_field() {
-        let mut store = CozoStore::new_in_memory().unwrap();
-        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        let mut store = make_store_with_project();
+        let v = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+            .unwrap();
         store
             .add_node(v, &make_node("n1", "/app", NodeKind::System))
             .unwrap();
 
         let state = Arc::new(AppState {
-            store,
-            design_version: Some(v),
-            analysis_version: None,
+            store: RwLock::new(store),
+            default_project: DEFAULT_PROJECT_ID.to_string(),
         });
         let app = test_app(state);
         let resp = app

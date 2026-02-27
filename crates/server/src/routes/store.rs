@@ -15,19 +15,20 @@ use crate::state::SharedState;
 pub async fn store_info(
     State(state): State<SharedState>,
 ) -> Result<Json<svt_core::store::StoreInfo>, ApiError> {
-    let info = state.store.store_info()?;
+    let store = state.read_store()?;
+    let info = store.store_info()?;
     Ok(Json(info))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
 
     use axum::{routing::get, Router};
     use http_body_util::BodyExt;
-    use svt_core::model::SnapshotKind;
-    use svt_core::store::CozoStore;
+    use svt_core::model::{SnapshotKind, DEFAULT_PROJECT_ID};
+    use svt_core::store::{CozoStore, GraphStore};
     use tower::ServiceExt;
 
     use crate::state::AppState;
@@ -35,9 +36,8 @@ mod tests {
     fn test_app_empty() -> Router {
         let store = CozoStore::new_in_memory().unwrap();
         let state = Arc::new(AppState {
-            store,
-            design_version: None,
-            analysis_version: None,
+            store: RwLock::new(store),
+            default_project: DEFAULT_PROJECT_ID.to_string(),
         });
         Router::new()
             .route("/api/store/info", get(store_info))
@@ -45,8 +45,11 @@ mod tests {
     }
 
     fn test_app_with_snapshot() -> Router {
+        // The default project is automatically created by the v1->v2 migration
         let mut store = CozoStore::new_in_memory().unwrap();
-        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        let v = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+            .unwrap();
         store
             .add_node(
                 v,
@@ -65,9 +68,8 @@ mod tests {
             )
             .unwrap();
         let state = Arc::new(AppState {
-            store,
-            design_version: Some(v),
-            analysis_version: None,
+            store: RwLock::new(store),
+            default_project: DEFAULT_PROJECT_ID.to_string(),
         });
         Router::new()
             .route("/api/store/info", get(store_info))
@@ -90,7 +92,7 @@ mod tests {
         assert_eq!(response.status(), 200);
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["schema_version"], 1);
+        assert_eq!(json["schema_version"], 2);
         assert_eq!(json["snapshot_count"], 0);
     }
 
@@ -110,7 +112,7 @@ mod tests {
         assert_eq!(response.status(), 200);
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["schema_version"], 1);
+        assert_eq!(json["schema_version"], 2);
         assert_eq!(json["snapshot_count"], 1);
 
         let snapshots = json["snapshots"].as_array().unwrap();

@@ -7,7 +7,10 @@ use svt_core::store::{CozoStore, GraphStore};
 #[test]
 fn add_node_then_get_by_id_round_trips() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+        .unwrap();
     let node = helpers::make_node("n1", "/test-service", NodeKind::Service, "crate");
     store.add_node(v, &node).unwrap();
 
@@ -23,7 +26,10 @@ fn add_node_then_get_by_id_round_trips() {
 #[test]
 fn add_node_then_get_by_path_round_trips() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+        .unwrap();
     let node = helpers::make_node("n1", "/test-service", NodeKind::Service, "crate");
     store.add_node(v, &node).unwrap();
 
@@ -44,7 +50,10 @@ fn get_nonexistent_node_returns_none() {
 #[test]
 fn add_nodes_batch_then_retrieve_all() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let v = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+        .unwrap();
 
     let nodes: Vec<Node> = (0..100)
         .map(|i| {
@@ -67,7 +76,10 @@ fn add_nodes_batch_then_retrieve_all() {
 #[test]
 fn node_optional_fields_survive_round_trip() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let v = store.create_snapshot(SnapshotKind::Analysis, None).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+        .unwrap();
 
     let node = Node {
         id: "n1".to_string(),
@@ -93,7 +105,10 @@ fn node_optional_fields_survive_round_trip() {
 #[test]
 fn get_all_nodes_returns_all_nodes_for_version() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+        .unwrap();
 
     let n1 = helpers::make_node("n1", "/app", NodeKind::System, "workspace");
     let n2 = helpers::make_node("n2", "/app/api", NodeKind::Component, "module");
@@ -112,7 +127,8 @@ proptest! {
     #[test]
     fn n_nodes_added_then_queried_returns_exactly_n(n in 1usize..50) {
         let mut store = CozoStore::new_in_memory().unwrap();
-        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        helpers::ensure_default_project(&mut store);
+        let v = store.create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None).unwrap();
 
         for i in 0..n {
             let node = helpers::make_node(

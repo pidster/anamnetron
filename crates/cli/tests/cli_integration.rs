@@ -512,7 +512,7 @@ fn store_info_after_import_shows_snapshot() {
         .arg("info")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Schema version: 1"))
+        .stdout(predicate::str::contains("Schema version: 2"))
         .stdout(predicate::str::contains("Snapshots: 1"))
         .stdout(predicate::str::contains("design"));
 }

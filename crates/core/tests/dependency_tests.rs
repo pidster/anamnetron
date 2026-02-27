@@ -7,7 +7,10 @@ use svt_core::store::{CozoStore, GraphStore};
 /// Setup a chain: A -> B -> C
 fn setup_chain() -> (CozoStore, Version) {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+        .unwrap();
     store
         .add_node(
             v,
@@ -60,7 +63,10 @@ fn transitive_dependencies_returns_full_chain() {
 #[test]
 fn diamond_dependency_returns_each_node_once() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+        .unwrap();
     // Diamond: A -> B, A -> C, B -> D, C -> D
     store
         .add_node(
@@ -156,7 +162,8 @@ proptest! {
     #[test]
     fn direct_deps_are_subset_of_transitive_deps(node_count in 3usize..7, edges in proptest::collection::vec((1usize..6, 1usize..6), 1..10)) {
         let mut store = CozoStore::new_in_memory().unwrap();
-        let v = store.create_snapshot(SnapshotKind::Design, None).unwrap();
+        helpers::ensure_default_project(&mut store);
+        let v = store.create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None).unwrap();
 
         // Create nodes
         for i in 0..node_count {

@@ -17,6 +17,7 @@ export interface HashState {
   version?: number;
   diff?: number;
   mermaid?: string;
+  project?: string;
 }
 
 /** Known view names for detecting the new URL format. */
@@ -53,6 +54,9 @@ export function parseHash(hash: string): HashState {
 
     const mermaid = params.get("mermaid");
     if (mermaid) state.mermaid = mermaid;
+
+    const p = params.get("p");
+    if (p) state.project = p;
   } else {
     // Legacy format: key=value params only (backwards compatibility)
     const params = new URLSearchParams(clean);
@@ -74,6 +78,9 @@ export function parseHash(hash: string): HashState {
 
     const view = params.get("view");
     if (view) state.view = view;
+
+    const p = params.get("p");
+    if (p) state.project = p;
   }
 
   return state;
@@ -88,6 +95,7 @@ export function buildHash(state: HashState): string {
   if (state.version !== undefined) params.set("v", String(state.version));
   if (state.diff !== undefined) params.set("diff", String(state.diff));
   if (state.mermaid !== undefined) params.set("mermaid", state.mermaid);
+  if (state.project !== undefined) params.set("p", state.project);
 
   const paramStr = params.toString();
 

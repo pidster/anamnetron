@@ -23,7 +23,7 @@ fn project_root() -> PathBuf {
 #[test]
 fn full_pipeline_produces_nodes_and_edges() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let summary = analyze_project(&mut store, &project_root(), None).unwrap();
+    let summary = analyze_project(&mut store, DEFAULT_PROJECT_ID, &project_root(), None).unwrap();
 
     assert!(
         summary.nodes_created > 10,
@@ -67,7 +67,7 @@ fn full_pipeline_produces_nodes_and_edges() {
 #[test]
 fn analysis_snapshot_is_queryable() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let summary = analyze_project(&mut store, &project_root(), None).unwrap();
+    let summary = analyze_project(&mut store, DEFAULT_PROJECT_ID, &project_root(), None).unwrap();
 
     // Should be able to find svt-core by canonical path (workspace-aware: /svt/core)
     let core_node = store
@@ -86,7 +86,7 @@ fn analysis_snapshot_is_queryable() {
 #[test]
 fn analysis_edges_have_correct_provenance() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let summary = analyze_project(&mut store, &project_root(), None).unwrap();
+    let summary = analyze_project(&mut store, DEFAULT_PROJECT_ID, &project_root(), None).unwrap();
 
     let edges = store.get_all_edges(summary.version, None).unwrap();
     for edge in &edges {
@@ -97,7 +97,7 @@ fn analysis_edges_have_correct_provenance() {
 #[test]
 fn contains_edges_form_hierarchy() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let summary = analyze_project(&mut store, &project_root(), None).unwrap();
+    let summary = analyze_project(&mut store, DEFAULT_PROJECT_ID, &project_root(), None).unwrap();
 
     let edges = store.get_all_edges(summary.version, None).unwrap();
     let contains: Vec<_> = edges
@@ -113,7 +113,7 @@ fn contains_edges_form_hierarchy() {
 #[test]
 fn warnings_collected_not_dropped() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let summary = analyze_project(&mut store, &project_root(), None).unwrap();
+    let summary = analyze_project(&mut store, DEFAULT_PROJECT_ID, &project_root(), None).unwrap();
 
     // Warnings list should be accessible (may or may not be empty depending on code)
     println!("Analysis produced {} warnings", summary.warnings.len());
@@ -129,7 +129,7 @@ fn warnings_collected_not_dropped() {
 #[test]
 fn multiple_crates_all_represented() {
     let mut store = CozoStore::new_in_memory().unwrap();
-    let summary = analyze_project(&mut store, &project_root(), None).unwrap();
+    let summary = analyze_project(&mut store, DEFAULT_PROJECT_ID, &project_root(), None).unwrap();
 
     let nodes = store.get_all_nodes(summary.version).unwrap();
     let crate_nodes: Vec<_> = nodes.iter().filter(|n| n.sub_kind == "crate").collect();
