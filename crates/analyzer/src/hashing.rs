@@ -161,6 +161,7 @@ mod tests {
             top_level_sub_kind: "crate".to_string(),
             source_ref: "src/lib.rs".to_string(),
             parent_qualified_name: None,
+            workspace_dependencies: vec![],
         };
 
         let (entries, warnings) = build_manifest(dir.path(), &[("rust", &unit)]);
@@ -187,6 +188,7 @@ mod tests {
             top_level_sub_kind: "crate".to_string(),
             source_ref: "src/lib.rs".to_string(),
             parent_qualified_name: None,
+            workspace_dependencies: vec![],
         };
 
         let (entries, _) = build_manifest(dir.path(), &[("rust", &unit)]);
@@ -208,6 +210,7 @@ mod tests {
             top_level_sub_kind: "crate".to_string(),
             source_ref: "lib.rs".to_string(),
             parent_qualified_name: None,
+            workspace_dependencies: vec![],
         };
 
         let (entries, warnings) = build_manifest(dir.path(), &[("rust", &unit)]);

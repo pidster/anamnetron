@@ -157,6 +157,7 @@ impl LanguageOrchestrator for RustOrchestrator {
                         .workspace_name
                         .as_ref()
                         .map(|ws| ws.replace('-', "_")),
+                    workspace_dependencies: vec![],
                 }
             })
             .collect()

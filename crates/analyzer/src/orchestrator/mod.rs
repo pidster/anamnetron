@@ -41,6 +41,13 @@ pub struct LanguageUnit {
     pub source_ref: String,
     /// Parent qualified name for the top-level item (e.g., workspace name for crates).
     pub parent_qualified_name: Option<String>,
+    /// Names of workspace-internal packages this unit depends on.
+    ///
+    /// Populated during discovery by parsing build-tool manifests (e.g.,
+    /// `package.json`, `go.mod`, `pyproject.toml`) and filtering to only
+    /// those names that correspond to other discovered units in the same
+    /// project tree.
+    pub workspace_dependencies: Vec<String>,
 }
 
 /// Orchestrates discovery, analysis, and post-processing for a language.
@@ -144,6 +151,7 @@ mod tests {
             top_level_sub_kind: "crate".to_string(),
             source_ref: "/tmp/src/main.rs".to_string(),
             parent_qualified_name: None,
+            workspace_dependencies: vec![],
         };
         assert_eq!(unit.name, "test-pkg");
         assert_eq!(unit.language, "test");

@@ -1,8 +1,10 @@
 //! TypeScript language analyzer using tree-sitter-typescript.
 //!
-//! Extracts exported structural elements (classes, functions, interfaces,
-//! type aliases) and import relationships from TypeScript source files.
-//! Also handles Svelte files by extracting their `<script>` blocks first.
+//! Extracts structural elements (classes, functions, interfaces, type aliases,
+//! enums) and import relationships from TypeScript source files. Descends into
+//! class/interface/enum bodies to extract members, and emits `Extends` /
+//! `Implements` edges for heritage clauses. Also handles Svelte files by
+//! extracting their `<script>` blocks first.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -134,6 +136,7 @@ impl LanguageAnalyzer for TypeScriptAnalyzer {
 
         for file in files {
             let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
+            let is_test = is_typescript_test_file(file);
 
             match ext {
                 "svelte" => match std::fs::read_to_string(file) {
@@ -146,6 +149,7 @@ impl LanguageAnalyzer for TypeScriptAnalyzer {
                                 file,
                                 &block.content,
                                 block.line_offset,
+                                is_test,
                                 &mut result,
                             );
                         }
@@ -167,6 +171,7 @@ impl LanguageAnalyzer for TypeScriptAnalyzer {
                                 file,
                                 &source,
                                 0,
+                                is_test,
                                 &mut result,
                             );
                         }
@@ -185,13 +190,29 @@ impl LanguageAnalyzer for TypeScriptAnalyzer {
     }
 }
 
-/// Parse TypeScript source and extract exported items and import relations.
+/// Check whether a file path refers to a TypeScript test file.
+fn is_typescript_test_file(path: &Path) -> bool {
+    let name = path.file_name().and_then(|f| f.to_str()).unwrap_or("");
+    // Check *.test.ts, *.spec.ts, *.test.tsx, *.spec.tsx patterns
+    if name.contains(".test.") || name.contains(".spec.") {
+        return true;
+    }
+    // Check if file is in a __tests__ directory
+    path.components()
+        .any(|c| matches!(c, std::path::Component::Normal(s) if s.to_str() == Some("__tests__")))
+}
+
+/// Parse TypeScript source and extract items and import relations.
+///
+/// Processes both exported and non-exported top-level declarations, descending
+/// into class/interface/enum bodies to extract members.
 fn parse_typescript_source(
     parser: &mut tree_sitter::Parser,
     package_name: &str,
     file_path: &Path,
     source: &str,
     line_offset: usize,
+    is_test_file: bool,
     result: &mut ParseResult,
 ) {
     let Some(tree) = parser.parse(source, None) else {
@@ -222,11 +243,29 @@ fn parse_typescript_source(
                     file_path,
                     &module_context,
                     line_offset,
-                    &mut result.items,
+                    is_test_file,
+                    result,
                 );
             }
             "import_statement" => {
                 extract_import(child, source_bytes, &module_context, &mut result.relations);
+            }
+            // Non-exported top-level declarations.
+            "function_declaration"
+            | "class_declaration"
+            | "interface_declaration"
+            | "type_alias_declaration"
+            | "enum_declaration" => {
+                extract_declaration(
+                    child,
+                    source_bytes,
+                    file_path,
+                    &module_context,
+                    line_offset,
+                    false,
+                    is_test_file,
+                    result,
+                );
             }
             _ => {}
         }
@@ -240,20 +279,327 @@ fn extract_export(
     file_path: &Path,
     module_context: &str,
     line_offset: usize,
-    items: &mut Vec<AnalysisItem>,
+    is_test_file: bool,
+    result: &mut ParseResult,
 ) {
     // export_statement can contain: function_declaration, class_declaration,
-    // interface_declaration, type_alias_declaration, or lexical_declaration.
+    // interface_declaration, type_alias_declaration, enum_declaration, or
+    // lexical_declaration.
     for i in 0..node.named_child_count() {
         let Some(child) = node.named_child(i) else {
             continue;
         };
 
-        let (kind, sub_kind) = match child.kind() {
-            "function_declaration" => (NodeKind::Unit, "function"),
-            "class_declaration" => (NodeKind::Unit, "class"),
-            "interface_declaration" => (NodeKind::Unit, "interface"),
-            "type_alias_declaration" => (NodeKind::Unit, "type-alias"),
+        match child.kind() {
+            "function_declaration"
+            | "class_declaration"
+            | "interface_declaration"
+            | "type_alias_declaration"
+            | "enum_declaration" => {
+                extract_declaration(
+                    child,
+                    source,
+                    file_path,
+                    module_context,
+                    line_offset,
+                    true,
+                    is_test_file,
+                    result,
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Extract a single declaration node, emitting the item plus any members/edges.
+#[allow(clippy::too_many_arguments)]
+fn extract_declaration(
+    node: tree_sitter::Node<'_>,
+    source: &[u8],
+    file_path: &Path,
+    module_context: &str,
+    line_offset: usize,
+    exported: bool,
+    is_test_file: bool,
+    result: &mut ParseResult,
+) {
+    let (kind, sub_kind) = match node.kind() {
+        "function_declaration" => (NodeKind::Unit, "function"),
+        "class_declaration" => (NodeKind::Unit, "class"),
+        "interface_declaration" => (NodeKind::Unit, "interface"),
+        "type_alias_declaration" => (NodeKind::Unit, "type-alias"),
+        "enum_declaration" => (NodeKind::Unit, "enum"),
+        _ => return,
+    };
+
+    let Some(name) = node
+        .child_by_field_name("name")
+        .and_then(|n| n.utf8_text(source).ok())
+    else {
+        return;
+    };
+
+    let line = node.start_position().row + 1 + line_offset;
+    let source_ref = format!("{}:{line}", file_path.display());
+    let loc = node.end_position().row - node.start_position().row + 1;
+    let qualified_name = format!("{module_context}::{name}");
+
+    let mut tags = Vec::new();
+    if exported {
+        tags.push("exported".to_string());
+    }
+    if is_test_file {
+        tags.push("test".to_string());
+    }
+
+    result.items.push(AnalysisItem {
+        qualified_name: qualified_name.clone(),
+        kind,
+        sub_kind: sub_kind.to_string(),
+        parent_qualified_name: Some(module_context.to_string()),
+        source_ref,
+        language: "typescript".to_string(),
+        metadata: Some(serde_json::json!({"loc": loc})),
+        tags,
+    });
+
+    // Descend into body for classes, interfaces, and enums.
+    match node.kind() {
+        "class_declaration" => {
+            extract_class_members(
+                node,
+                source,
+                file_path,
+                module_context,
+                &qualified_name,
+                line_offset,
+                result,
+            );
+            extract_heritage_clauses(node, source, &qualified_name, result);
+        }
+        "interface_declaration" => {
+            extract_interface_members(
+                node,
+                source,
+                file_path,
+                &qualified_name,
+                line_offset,
+                result,
+            );
+        }
+        "enum_declaration" => {
+            extract_enum_members(
+                node,
+                source,
+                file_path,
+                &qualified_name,
+                line_offset,
+                result,
+            );
+        }
+        "function_declaration" => {
+            // Walk the function body for call expressions.
+            if let Some(body) = node.child_by_field_name("body") {
+                visit_ts_call_expressions(
+                    body,
+                    source,
+                    &qualified_name,
+                    module_context,
+                    None,
+                    result,
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Extract class members (methods, properties, constructor) from a class body.
+fn extract_class_members(
+    class_node: tree_sitter::Node<'_>,
+    source: &[u8],
+    file_path: &Path,
+    module_context: &str,
+    class_qn: &str,
+    line_offset: usize,
+    result: &mut ParseResult,
+) {
+    let Some(body) = class_node.child_by_field_name("body") else {
+        return;
+    };
+
+    for i in 0..body.named_child_count() {
+        let Some(child) = body.named_child(i) else {
+            continue;
+        };
+
+        let (member_name, sub_kind) = match child.kind() {
+            "method_definition" => {
+                // Constructor is a method_definition with name "constructor".
+                let name = child
+                    .child_by_field_name("name")
+                    .and_then(|n| n.utf8_text(source).ok());
+                match name {
+                    Some("constructor") => ("constructor".to_string(), "constructor"),
+                    Some(n) => (n.to_string(), "method"),
+                    None => continue,
+                }
+            }
+            "public_field_definition" | "property_definition" => {
+                let name = child
+                    .child_by_field_name("name")
+                    .and_then(|n| n.utf8_text(source).ok());
+                match name {
+                    Some(n) => (n.to_string(), "property"),
+                    None => continue,
+                }
+            }
+            _ => continue,
+        };
+
+        let member_qn = format!("{class_qn}::{member_name}");
+        let line = child.start_position().row + 1 + line_offset;
+        let loc = child.end_position().row - child.start_position().row + 1;
+
+        result.items.push(AnalysisItem {
+            qualified_name: member_qn.clone(),
+            kind: NodeKind::Unit,
+            sub_kind: sub_kind.to_string(),
+            parent_qualified_name: Some(class_qn.to_string()),
+            source_ref: format!("{}:{line}", file_path.display()),
+            language: "typescript".to_string(),
+            metadata: Some(serde_json::json!({"loc": loc})),
+            tags: vec![],
+        });
+
+        // Walk method/constructor bodies for call expressions.
+        if sub_kind == "method" || sub_kind == "constructor" {
+            if let Some(method_body) = child.child_by_field_name("body") {
+                visit_ts_call_expressions(
+                    method_body,
+                    source,
+                    &member_qn,
+                    module_context,
+                    Some(class_qn),
+                    result,
+                );
+            }
+        }
+    }
+}
+
+/// Extract heritage clauses (`extends` / `implements`) from a class declaration
+/// and emit `Extends` / `Implements` edges.
+fn extract_heritage_clauses(
+    class_node: tree_sitter::Node<'_>,
+    source: &[u8],
+    class_qn: &str,
+    result: &mut ParseResult,
+) {
+    // In tree-sitter-typescript, heritage clauses appear as child nodes of the
+    // class_declaration. We iterate over all children looking for
+    // `extends_clause`, `implements_clause`, or `class_heritage` wrapper.
+    for i in 0..class_node.child_count() {
+        let Some(child) = class_node.child(i) else {
+            continue;
+        };
+
+        match child.kind() {
+            "extends_clause" | "class_heritage" | "implements_clause" => {
+                visit_heritage_node(child, source, class_qn, result);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Recursively visit a heritage clause node to find type identifiers and emit edges.
+fn visit_heritage_node(
+    node: tree_sitter::Node<'_>,
+    source: &[u8],
+    class_qn: &str,
+    result: &mut ParseResult,
+) {
+    match node.kind() {
+        "extends_clause" => {
+            for i in 0..node.named_child_count() {
+                if let Some(child) = node.named_child(i) {
+                    if let Some(type_name) = extract_type_name(child, source) {
+                        result.relations.push(AnalysisRelation {
+                            source_qualified_name: class_qn.to_string(),
+                            target_qualified_name: type_name,
+                            kind: EdgeKind::Extends,
+                        });
+                    }
+                }
+            }
+        }
+        "implements_clause" => {
+            for i in 0..node.named_child_count() {
+                if let Some(child) = node.named_child(i) {
+                    if let Some(type_name) = extract_type_name(child, source) {
+                        result.relations.push(AnalysisRelation {
+                            source_qualified_name: class_qn.to_string(),
+                            target_qualified_name: type_name,
+                            kind: EdgeKind::Implements,
+                        });
+                    }
+                }
+            }
+        }
+        "class_heritage" => {
+            // class_heritage wraps extends_clause and implements_clause.
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    visit_heritage_node(child, source, class_qn, result);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Extract a type name from a type identifier or generic type node.
+fn extract_type_name(node: tree_sitter::Node<'_>, source: &[u8]) -> Option<String> {
+    match node.kind() {
+        "type_identifier" | "identifier" => node.utf8_text(source).ok().map(|s| s.to_string()),
+        "generic_type" => {
+            // generic_type has a "name" child that is a type_identifier.
+            node.child_by_field_name("name")
+                .and_then(|n| n.utf8_text(source).ok())
+                .map(|s| s.to_string())
+        }
+        _ => {
+            // Fallback: try to get text from the first named child.
+            node.named_child(0)
+                .and_then(|n| n.utf8_text(source).ok())
+                .map(|s| s.to_string())
+        }
+    }
+}
+
+/// Extract interface members (method signatures, property signatures).
+fn extract_interface_members(
+    iface_node: tree_sitter::Node<'_>,
+    source: &[u8],
+    file_path: &Path,
+    iface_qn: &str,
+    line_offset: usize,
+    result: &mut ParseResult,
+) {
+    let Some(body) = iface_node.child_by_field_name("body") else {
+        return;
+    };
+
+    for i in 0..body.named_child_count() {
+        let Some(child) = body.named_child(i) else {
+            continue;
+        };
+
+        let sub_kind = match child.kind() {
+            "method_signature" => "method",
+            "property_signature" => "property",
             _ => continue,
         };
 
@@ -265,19 +611,166 @@ fn extract_export(
         };
 
         let line = child.start_position().row + 1 + line_offset;
-        let source_ref = format!("{}:{line}", file_path.display());
         let loc = child.end_position().row - child.start_position().row + 1;
 
-        items.push(AnalysisItem {
-            qualified_name: format!("{module_context}::{name}"),
-            kind,
+        result.items.push(AnalysisItem {
+            qualified_name: format!("{iface_qn}::{name}"),
+            kind: NodeKind::Unit,
             sub_kind: sub_kind.to_string(),
-            parent_qualified_name: Some(module_context.to_string()),
-            source_ref,
+            parent_qualified_name: Some(iface_qn.to_string()),
+            source_ref: format!("{}:{line}", file_path.display()),
             language: "typescript".to_string(),
             metadata: Some(serde_json::json!({"loc": loc})),
             tags: vec![],
         });
+    }
+}
+
+/// Extract enum members as variant nodes.
+///
+/// In tree-sitter-typescript, the enum AST structure is:
+/// - `enum_declaration` → `enum_body` (named child, not a field)
+/// - `enum_body` contains `property_identifier` (simple member) or
+///   `enum_assignment` (member with value, wrapping a `property_identifier`)
+fn extract_enum_members(
+    enum_node: tree_sitter::Node<'_>,
+    source: &[u8],
+    file_path: &Path,
+    enum_qn: &str,
+    line_offset: usize,
+    result: &mut ParseResult,
+) {
+    // Find the enum_body child (not accessible via field name).
+    let mut body = None;
+    for i in 0..enum_node.named_child_count() {
+        if let Some(child) = enum_node.named_child(i) {
+            if child.kind() == "enum_body" {
+                body = Some(child);
+                break;
+            }
+        }
+    }
+    let Some(body) = body else {
+        return;
+    };
+
+    for i in 0..body.named_child_count() {
+        let Some(child) = body.named_child(i) else {
+            continue;
+        };
+
+        // Simple member: `property_identifier` (e.g., `Red`)
+        // Member with value: `enum_assignment` (e.g., `Green = "green"`)
+        //   which wraps a `property_identifier` as its first named child.
+        let (name_node, member_node) = match child.kind() {
+            "property_identifier" => (child, child),
+            "enum_assignment" => {
+                if let Some(name_child) = child.named_child(0) {
+                    (name_child, child)
+                } else {
+                    continue;
+                }
+            }
+            _ => continue,
+        };
+
+        let Some(name) = name_node.utf8_text(source).ok() else {
+            continue;
+        };
+
+        let line = member_node.start_position().row + 1 + line_offset;
+        let loc = member_node.end_position().row - member_node.start_position().row + 1;
+
+        result.items.push(AnalysisItem {
+            qualified_name: format!("{enum_qn}::{name}"),
+            kind: NodeKind::Unit,
+            sub_kind: "variant".to_string(),
+            parent_qualified_name: Some(enum_qn.to_string()),
+            source_ref: format!("{}:{line}", file_path.display()),
+            language: "typescript".to_string(),
+            metadata: Some(serde_json::json!({"loc": loc})),
+            tags: vec![],
+        });
+    }
+}
+
+/// Recursively walk AST nodes to find call expressions and emit `Calls` edges.
+///
+/// For each `call_expression` found, extracts the callee and emits an
+/// `AnalysisRelation` with `EdgeKind::Calls` from the containing function
+/// to the target function/method.
+fn visit_ts_call_expressions(
+    node: tree_sitter::Node<'_>,
+    source: &[u8],
+    caller_qn: &str,
+    module_context: &str,
+    class_context: Option<&str>,
+    result: &mut ParseResult,
+) {
+    for i in 0..node.named_child_count() {
+        let Some(child) = node.named_child(i) else {
+            continue;
+        };
+
+        if child.kind() == "call_expression" {
+            if let Some(function) = child.child_by_field_name("function") {
+                match function.kind() {
+                    "identifier" => {
+                        // Simple function call: foo()
+                        if let Ok(name) = function.utf8_text(source) {
+                            if !name.is_empty() {
+                                result.relations.push(AnalysisRelation {
+                                    source_qualified_name: caller_qn.to_string(),
+                                    target_qualified_name: format!("{module_context}::{name}"),
+                                    kind: EdgeKind::Calls,
+                                });
+                            }
+                        }
+                    }
+                    "member_expression" => {
+                        // Method call: obj.method() or this.method()
+                        let object = function.child_by_field_name("object");
+                        let property = function.child_by_field_name("property");
+                        if let (Some(obj), Some(prop)) = (object, property) {
+                            if let (Ok(obj_text), Ok(prop_text)) =
+                                (obj.utf8_text(source), prop.utf8_text(source))
+                            {
+                                if obj_text == "this" {
+                                    // this.method() — resolve to class method if in class context
+                                    if let Some(cls_qn) = class_context {
+                                        result.relations.push(AnalysisRelation {
+                                            source_qualified_name: caller_qn.to_string(),
+                                            target_qualified_name: format!("{cls_qn}::{prop_text}"),
+                                            kind: EdgeKind::Calls,
+                                        });
+                                    }
+                                } else {
+                                    // obj.method() — best effort with receiver text
+                                    result.relations.push(AnalysisRelation {
+                                        source_qualified_name: caller_qn.to_string(),
+                                        target_qualified_name: format!("{obj_text}::{prop_text}"),
+                                        kind: EdgeKind::Calls,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        // Other call forms (IIFE, computed, etc.) — skip.
+                    }
+                }
+            }
+        }
+
+        // Recurse into children to find nested call expressions.
+        visit_ts_call_expressions(
+            child,
+            source,
+            caller_qn,
+            module_context,
+            class_context,
+            result,
+        );
     }
 }
 
@@ -446,7 +939,7 @@ mod tests {
         analyzer.analyze_crate(package_name, &[file.path()])
     }
 
-    // --- Export extraction tests (Task 4) ---
+    // --- Export extraction tests ---
 
     #[test]
     fn extracts_exported_function() {
@@ -528,23 +1021,64 @@ mod tests {
     }
 
     #[test]
-    fn ignores_non_exported_declarations() {
+    fn extracts_non_exported_declarations() {
         let result = parse_ts_source(
             "my-app",
             r#"
 function privateHelper() {}
-const localVar = 42;
 class InternalClass {}
 export function publicFn() {}
 "#,
         );
-        assert_eq!(
-            result.items.len(),
-            1,
-            "should only extract the exported function, got: {:?}",
-            result.items
+        let names: Vec<_> = result
+            .items
+            .iter()
+            .map(|i| i.qualified_name.as_str())
+            .collect();
+        assert!(
+            names.contains(&"my-app::privateHelper"),
+            "should extract non-exported function, got: {:?}",
+            names
         );
-        assert_eq!(result.items[0].qualified_name, "my-app::publicFn");
+        assert!(
+            names.contains(&"my-app::InternalClass"),
+            "should extract non-exported class, got: {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"my-app::publicFn"),
+            "should extract exported function, got: {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn exported_items_have_exported_tag() {
+        let result = parse_ts_source(
+            "my-app",
+            r#"
+function internal() {}
+export function external() {}
+"#,
+        );
+        let internal = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name == "my-app::internal")
+            .expect("internal function should be extracted");
+        assert!(
+            !internal.tags.contains(&"exported".to_string()),
+            "non-exported item should not have 'exported' tag"
+        );
+        let external = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name == "my-app::external")
+            .expect("external function should be extracted");
+        assert!(
+            external.tags.contains(&"exported".to_string()),
+            "exported item should have 'exported' tag"
+        );
     }
 
     #[test]
@@ -579,7 +1113,7 @@ export function publicFn() {}
         );
     }
 
-    // --- Import edge and Svelte component tests (Task 5) ---
+    // --- Import edge and Svelte component tests ---
 
     #[test]
     fn extracts_relative_import_as_depends_edge() {
@@ -674,5 +1208,513 @@ import { fetchNodes } from './lib/api';
             .filter(|r| r.kind == EdgeKind::Depends)
             .collect();
         assert_eq!(depends.len(), 2, "should generate 2 Depends relations");
+    }
+
+    // --- Class member extraction tests ---
+
+    #[test]
+    fn extracts_class_methods() {
+        let result = parse_ts_source(
+            "my-app",
+            r#"
+export class UserService {
+    greet(): void {}
+    static create(): UserService { return new UserService(); }
+}
+"#,
+        );
+        let methods: Vec<_> = result
+            .items
+            .iter()
+            .filter(|i| i.sub_kind == "method")
+            .collect();
+        assert!(
+            methods
+                .iter()
+                .any(|m| m.qualified_name == "my-app::UserService::greet"),
+            "should extract greet method, got: {:?}",
+            methods
+        );
+        assert!(
+            methods
+                .iter()
+                .any(|m| m.qualified_name == "my-app::UserService::create"),
+            "should extract static create method, got: {:?}",
+            methods
+        );
+        // Methods should be parented under the class.
+        for m in &methods {
+            assert_eq!(
+                m.parent_qualified_name,
+                Some("my-app::UserService".to_string()),
+                "method parent should be the class"
+            );
+        }
+    }
+
+    #[test]
+    fn extracts_class_properties() {
+        let result = parse_ts_source(
+            "my-app",
+            r#"
+export class Config {
+    name: string;
+    count = 0;
+}
+"#,
+        );
+        let props: Vec<_> = result
+            .items
+            .iter()
+            .filter(|i| i.sub_kind == "property")
+            .collect();
+        assert!(
+            props
+                .iter()
+                .any(|p| p.qualified_name == "my-app::Config::name"),
+            "should extract name property, got: {:?}",
+            props
+        );
+        assert!(
+            props
+                .iter()
+                .any(|p| p.qualified_name == "my-app::Config::count"),
+            "should extract count property, got: {:?}",
+            props
+        );
+    }
+
+    #[test]
+    fn extracts_class_constructor() {
+        let result = parse_ts_source(
+            "my-app",
+            r#"
+export class Node {
+    constructor(public id: string) {}
+}
+"#,
+        );
+        let ctors: Vec<_> = result
+            .items
+            .iter()
+            .filter(|i| i.sub_kind == "constructor")
+            .collect();
+        assert!(
+            ctors
+                .iter()
+                .any(|c| c.qualified_name == "my-app::Node::constructor"),
+            "should extract constructor, got: {:?}",
+            ctors
+        );
+        assert_eq!(
+            ctors[0].parent_qualified_name,
+            Some("my-app::Node".to_string()),
+        );
+    }
+
+    // --- Heritage clause tests ---
+
+    #[test]
+    fn emits_extends_edge() {
+        let result = parse_ts_source(
+            "my-app",
+            r#"
+class Base {}
+export class Derived extends Base {}
+"#,
+        );
+        let extends: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Extends)
+            .collect();
+        assert!(
+            !extends.is_empty(),
+            "should emit Extends edge for class inheritance"
+        );
+        assert_eq!(extends[0].source_qualified_name, "my-app::Derived");
+        assert_eq!(extends[0].target_qualified_name, "Base");
+    }
+
+    #[test]
+    fn emits_implements_edge() {
+        let result = parse_ts_source(
+            "my-app",
+            r#"
+interface Serializable { serialize(): string; }
+export class Config implements Serializable {
+    serialize(): string { return ""; }
+}
+"#,
+        );
+        let implements: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Implements)
+            .collect();
+        assert!(
+            !implements.is_empty(),
+            "should emit Implements edge for class-interface relationship"
+        );
+        assert_eq!(implements[0].source_qualified_name, "my-app::Config");
+        assert_eq!(implements[0].target_qualified_name, "Serializable");
+    }
+
+    #[test]
+    fn emits_extends_and_implements_together() {
+        let result = parse_ts_source(
+            "my-app",
+            r#"
+class Base {}
+interface Loggable { log(): void; }
+interface Serializable { serialize(): string; }
+export class App extends Base implements Loggable, Serializable {
+    log(): void {}
+    serialize(): string { return ""; }
+}
+"#,
+        );
+        let extends: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Extends)
+            .collect();
+        let implements: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Implements)
+            .collect();
+        assert_eq!(
+            extends.len(),
+            1,
+            "should emit 1 Extends edge, got: {:?}",
+            extends
+        );
+        assert_eq!(
+            implements.len(),
+            2,
+            "should emit 2 Implements edges, got: {:?}",
+            implements
+        );
+    }
+
+    // --- Interface member extraction tests ---
+
+    #[test]
+    fn extracts_interface_methods_and_properties() {
+        let result = parse_ts_source(
+            "my-app",
+            r#"
+export interface INode {
+    id: string;
+    getName(): string;
+}
+"#,
+        );
+        let methods: Vec<_> = result
+            .items
+            .iter()
+            .filter(|i| i.sub_kind == "method" && i.qualified_name.starts_with("my-app::INode"))
+            .collect();
+        let props: Vec<_> = result
+            .items
+            .iter()
+            .filter(|i| i.sub_kind == "property" && i.qualified_name.starts_with("my-app::INode"))
+            .collect();
+        assert!(
+            methods
+                .iter()
+                .any(|m| m.qualified_name == "my-app::INode::getName"),
+            "should extract interface method, got: {:?}",
+            methods
+        );
+        assert!(
+            props
+                .iter()
+                .any(|p| p.qualified_name == "my-app::INode::id"),
+            "should extract interface property, got: {:?}",
+            props
+        );
+        // Members should be parented under the interface.
+        for m in methods.iter().chain(props.iter()) {
+            assert_eq!(m.parent_qualified_name, Some("my-app::INode".to_string()),);
+        }
+    }
+
+    // --- Enum member extraction tests ---
+
+    #[test]
+    fn extracts_enum_members() {
+        let result = parse_ts_source(
+            "my-app",
+            r#"
+export enum Color {
+    Red,
+    Green = "green",
+    Blue,
+}
+"#,
+        );
+        let variants: Vec<_> = result
+            .items
+            .iter()
+            .filter(|i| i.sub_kind == "variant")
+            .collect();
+        assert_eq!(
+            variants.len(),
+            3,
+            "should extract 3 enum variants, got: {:?}",
+            variants
+        );
+        assert!(variants
+            .iter()
+            .any(|v| v.qualified_name == "my-app::Color::Red"));
+        assert!(variants
+            .iter()
+            .any(|v| v.qualified_name == "my-app::Color::Green"));
+        assert!(variants
+            .iter()
+            .any(|v| v.qualified_name == "my-app::Color::Blue"));
+        // All variants should be parented under the enum.
+        for v in &variants {
+            assert_eq!(v.parent_qualified_name, Some("my-app::Color".to_string()),);
+        }
+    }
+
+    #[test]
+    fn extracts_exported_enum() {
+        let result = parse_ts_source("my-app", "export enum Direction { Up, Down, Left, Right }");
+        let enums: Vec<_> = result
+            .items
+            .iter()
+            .filter(|i| i.sub_kind == "enum")
+            .collect();
+        assert!(
+            enums
+                .iter()
+                .any(|e| e.qualified_name == "my-app::Direction"),
+            "should extract exported enum, got: {:?}",
+            enums
+        );
+        let variants: Vec<_> = result
+            .items
+            .iter()
+            .filter(|i| i.sub_kind == "variant")
+            .collect();
+        assert_eq!(variants.len(), 4, "should extract 4 enum variants");
+    }
+
+    // --- Non-exported item extraction tests ---
+
+    #[test]
+    fn extracts_non_exported_class_with_members() {
+        let result = parse_ts_source(
+            "my-app",
+            r#"
+class InternalHelper {
+    value: number;
+    compute(): number { return this.value * 2; }
+}
+"#,
+        );
+        assert!(
+            result
+                .items
+                .iter()
+                .any(|i| i.qualified_name == "my-app::InternalHelper" && i.sub_kind == "class"),
+            "should extract non-exported class"
+        );
+        assert!(
+            result
+                .items
+                .iter()
+                .any(|i| i.qualified_name == "my-app::InternalHelper::value"),
+            "should extract property of non-exported class"
+        );
+        assert!(
+            result
+                .items
+                .iter()
+                .any(|i| i.qualified_name == "my-app::InternalHelper::compute"),
+            "should extract method of non-exported class"
+        );
+    }
+
+    #[test]
+    fn extracts_non_exported_enum() {
+        let result = parse_ts_source(
+            "my-app",
+            r#"
+enum Status {
+    Active,
+    Inactive,
+}
+"#,
+        );
+        assert!(
+            result
+                .items
+                .iter()
+                .any(|i| i.qualified_name == "my-app::Status" && i.sub_kind == "enum"),
+            "should extract non-exported enum"
+        );
+        let variants: Vec<_> = result
+            .items
+            .iter()
+            .filter(|i| i.sub_kind == "variant")
+            .collect();
+        assert_eq!(
+            variants.len(),
+            2,
+            "should extract 2 variants from non-exported enum"
+        );
+    }
+
+    #[test]
+    fn extracts_non_exported_interface() {
+        let result = parse_ts_source(
+            "my-app",
+            r#"
+interface InternalConfig {
+    debug: boolean;
+    getLevel(): number;
+}
+"#,
+        );
+        assert!(
+            result
+                .items
+                .iter()
+                .any(|i| i.qualified_name == "my-app::InternalConfig" && i.sub_kind == "interface"),
+            "should extract non-exported interface"
+        );
+        assert!(
+            result
+                .items
+                .iter()
+                .any(|i| i.qualified_name == "my-app::InternalConfig::debug"),
+            "should extract property of non-exported interface"
+        );
+        assert!(
+            result
+                .items
+                .iter()
+                .any(|i| i.qualified_name == "my-app::InternalConfig::getLevel"),
+            "should extract method of non-exported interface"
+        );
+    }
+
+    // --- Test file detection tests ---
+
+    #[test]
+    fn test_file_detection() {
+        assert!(is_typescript_test_file(Path::new("src/utils.test.ts")));
+        assert!(is_typescript_test_file(Path::new("src/utils.spec.ts")));
+        assert!(is_typescript_test_file(Path::new("src/__tests__/utils.ts")));
+        assert!(!is_typescript_test_file(Path::new("src/utils.ts")));
+        assert!(!is_typescript_test_file(Path::new("src/testing.ts")));
+    }
+
+    // --- M28: Call graph analysis tests ---
+
+    #[test]
+    fn extracts_function_call_edge() {
+        let result = parse_ts_source(
+            "my-app",
+            r#"
+function helper(): void {}
+function main(): void {
+    helper();
+}
+"#,
+        );
+        let calls: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Calls)
+            .collect();
+        assert!(
+            !calls.is_empty(),
+            "should extract Calls edge for function call"
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.source_qualified_name == "my-app::main"
+                    && c.target_qualified_name == "my-app::helper"),
+            "should have main -> helper Calls edge, got: {:?}",
+            calls
+        );
+    }
+
+    #[test]
+    fn extracts_method_call_edge() {
+        let result = parse_ts_source(
+            "my-app",
+            r#"
+class Service {
+    start(): void {}
+    run(): void {
+        this.start();
+    }
+}
+"#,
+        );
+        let calls: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Calls)
+            .collect();
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.source_qualified_name == "my-app::Service::run"
+                    && c.target_qualified_name == "my-app::Service::start"),
+            "should have Service::run -> Service::start Calls edge, got: {:?}",
+            calls
+        );
+    }
+
+    #[test]
+    fn does_not_emit_calls_for_imports() {
+        let result = parse_ts_source("my-app", "import { fetchData } from './lib/api';");
+        let calls: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Calls)
+            .collect();
+        assert!(
+            calls.is_empty(),
+            "import statements should not generate Calls edges, got: {:?}",
+            calls
+        );
+    }
+
+    #[test]
+    fn extracts_nested_call_in_control_flow() {
+        let result = parse_ts_source(
+            "my-app",
+            r#"
+function doWork(): void {}
+function main(): void {
+    if (true) {
+        doWork();
+    }
+}
+"#,
+        );
+        let calls: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Calls)
+            .collect();
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.source_qualified_name == "my-app::main"
+                    && c.target_qualified_name == "my-app::doWork"),
+            "should find calls inside if blocks, got: {:?}",
+            calls
+        );
     }
 }

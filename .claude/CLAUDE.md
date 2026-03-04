@@ -147,13 +147,8 @@ Prompt-based hooks enforce quality at every edit:
 - **Post-edit**: Checks for missing tests, unwrap/expect usage, doc comments, security concerns
 - **Post-write**: Auto-formats Rust files with rustfmt
 
-## Roadmap Priority (Post-M23)
+## Roadmap Priority (Post-M29)
 
 Next milestones in priority order (see `docs/plan/PROGRESS.md` for full details):
 
-1. **M24: Test Detection (All Languages)** — Tag test code in TypeScript, Go, and Python analyzers
-2. **M25: Module Hierarchy & Post-Processing (Go + Python)** — Synthetic module nodes, import resolution
-3. **M26: TypeScript Structural Depth** — Class members, extends/implements edges, enum members
-4. **M27: Call Graph Analysis (TS + Go + Python)** — Extract `Calls` edges from function/method bodies
-5. **M28: Cross-Package Dependency Extraction** — Workspace-internal deps from build tool metadata
-6. **M29: Java Analyzer** — New language with full structural extraction and call graph
+1. **M30: Java Analyzer** — New language with tree-sitter-java, full structural extraction, call graph, Maven/Gradle discovery
