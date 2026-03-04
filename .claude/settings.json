@@ -43,7 +43,7 @@
         "hooks": [
           {
             "type": "prompt",
-            "prompt": "You are the orchestrator. Before acting on this prompt, determine: should you delegate this work to an agent team? Code changes → implementer agent (plan mode). Architecture questions → architect agent. Code review → reviewer agent. Test writing → test-writer agent. Create a team and delegate unless the user is asking a simple question or explicitly requesting you act directly. Trivial edits (typos, one-line fixes) may be done directly only if the user explicitly agrees."
+            "prompt": "Analyze this user prompt: $ARGUMENTS\n\nYou are evaluating whether the orchestrator should delegate this to an agent team. Code changes → implementer (plan mode). Architecture → architect. Code review → reviewer. Tests → test-writer. Simple questions or explicit direct-action requests do not need delegation. Always allow the prompt. Respond with JSON: {\"ok\": true, \"reason\": \"Delegate to [agent] for [task]\"} or {\"ok\": true, \"reason\": \"Simple question, handle directly\"}"
           }
         ]
       }
@@ -54,7 +54,7 @@
         "hooks": [
           {
             "type": "prompt",
-            "prompt": "Before creating this new file, verify: (1) Is a new file truly necessary, or should an existing file be edited? (2) Does this file respect the crate dependency flow (cli/server → analyzer → core)? (3) If in crates/core/, does it avoid platform-specific dependencies (must compile to WASM)? (4) If adding a new public API, trait, or data model type — has the design been validated against PRINCIPLES.md and the architecture rules? If any check fails, STOP and explain the concern before proceeding."
+            "prompt": "Evaluate this Write tool call: $ARGUMENTS\n\nCheck: (1) Is a new file truly necessary or should an existing file be edited? (2) Does it respect crate dependency flow (cli/server → analyzer → core)? (3) If in crates/core/, no platform-specific deps (must compile to WASM). (4) If new public API/trait/data model — has design been validated? Respond with JSON: {\"ok\": true, \"reason\": \"checks pass\"} or {\"ok\": false, \"reason\": \"specific concern\"}"
           }
         ]
       },
@@ -63,7 +63,7 @@
         "hooks": [
           {
             "type": "prompt",
-            "prompt": "Before editing this file, verify: (1) Have you read the file first to understand context? (2) Does this change maintain the crate dependency flow (cli/server → analyzer → core)? (3) If modifying crates/core/, does the change preserve WASM compatibility? (4) If changing a public API or data model — is this change covered by an existing design or does it need design review first? (5) Are you following existing patterns in the codebase? If any concern arises, flag it before proceeding."
+            "prompt": "Evaluate this Edit tool call: $ARGUMENTS\n\nCheck: (1) Has the file been read first? (2) Does the change maintain crate dependency flow (cli/server → analyzer → core)? (3) If crates/core/, preserves WASM compatibility? (4) If changing public API/data model — covered by existing design? (5) Follows existing codebase patterns? Respond with JSON: {\"ok\": true, \"reason\": \"checks pass\"} or {\"ok\": false, \"reason\": \"specific concern\"}"
           }
         ]
       }
@@ -83,7 +83,7 @@
         "hooks": [
           {
             "type": "prompt",
-            "prompt": "After this change, check: (1) Does the modified code need tests? If so, note what tests are needed. (2) Are there any unwrap()/expect() calls outside test modules? (3) If this is a public API, does it have doc comments? (4) Does the change introduce any security concerns (path traversal, injection, unsafe)? Briefly confirm these checks pass or flag issues."
+            "prompt": "Evaluate this completed Edit/Write: $ARGUMENTS\n\nCheck: (1) Does modified code need tests? (2) Any unwrap()/expect() outside test modules? (3) Public API missing doc comments? (4) Security concerns (path traversal, injection, unsafe)? Respond with JSON: {\"ok\": true, \"reason\": \"checks pass\"} or {\"ok\": false, \"reason\": \"specific concern\"}"
           }
         ]
       }
