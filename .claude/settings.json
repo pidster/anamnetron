@@ -28,7 +28,46 @@
     ]
   },
   "hooks": {
-    "PreToolUse": [],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'ORCHESTRATOR REMINDER: You are the orchestrator. Delegate all substantive work to agent teammates: implementer (code, plan mode), architect (design review), reviewer (code review), test-writer (tests). Create a team, assign tasks, coordinate. Only make trivial edits yourself if the user explicitly agrees.'"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "You are the orchestrator. Before acting on this prompt, determine: should you delegate this work to an agent team? Code changes → implementer agent (plan mode). Architecture questions → architect agent. Code review → reviewer agent. Test writing → test-writer agent. Create a team and delegate unless the user is asking a simple question or explicitly requesting you act directly. Trivial edits (typos, one-line fixes) may be done directly only if the user explicitly agrees."
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "Before creating this new file, verify: (1) Is a new file truly necessary, or should an existing file be edited? (2) Does this file respect the crate dependency flow (cli/server → analyzer → core)? (3) If in crates/core/, does it avoid platform-specific dependencies (must compile to WASM)? (4) If adding a new public API, trait, or data model type — has the design been validated against PRINCIPLES.md and the architecture rules? If any check fails, STOP and explain the concern before proceeding."
+          }
+        ]
+      },
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "Before editing this file, verify: (1) Have you read the file first to understand context? (2) Does this change maintain the crate dependency flow (cli/server → analyzer → core)? (3) If modifying crates/core/, does the change preserve WASM compatibility? (4) If changing a public API or data model — is this change covered by an existing design or does it need design review first? (5) Are you following existing patterns in the codebase? If any concern arises, flag it before proceeding."
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Edit|Write",
@@ -36,6 +75,15 @@
           {
             "type": "command",
             "command": "if [[ \"$TOOL_INPUT\" == *.rs ]]; then rustfmt \"$TOOL_INPUT\" 2>/dev/null || true; fi"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "After this change, check: (1) Does the modified code need tests? If so, note what tests are needed. (2) Are there any unwrap()/expect() calls outside test modules? (3) If this is a public API, does it have doc comments? (4) Does the change introduce any security concerns (path traversal, injection, unsafe)? Briefly confirm these checks pass or flag issues."
           }
         ]
       }
