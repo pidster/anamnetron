@@ -26,8 +26,9 @@
   let tension = $state(0.85);
   let svgEl = $state<SVGSVGElement>(undefined!);
 
-  // Hover state
+  // Hover state — either a node or an edge, never both
   let hoveredNodeId = $state<string | null>(null);
+  let hoveredEdge = $state<BundledEdge | null>(null);
 
   // Tooltip state
   let tooltip = $state<{
@@ -101,6 +102,17 @@
     return map;
   });
 
+  // Node label lookup for edge tooltips
+  let nodeLabelMap = $derived.by(() => {
+    const map = new Map<string, string>();
+    if (!graph) return map;
+    for (const node of graph.elements.nodes) {
+      const d = node.data as unknown as Record<string, unknown>;
+      map.set(node.data.id, (d._displayLabel as string) ?? node.data.label);
+    }
+    return map;
+  });
+
   // Get leaf nodes for rendering
   let leafNodes = $derived.by(
     (): Array<{
@@ -149,6 +161,47 @@
     },
   );
 
+  // Interior (ancestor) nodes — routing hubs for edge bundling
+  let interiorNodes = $derived.by(
+    (): Array<{
+      id: string;
+      label: string;
+      kind: string;
+      x: number;
+      y: number;
+      isRoot: boolean;
+      leafCount: number;
+    }> => {
+      if (!clusterRoot) return [];
+      const nodes: Array<{
+        id: string;
+        label: string;
+        kind: string;
+        x: number;
+        y: number;
+        isRoot: boolean;
+        leafCount: number;
+      }> = [];
+      clusterRoot.each((node) => {
+        // Only interior nodes (has children) — includes root
+        if (!node.children || node.children.length === 0) return;
+        const angleRad = (node.x * Math.PI) / 180;
+        const x = Math.sin(angleRad) * node.y;
+        const y = -Math.cos(angleRad) * node.y;
+        nodes.push({
+          id: node.data.id,
+          label: node.data.label,
+          kind: node.data.kind,
+          x,
+          y,
+          isRoot: node === clusterRoot,
+          leafCount: node.leaves().length,
+        });
+      });
+      return nodes;
+    },
+  );
+
   // d3 scales for visual encoding
   let radiusScale = $derived.by(() => {
     const counts = leafNodes.map((n) => n.childCount).filter((c) => c > 0);
@@ -186,8 +239,24 @@
     return { incoming, outgoing };
   });
 
-  // Set of connected leaf node IDs when hovering
+  // Set of connected leaf node IDs when hovering a node or edge
   let connectedNodeIds = $derived.by(() => {
+    if (hoveredEdge) {
+      // Include both endpoints plus all nodes at the other end of highlighted edges
+      const ids = new Set<string>();
+      ids.add(hoveredEdge.sourceId);
+      ids.add(hoveredEdge.targetId);
+      // Add neighbours of both endpoints (same edges that get red/green highlight)
+      for (const endpointId of [hoveredEdge.sourceId, hoveredEdge.targetId]) {
+        for (const e of edgesByNode.outgoing.get(endpointId) ?? []) {
+          ids.add(e.targetId);
+        }
+        for (const e of edgesByNode.incoming.get(endpointId) ?? []) {
+          ids.add(e.sourceId);
+        }
+      }
+      return ids;
+    }
     if (!hoveredNodeId) return new Set<string>();
     const ids = new Set<string>();
     ids.add(hoveredNodeId);
@@ -277,13 +346,38 @@
     return false;
   }
 
+  /** Check whether an edge connects to the hovered edge's source or target. */
+  function isEdgeConnectedToHoveredEdge(edge: BundledEdge): "source" | "target" | false {
+    if (!hoveredEdge) return false;
+    // Edges sharing the same source as the hovered edge are outgoing from that node
+    if (edge.sourceId === hoveredEdge.sourceId || edge.sourceId === hoveredEdge.targetId) return "source";
+    // Edges reaching the same target are incoming to that node
+    if (edge.targetId === hoveredEdge.sourceId || edge.targetId === hoveredEdge.targetId) return "target";
+    return false;
+  }
+
   function getEdgeOpacity(edge: BundledEdge): number {
+    if (hoveredEdge) {
+      if (edge === hoveredEdge) return 0.9;
+      if (isEdgeConnectedToHoveredEdge(edge)) return 0.85;
+      return 0.04;
+    }
     if (!hoveredNodeId) return 0.4;
     if (isEdgeConnected(edge)) return 0.85;
     return 0.04;
   }
 
   function getHighlightColor(edge: BundledEdge): string {
+    if (hoveredEdge) {
+      if (edge === hoveredEdge) {
+        // The hovered edge itself: color by direction (source=red, target=green)
+        return getCssVar("--fail") || "#f44336";
+      }
+      const conn = isEdgeConnectedToHoveredEdge(edge);
+      if (conn === "source") return getCssVar("--fail") || "#f44336";
+      if (conn === "target") return getCssVar("--pass") || "#4caf50";
+      return getEdgeColor(edge.kind);
+    }
     if (!hoveredNodeId) return getEdgeColor(edge.kind);
     const conn = isEdgeConnected(edge);
     if (conn === "source")
@@ -294,6 +388,11 @@
   }
 
   function getEdgeStrokeWidth(edge: BundledEdge): number {
+    if (hoveredEdge) {
+      if (edge === hoveredEdge) return Math.max(getEdgeWidth(edge) + 2, 4);
+      if (isEdgeConnectedToHoveredEdge(edge)) return Math.max(getEdgeWidth(edge), 2.5);
+      return getEdgeWidth(edge);
+    }
     if (hoveredNodeId && isEdgeConnected(edge)) {
       return Math.max(getEdgeWidth(edge), 2.5);
     }
@@ -333,6 +432,53 @@
 
   function handleNodeLeave() {
     hoveredNodeId = null;
+    tooltip = { ...tooltip, visible: false };
+  }
+
+  function handleInteriorEnter(
+    event: MouseEvent,
+    node: { id: string; label: string; kind: string; isRoot: boolean; leafCount: number },
+  ) {
+    hoveredNodeId = null;
+    hoveredEdge = null;
+    const role = node.isRoot ? "root routing hub" : "routing hub";
+    tooltip = {
+      visible: true,
+      x: event.clientX,
+      y: event.clientY,
+      label: node.label,
+      kind: role,
+      subKind: "",
+      descendants: node.leafCount,
+      incomingCount: 0,
+      outgoingCount: 0,
+    };
+  }
+
+  function handleInteriorLeave() {
+    tooltip = { ...tooltip, visible: false };
+  }
+
+  function handleEdgeEnter(event: MouseEvent, edge: BundledEdge) {
+    hoveredEdge = edge;
+    hoveredNodeId = null;
+    const srcLabel = nodeLabelMap.get(edge.sourceId) ?? edge.sourceId;
+    const tgtLabel = nodeLabelMap.get(edge.targetId) ?? edge.targetId;
+    tooltip = {
+      visible: true,
+      x: event.clientX,
+      y: event.clientY,
+      label: `${srcLabel} → ${tgtLabel}`,
+      kind: edge.kind,
+      subKind: "",
+      descendants: 0,
+      incomingCount: 0,
+      outgoingCount: edge.count > 1 ? edge.count : 0,
+    };
+  }
+
+  function handleEdgeLeave() {
+    hoveredEdge = null;
     tooltip = { ...tooltip, visible: false };
   }
 
@@ -385,8 +531,20 @@
         class="bundle-svg"
       >
         <g transform={transformStr}>
-          <!-- Bundled edge paths -->
+          <!-- Bundled edge paths with hit areas -->
           {#each bundledEdges as edge}
+            <path
+              d={lineGen(edge.points) ?? ""}
+              fill="none"
+              stroke="transparent"
+              stroke-width={Math.max(getEdgeWidth(edge) + 8, 12)}
+              class="bundle-edge-hit"
+              role="img"
+              aria-label="Edge from {edge.sourceId} to {edge.targetId}"
+              onmouseenter={(e) => handleEdgeEnter(e, edge)}
+              onmousemove={(e) => { if (tooltip.visible) { tooltip.x = e.clientX; tooltip.y = e.clientY; } }}
+              onmouseleave={handleEdgeLeave}
+            />
             <path
               d={lineGen(edge.points) ?? ""}
               fill="none"
@@ -394,6 +552,22 @@
               stroke-width={getEdgeStrokeWidth(edge)}
               stroke-opacity={getEdgeOpacity(edge)}
               class="bundle-edge"
+            />
+          {/each}
+
+          <!-- Interior routing nodes (ancestor hubs) -->
+          {#each interiorNodes as node (node.id)}
+            <circle
+              cx={node.x}
+              cy={node.y}
+              r={node.isRoot ? 5 : 3.5}
+              class="bundle-interior-node"
+              class:bundle-node-faded={(hoveredNodeId !== null || hoveredEdge !== null) && !connectedNodeIds.has(node.id)}
+              role="img"
+              aria-label="Node {node.id}"
+              onmouseenter={(e) => handleInteriorEnter(e, node)}
+              onmousemove={handleNodeMove}
+              onmouseleave={handleInteriorLeave}
             />
           {/each}
 
@@ -405,7 +579,7 @@
               r={getNodeRadius(node.childCount)}
               fill={getNodeColor(node.kind)}
               class="bundle-node"
-              class:bundle-node-faded={hoveredNodeId !== null && !connectedNodeIds.has(node.id)}
+              class:bundle-node-faded={(hoveredNodeId !== null || hoveredEdge !== null) && !connectedNodeIds.has(node.id)}
               role="button"
               tabindex="0"
               aria-label="{node.label} ({node.kind}{node.childCount > 0 ? `, ${node.childCount} descendants` : ''})"
@@ -429,13 +603,13 @@
                 text-anchor={labelAnchor(node.angle)}
                 dominant-baseline="central"
                 class="bundle-label"
-                class:bundle-label-highlighted={hoveredNodeId !== null && connectedNodeIds.has(node.id)}
-                class:bundle-label-faded={hoveredNodeId !== null && !connectedNodeIds.has(node.id)}
+                class:bundle-label-highlighted={(hoveredNodeId !== null || hoveredEdge !== null) && connectedNodeIds.has(node.id)}
+                class:bundle-label-faded={(hoveredNodeId !== null || hoveredEdge !== null) && !connectedNodeIds.has(node.id)}
               >
                 {node.label}
               </text>
             {/each}
-          {:else if hoveredNodeId}
+          {:else if hoveredNodeId || hoveredEdge}
             <!-- Hover-only labels when >60 nodes -->
             {#each leafNodes as node (node.id)}
               {#if connectedNodeIds.has(node.id)}
@@ -471,7 +645,12 @@
           <span>{tooltip.descendants}</span>
         </div>
       {/if}
-      {#if tooltip.incomingCount > 0 || tooltip.outgoingCount > 0}
+      {#if hoveredEdge && tooltip.outgoingCount > 0}
+        <div class="tooltip-row">
+          <span class="tooltip-key">Edges</span>
+          <span>{tooltip.outgoingCount}</span>
+        </div>
+      {:else if !hoveredEdge && (tooltip.incomingCount > 0 || tooltip.outgoingCount > 0)}
         <div class="tooltip-row">
           <span class="tooltip-key tooltip-incoming">Incoming</span>
           <span>{tooltip.incomingCount}</span>
@@ -555,9 +734,29 @@
     cursor: grabbing;
   }
 
+  .bundle-edge-hit {
+    pointer-events: stroke;
+    cursor: pointer;
+  }
+
   .bundle-edge {
     pointer-events: none;
     transition: stroke-opacity 0.15s ease;
+  }
+
+  .bundle-interior-node {
+    fill: none;
+    stroke: var(--text-muted);
+    stroke-width: 1;
+    opacity: 0.4;
+    cursor: pointer;
+    transition: opacity 0.15s ease;
+  }
+
+  .bundle-interior-node:hover {
+    stroke: var(--text);
+    stroke-width: 1.5;
+    opacity: 0.8;
   }
 
   .bundle-node {
