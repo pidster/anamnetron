@@ -48,22 +48,17 @@ fn resolve_manifest(source: &Path) -> Result<(PluginManifest, PathBuf)> {
     }
 }
 
-/// Determine the target plugins directory.
-///
-/// - If `global` is true, returns `~/.svt/plugins/`
-/// - Otherwise, returns `.svt/plugins/`
-fn target_dir(global: bool) -> Result<PathBuf> {
-    if global {
-        let home = std::env::var_os("HOME")
-            .ok_or_else(|| anyhow::anyhow!("HOME environment variable not set"))?;
-        Ok(PathBuf::from(home).join(".svt").join("plugins"))
-    } else {
-        Ok(PathBuf::from(".svt").join("plugins"))
-    }
+/// Resolve the plugins directory adjacent to the `svt` binary.
+fn target_dir() -> Result<PathBuf> {
+    let exe = std::env::current_exe().context("cannot determine svt binary location")?;
+    let dir = exe
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("cannot determine directory of svt binary"))?;
+    Ok(dir.join("plugins"))
 }
 
 /// Install a plugin from a source directory or manifest path.
-pub fn run_install(source: &Path, global: bool, force: bool) -> Result<()> {
+pub fn run_install(source: &Path, force: bool) -> Result<()> {
     // 1. Resolve and parse manifest
     let (manifest, source_dir) = resolve_manifest(source)?;
 
@@ -93,7 +88,7 @@ pub fn run_install(source: &Path, global: bool, force: bool) -> Result<()> {
     }
 
     // 5. Determine target directory
-    let target = target_dir(global)?;
+    let target = target_dir()?;
 
     // 6. Create target directory if needed
     std::fs::create_dir_all(&target)
@@ -139,9 +134,9 @@ pub fn run_install(source: &Path, global: bool, force: bool) -> Result<()> {
 }
 
 /// Remove a plugin by name.
-pub fn run_remove(name: &str, global: bool) -> Result<()> {
+pub fn run_remove(name: &str) -> Result<()> {
     // 1. Determine target directory
-    let target = target_dir(global)?;
+    let target = target_dir()?;
 
     // 2. Look for manifest
     let manifest_name = format!("{name}.svt-plugin.toml");

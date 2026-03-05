@@ -8,6 +8,9 @@
 /// Canonical path utilities: kebab-case conversion, glob matching, path validation.
 pub mod canonical;
 
+/// Project configuration: `.svt/config.yaml` parsing, validation, and types.
+pub mod config;
+
 /// Interchange format: YAML/JSON parsing, validation, wire types.
 pub mod interchange;
 

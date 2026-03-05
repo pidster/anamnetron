@@ -30,18 +30,15 @@ type PluginCreateFn = unsafe extern "C" fn() -> *mut dyn SvtPlugin;
 pub enum PluginSource {
     /// Loaded via `--plugin` CLI flag.
     CliFlag,
-    /// Found in `.svt/plugins/` (project-local).
-    ProjectLocal,
-    /// Found in `~/.svt/plugins/` (user-global).
-    UserGlobal,
+    /// Found in the `plugins/` directory adjacent to the `svt` binary.
+    BinaryAdjacent,
 }
 
 impl std::fmt::Display for PluginSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             PluginSource::CliFlag => write!(f, "cli-flag"),
-            PluginSource::ProjectLocal => write!(f, "project-local"),
-            PluginSource::UserGlobal => write!(f, "user-global"),
+            PluginSource::BinaryAdjacent => write!(f, "binary-adjacent"),
         }
     }
 }
@@ -188,7 +185,7 @@ impl PluginLoader {
     /// matching files.
     #[allow(dead_code)] // Convenience wrapper used in tests
     pub fn scan_directory(&mut self, dir: &Path) -> Vec<PluginError> {
-        self.scan_directory_with_source(dir, PluginSource::ProjectLocal)
+        self.scan_directory_with_source(dir, PluginSource::BinaryAdjacent)
     }
 
     /// Scan a directory for shared library files with the given [`PluginSource`].
@@ -501,7 +498,6 @@ api_version = 1
     #[test]
     fn plugin_source_display() {
         assert_eq!(PluginSource::CliFlag.to_string(), "cli-flag");
-        assert_eq!(PluginSource::ProjectLocal.to_string(), "project-local");
-        assert_eq!(PluginSource::UserGlobal.to_string(), "user-global");
+        assert_eq!(PluginSource::BinaryAdjacent.to_string(), "binary-adjacent");
     }
 }

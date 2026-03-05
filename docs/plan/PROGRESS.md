@@ -39,37 +39,54 @@
 ## What's Working Now
 
 ```
-svt import design/architecture.yaml     # Load a design model
+# Project setup
+svt init                                 # Create .svt/config.yaml and .svt/data/
+svt init --project my-app                # Create with explicit project name
+
+# Design import (reads design files from .svt/config.yaml)
+svt import                               # Merge all config design files into one snapshot
+svt import --file design/architecture.yaml  # Import a specific file (override)
+
+# Analysis (reads source paths from .svt/config.yaml)
+svt analyze                              # Analyze sources from config
+svt analyze --incremental                # Incremental analysis (skip unchanged units)
+
+# Conformance
 svt check                                # Conformance check (design-only)
-svt analyze .                            # Analyze Rust + TypeScript + Go + Python project
-svt analyze . --incremental              # Incremental analysis (skip unchanged units)
 svt check --analysis                     # Compare design vs analysis
+
+# Export
 svt export --format mermaid              # Export as Mermaid flowchart
 svt export --format json                 # Export as interchange JSON
 svt export --format dot                  # Export as DOT (Graphviz)
 svt export --format svg -o arch.svg      # Export as SVG (requires Graphviz)
 svt export --format png -o arch.png      # Export as PNG (requires Graphviz)
-svt export --format mermaid -o arch.mmd  # Export to file
+
+# Diffing
 svt diff --from 1 --to 2                 # Compare two snapshots (human output)
 svt diff --from 1 --to 2 --format json   # Compare two snapshots (JSON output)
+
+# Store management
 svt store info                           # Show store schema version, snapshots, node/edge counts
 svt store compact                        # Remove old versions (keep latest design + analysis)
 svt store compact --keep 1 --keep 3      # Keep specific versions
 svt store reset --force                  # Delete and recreate the store
+
+# Plugins (installed alongside svt binary)
 svt plugin list                          # List loaded plugins and their contributions
-svt plugin install /path/to/plugin       # Install plugin from directory with svt-plugin.toml
-svt plugin install /path/to/plugin --global  # Install to user-global ~/.svt/plugins/
+svt plugin install /path/to/plugin       # Install plugin to plugin directory
 svt plugin remove svt-plugin-foo         # Remove installed plugin
 svt plugin info /path/to/plugin          # Show plugin manifest metadata
-svt --plugin path/to/lib.dylib check     # Load a plugin and run conformance checks
-svt push --server http://host:3000       # Push analysis to remote server
-svt push --server http://host:3000 --project foo  # Push to specific project
-svt-server --design design/architecture.yaml --project .
-                                         # Serve API + web UI at http://localhost:3000
-svt-server --store .svt/store            # Serve with persistent storage (data survives restart)
-svt-server --store .svt/store --design design/architecture.yaml
-                                         # Persistent store + fresh design import at startup
-svt-server --project myapp              # Scope to a named project (default: "default")
+
+# Push to remote server (reads server URL from .svt/config.yaml)
+svt push                                 # Push latest analysis to configured server
+svt push --kind design                   # Push latest design snapshot
+svt push --kind all                      # Push both design and analysis
+svt push --server http://host:3000       # Override server URL
+
+# Server (pure data host)
+svt-server --store /data/svt.db          # Serve API + web UI at http://localhost:3000
+svt-server --store /data/svt.db --port 8080  # Custom port
 ```
 
 The web UI renders the architecture graph with compound nodes, click-to-inspect node details, search, layout switching (force-directed / hierarchical), conformance overlay, diff view overlay, error boundaries with retry, arrow-key graph traversal, a filtering sidebar for node/edge/sub-kind/language filtering, and a project selector (visible when multiple projects exist). With WASM loaded, node detail lookups and search run entirely in the browser — zero API round-trips after initial snapshot load.

@@ -14,10 +14,7 @@ use clap::Parser;
 use tokio::net::TcpListener;
 use tracing::info;
 
-use svt_analyzer::analyze_project;
-use svt_core::interchange;
-use svt_core::interchange_store;
-use svt_core::model::{validate_project_id, Project, DEFAULT_PROJECT_ID};
+use svt_core::model::{Project, DEFAULT_PROJECT_ID};
 use svt_core::store::{CozoStore, GraphStore};
 
 use crate::state::AppState;
@@ -26,22 +23,9 @@ use crate::state::AppState;
 #[derive(Parser, Debug)]
 #[command(name = "svt-server", version, about)]
 struct Args {
-    /// Path to a Rust project to analyze at startup.
-    #[arg(long)]
-    project: Option<PathBuf>,
-
-    /// Path to a design YAML/JSON file to import at startup.
-    #[arg(long)]
-    design: Option<PathBuf>,
-
     /// Path to a persistent store (SQLite-backed CozoDB).
-    /// If omitted, an in-memory store is used and data is lost on restart.
     #[arg(long)]
-    store: Option<PathBuf>,
-
-    /// Project name/ID to use for imported data.
-    #[arg(long, default_value = DEFAULT_PROJECT_ID)]
-    project_name: String,
+    store: PathBuf,
 
     /// Port to listen on.
     #[arg(long, default_value = "3000")]
@@ -63,30 +47,22 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
 
-    // Validate project name
-    validate_project_id(&args.project_name)
-        .map_err(|e| anyhow::anyhow!("invalid --project-name: {e}"))?;
+    // Open persistent store
+    let store_path = &args.store;
+    if let Some(parent) = store_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating store directory {}", parent.display()))?;
+    }
+    let mut store = CozoStore::new_persistent(store_path)?;
+    info!(path = %store_path.display(), "using persistent store");
 
-    // Create persistent or in-memory store
-    let mut store = if let Some(store_path) = &args.store {
-        if let Some(parent) = store_path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("creating store directory {}", parent.display()))?;
-        }
-        let s = CozoStore::new_persistent(store_path)?;
-        info!(path = %store_path.display(), "using persistent store");
-        s
-    } else {
-        CozoStore::new_in_memory()?
-    };
-
-    // Ensure the project exists
-    let project_id = &args.project_name;
+    // Ensure the default project exists
+    let project_id = DEFAULT_PROJECT_ID;
     if !store.project_exists(project_id)? {
         let now = chrono::Utc::now().to_rfc3339();
         store.create_project(&Project {
-            id: project_id.clone(),
-            name: project_id.clone(),
+            id: project_id.to_string(),
+            name: project_id.to_string(),
             created_at: now,
             description: None,
             metadata: None,
@@ -94,38 +70,9 @@ async fn main() -> anyhow::Result<()> {
         info!(project = %project_id, "created project");
     }
 
-    // If no store and no flags, require at least one input source
-    if args.store.is_none() && args.project.is_none() && args.design.is_none() {
-        anyhow::bail!("at least one of --store, --project, or --design is required");
-    }
-
-    // Import design if provided (layers on top of existing data)
-    if let Some(design_path) = &args.design {
-        let content = std::fs::read_to_string(design_path)
-            .with_context(|| format!("failed to read {}", design_path.display()))?;
-        let doc = interchange::parse_yaml(&content)
-            .with_context(|| format!("failed to parse {}", design_path.display()))?;
-        let version = interchange_store::load_into_store(&mut store, project_id, &doc)?;
-        info!(version, project = %project_id, path = %design_path.display(), "imported design");
-    }
-
-    // Analyze project if provided (layers on top of existing data)
-    if let Some(project_path) = &args.project {
-        let summary = analyze_project(&mut store, project_id, project_path, None)
-            .with_context(|| format!("failed to analyze {}", project_path.display()))?;
-        info!(
-            version = summary.version,
-            project = %project_id,
-            crates = summary.crates_analyzed,
-            nodes = summary.nodes_created,
-            edges = summary.edges_created,
-            "analyzed project"
-        );
-    }
-
     let state = Arc::new(AppState {
         store: std::sync::RwLock::new(store),
-        default_project: project_id.clone(),
+        default_project: project_id.to_string(),
     });
 
     let static_dir = std::path::PathBuf::from("web/dist");

@@ -19,15 +19,16 @@ use svt_core::store::{CozoStore, GraphStore};
 #[derive(Parser, Debug)]
 #[command(name = "svt", version, about)]
 struct Cli {
-    /// Store location (default: .svt/store)
-    #[arg(long, default_value = ".svt/store")]
-    store: PathBuf,
+    /// Project directory containing .svt/config.yaml (default: current directory).
+    #[arg(long, default_value = ".", global = true)]
+    project_dir: PathBuf,
 
-    /// Project name for multi-tenancy (default: "default").
-    #[arg(long, default_value = "default", global = true)]
-    project: String,
+    /// Directory containing plugin libraries (default: adjacent to svt binary).
+    /// Also settable via SVT_PLUGIN_DIR environment variable.
+    #[arg(long, global = true, env = "SVT_PLUGIN_DIR")]
+    plugin_dir: Option<PathBuf>,
 
-    /// Load external plugin(s) from shared library paths.
+    /// Load additional plugin(s) from shared library paths.
     #[arg(long = "plugin", global = true)]
     plugins: Vec<PathBuf>,
 
@@ -53,12 +54,53 @@ enum Commands {
     Push(PushArgs),
     /// Manage the graph store (info, compact, reset).
     Store(StoreArgs),
+    /// Initialize a new .svt project directory.
+    Init(InitArgs),
+}
+
+/// Resolved project configuration, combining config file and CLI overrides.
+#[allow(dead_code)] // Fields used by upcoming tasks (import merge, analyze sources)
+struct ResolvedConfig {
+    /// The project directory root.
+    project_dir: PathBuf,
+    /// Path to the CozoDB store.
+    store_path: PathBuf,
+    /// Project ID for multi-tenancy.
+    project_id: String,
+    /// Loaded project config (if .svt/config.yaml exists).
+    config: Option<svt_core::config::ProjectConfig>,
+}
+
+impl ResolvedConfig {
+    /// Resolve config from CLI flags and optional config file.
+    fn resolve(project_dir: &Path) -> Result<Self> {
+        let project_dir = project_dir
+            .canonicalize()
+            .unwrap_or_else(|_| project_dir.to_path_buf());
+        let store_path = project_dir.join(".svt").join("data").join("store");
+
+        let config = svt_core::config::ProjectConfig::load_from_project_dir(&project_dir)
+            .map_err(|e| anyhow::anyhow!("loading config: {e}"))?;
+
+        let project_id = config
+            .as_ref()
+            .map(|c| c.project.clone())
+            .unwrap_or_else(|| "default".to_string());
+
+        Ok(Self {
+            project_dir,
+            store_path,
+            project_id,
+            config,
+        })
+    }
 }
 
 #[derive(clap::Args, Debug)]
 struct ImportArgs {
-    /// Path to the YAML or JSON file to import.
-    file: PathBuf,
+    /// Import a specific file (overrides design files from config).
+    #[arg(long)]
+    file: Option<PathBuf>,
 }
 
 #[derive(clap::Args, Debug)]
@@ -83,9 +125,8 @@ struct CheckArgs {
 
 #[derive(clap::Args, Debug)]
 struct AnalyzeArgs {
-    /// Path to the project root (default: current directory).
-    #[arg(default_value = ".")]
-    path: PathBuf,
+    /// Path to analyze (overrides config sources). If omitted, reads from config or defaults to ".".
+    path: Option<PathBuf>,
 
     /// Optional git commit ref to tag the snapshot.
     #[arg(long)]
@@ -128,12 +169,15 @@ struct DiffArgs {
 
 #[derive(clap::Args, Debug)]
 struct PushArgs {
-    /// Remote server URL (e.g., http://localhost:3000).
+    /// Remote server URL (overrides config server.url).
     #[arg(long)]
-    server: String,
-    /// Snapshot version to push (default: latest analysis).
+    server: Option<String>,
+    /// Snapshot version to push (default: latest of the selected kind).
     #[arg(long)]
     version: Option<u64>,
+    /// What to push: design, analysis, or all (default: analysis).
+    #[arg(long, default_value = "analysis")]
+    kind: String,
 }
 
 /// Arguments for the `svt plugin` subcommand.
@@ -161,9 +205,6 @@ enum PluginCommands {
 struct PluginInstallArgs {
     /// Directory containing svt-plugin.toml + compiled library, or path to a manifest file.
     source: PathBuf,
-    /// Install to ~/.svt/plugins/ instead of .svt/plugins/.
-    #[arg(long)]
-    global: bool,
     /// Overwrite existing plugin with the same name.
     #[arg(long)]
     force: bool,
@@ -174,9 +215,6 @@ struct PluginInstallArgs {
 struct PluginRemoveArgs {
     /// Plugin name to remove (matches <name>.svt-plugin.toml).
     name: String,
-    /// Remove from ~/.svt/plugins/ instead of .svt/plugins/.
-    #[arg(long)]
-    global: bool,
 }
 
 /// Arguments for `svt plugin info`.
@@ -184,6 +222,14 @@ struct PluginRemoveArgs {
 struct PluginInfoArgs {
     /// Directory containing svt-plugin.toml, or path to a .toml manifest file.
     path: PathBuf,
+}
+
+/// Arguments for `svt init`.
+#[derive(clap::Args, Debug)]
+struct InitArgs {
+    /// Project name (default: derived from git remote or directory name).
+    #[arg(long)]
+    project: Option<String>,
 }
 
 /// Arguments for the `svt store` subcommand.
@@ -262,7 +308,6 @@ fn ensure_project(store: &mut CozoStore, project_id: &str) -> Result<()> {
 
 /// Attempt to derive a project name from the git remote origin URL,
 /// falling back to the current directory name.
-#[allow(dead_code)]
 fn derive_project_name() -> Option<String> {
     // Try git remote origin URL
     let output = std::process::Command::new("git")
@@ -290,11 +335,12 @@ fn derive_project_name() -> Option<String> {
         .map(|s| s.to_lowercase().replace(' ', "-"))
 }
 
-fn run_import(store_path: &Path, project_id: &str, args: &ImportArgs) -> Result<()> {
-    let content = std::fs::read_to_string(&args.file)
-        .with_context(|| format!("reading {}", args.file.display()))?;
+/// Parse a single design file into an interchange document.
+fn parse_design_file(file: &Path) -> Result<interchange::InterchangeDocument> {
+    let content =
+        std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
 
-    let ext = args.file.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
 
     let doc = match ext {
         "yaml" | "yml" => {
@@ -304,15 +350,56 @@ fn run_import(store_path: &Path, project_id: &str, args: &ImportArgs) -> Result<
         _ => bail!("Unsupported file format: .{ext}. Use .yaml, .yml, or .json"),
     };
 
-    // Validate
     let warnings = interchange::validate_document(&doc).map_err(|e| anyhow::anyhow!("{}", e))?;
     for w in &warnings {
         eprintln!("  WARN  {}: {}", w.path, w.message);
     }
 
+    Ok(doc)
+}
+
+fn run_import(
+    store_path: &Path,
+    project_id: &str,
+    args: &ImportArgs,
+    resolved: &ResolvedConfig,
+) -> Result<()> {
+    // Determine which files to import
+    let files: Vec<PathBuf> = if let Some(ref file) = args.file {
+        vec![file.clone()]
+    } else if let Some(ref config) = resolved.config {
+        if config.design.is_empty() {
+            bail!("No design files specified. Use --file or add design files to .svt/config.yaml");
+        }
+        // Resolve paths relative to project dir
+        config
+            .design
+            .iter()
+            .map(|p| resolved.project_dir.join(p))
+            .collect()
+    } else {
+        bail!("No design files specified. Use --file or create .svt/config.yaml with design files");
+    };
+
+    // Validate all files exist before importing
+    for file in &files {
+        if !file.exists() {
+            bail!("Design file not found: {}", file.display());
+        }
+    }
+
+    // Parse all files
+    let mut merged_doc = parse_design_file(&files[0])?;
+    for file in &files[1..] {
+        let doc = parse_design_file(file)?;
+        merged_doc.nodes.extend(doc.nodes);
+        merged_doc.edges.extend(doc.edges);
+        merged_doc.constraints.extend(doc.constraints);
+    }
+
     let mut store = open_or_create_store(store_path)?;
     ensure_project(&mut store, project_id)?;
-    let version = interchange_store::load_into_store(&mut store, project_id, &doc)
+    let version = interchange_store::load_into_store(&mut store, project_id, &merged_doc)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     let node_count = store
@@ -328,7 +415,15 @@ fn run_import(store_path: &Path, project_id: &str, args: &ImportArgs) -> Result<
         .map_err(|e| anyhow::anyhow!("{}", e))?
         .len();
 
-    println!("Imported {} as version {}", args.file.display(), version);
+    if files.len() == 1 {
+        println!("Imported {} as version {}", files[0].display(), version);
+    } else {
+        println!(
+            "Imported {} design files as version {}",
+            files.len(),
+            version
+        );
+    }
     println!(
         "  {} nodes, {} edges, {} constraints",
         node_count, edge_count, constraint_count
@@ -501,14 +596,25 @@ fn run_analyze(
     project_id: &str,
     args: &AnalyzeArgs,
     loader: &plugin::PluginLoader,
+    resolved: &ResolvedConfig,
 ) -> Result<()> {
+    // Resolve analyze path: CLI arg > config sources > default "."
+    let analyze_path = if let Some(ref path) = args.path {
+        path.clone()
+    } else if let Some(ref config) = resolved.config {
+        // Use the first source path from config, resolved relative to project dir
+        resolved.project_dir.join(&config.sources[0].path)
+    } else {
+        PathBuf::from(".")
+    };
+
     let mut store = open_or_create_store(store_path)?;
     ensure_project(&mut store, project_id)?;
 
     let commit_ref = args
         .commit_ref
         .clone()
-        .or_else(|| detect_git_head(&args.path));
+        .or_else(|| detect_git_head(&analyze_path));
 
     let mut registry = svt_analyzer::orchestrator::OrchestratorRegistry::with_defaults();
     loader.register_language_parsers(&mut registry);
@@ -521,7 +627,7 @@ fn run_analyze(
         svt_analyzer::analyze_project_incremental_with_registry(
             &mut store,
             project_id,
-            &args.path,
+            &analyze_path,
             commit_ref.as_deref(),
             previous,
             registry,
@@ -531,14 +637,14 @@ fn run_analyze(
         svt_analyzer::analyze_project_with_registry(
             &mut store,
             project_id,
-            &args.path,
+            &analyze_path,
             commit_ref.as_deref(),
             registry,
         )
         .map_err(|e| anyhow::anyhow!("{}", e))?
     };
 
-    println!("Analyzed {}\n", args.path.display());
+    println!("Analyzed {}\n", analyze_path.display());
     println!("  Created analysis snapshot v{}", summary.version);
     if let Some(ref cr) = commit_ref {
         println!("    commit: {}", cr);
@@ -707,15 +813,17 @@ fn run_diff(store_path: &Path, args: &DiffArgs) -> Result<()> {
     Ok(())
 }
 
-/// Build a [`PluginLoader`](plugin::PluginLoader) from CLI flags and convention directories.
+/// Build a [`PluginLoader`](plugin::PluginLoader) from CLI flags and the plugins directory.
 ///
-/// Plugins are loaded from three sources in order:
+/// Plugins are loaded from two sources in order:
 /// 1. Paths explicitly passed via `--plugin` flags.
-/// 2. The project-local plugin directory (`.svt/plugins/`).
-/// 3. The user-global plugin directory (`~/.svt/plugins/`).
+/// 2. The plugins directory (from `--plugin-dir`, `SVT_PLUGIN_DIR`, or binary-adjacent).
 ///
 /// Load failures are printed as warnings to stderr but do not abort execution.
-fn build_plugin_loader(plugin_paths: &[PathBuf]) -> plugin::PluginLoader {
+fn build_plugin_loader(
+    plugin_paths: &[PathBuf],
+    plugin_dir_override: Option<&Path>,
+) -> plugin::PluginLoader {
     let mut loader = plugin::PluginLoader::new();
 
     // 1. CLI-specified plugins
@@ -725,16 +833,12 @@ fn build_plugin_loader(plugin_paths: &[PathBuf]) -> plugin::PluginLoader {
         }
     }
 
-    // 2. Project-local plugins (.svt/plugins/)
-    let local_dir = PathBuf::from(".svt/plugins");
-    for e in loader.scan_directory_with_source(&local_dir, plugin::PluginSource::ProjectLocal) {
-        eprintln!("  WARN  {e}");
-    }
-
-    // 3. User-global plugins (~/.svt/plugins/)
-    if let Some(home) = home_dir() {
-        let global_dir = home.join(".svt").join("plugins");
-        for e in loader.scan_directory_with_source(&global_dir, plugin::PluginSource::UserGlobal) {
+    // 2. Plugins directory (override or binary-adjacent default)
+    let plugins_dir = plugin_dir_override
+        .map(PathBuf::from)
+        .or_else(binary_adjacent_plugins_dir);
+    if let Some(dir) = plugins_dir {
+        for e in loader.scan_directory_with_source(&dir, plugin::PluginSource::BinaryAdjacent) {
             eprintln!("  WARN  {e}");
         }
     }
@@ -742,9 +846,12 @@ fn build_plugin_loader(plugin_paths: &[PathBuf]) -> plugin::PluginLoader {
     loader
 }
 
-/// Get the user's home directory from the `HOME` environment variable.
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
+/// Get the `plugins/` directory adjacent to the currently running binary.
+fn binary_adjacent_plugins_dir() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()?
+        .parent()
+        .map(|dir| dir.join("plugins"))
 }
 
 /// List all loaded plugins and their contributions to stdout.
@@ -924,19 +1031,8 @@ fn run_store_reset(store_path: &Path, args: &ResetArgs) -> Result<()> {
     Ok(())
 }
 
-fn run_push(store_path: &Path, project_id: &str, args: &PushArgs) -> Result<()> {
-    use svt_core::model::SnapshotKind;
-
-    let store = open_store(store_path)?;
-
-    let version = match args.version {
-        Some(v) => v,
-        None => store
-            .latest_version(project_id, SnapshotKind::Analysis)
-            .map_err(|e| anyhow::anyhow!("{}", e))?
-            .ok_or_else(|| anyhow::anyhow!("No analysis versions found"))?,
-    };
-
+/// Push a single snapshot version to a remote server.
+fn push_version(store: &CozoStore, project_id: &str, version: u64, server_url: &str) -> Result<()> {
     let nodes = store
         .get_all_nodes(version)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -964,13 +1060,13 @@ fn run_push(store_path: &Path, project_id: &str, args: &PushArgs) -> Result<()> 
 
     let url = format!(
         "{}/api/projects/{}/push",
-        args.server.trim_end_matches('/'),
+        server_url.trim_end_matches('/'),
         project_id
     );
 
     match ureq::post(&url).send_json(&payload) {
         Ok(_resp) => {
-            println!("Pushed v{} to {}", version, url);
+            println!("Pushed v{} ({:?}) to {}", version, snapshot.kind, url);
             Ok(())
         }
         Err(ureq::Error::Status(code, resp)) => {
@@ -983,35 +1079,173 @@ fn run_push(store_path: &Path, project_id: &str, args: &PushArgs) -> Result<()> 
     }
 }
 
+fn run_push(
+    store_path: &Path,
+    project_id: &str,
+    args: &PushArgs,
+    resolved: &ResolvedConfig,
+) -> Result<()> {
+    use svt_core::model::SnapshotKind;
+
+    // Resolve server URL from flag or config
+    let server_url = args
+        .server
+        .clone()
+        .or_else(|| {
+            resolved
+                .config
+                .as_ref()
+                .and_then(|c| c.server.as_ref())
+                .map(|s| s.url.clone())
+        })
+        .ok_or_else(|| {
+            anyhow::anyhow!("No server URL. Use --server or set server.url in .svt/config.yaml")
+        })?;
+
+    let store = open_store(store_path)?;
+
+    match args.kind.as_str() {
+        "design" => {
+            let version = match args.version {
+                Some(v) => v,
+                None => store
+                    .latest_version(project_id, SnapshotKind::Design)
+                    .map_err(|e| anyhow::anyhow!("{}", e))?
+                    .ok_or_else(|| anyhow::anyhow!("No design versions found"))?,
+            };
+            push_version(&store, project_id, version, &server_url)?;
+        }
+        "analysis" => {
+            let version = match args.version {
+                Some(v) => v,
+                None => store
+                    .latest_version(project_id, SnapshotKind::Analysis)
+                    .map_err(|e| anyhow::anyhow!("{}", e))?
+                    .ok_or_else(|| anyhow::anyhow!("No analysis versions found"))?,
+            };
+            push_version(&store, project_id, version, &server_url)?;
+        }
+        "all" => {
+            if let Some(design_v) = store
+                .latest_version(project_id, SnapshotKind::Design)
+                .map_err(|e| anyhow::anyhow!("{}", e))?
+            {
+                push_version(&store, project_id, design_v, &server_url)?;
+            }
+            if let Some(analysis_v) = store
+                .latest_version(project_id, SnapshotKind::Analysis)
+                .map_err(|e| anyhow::anyhow!("{}", e))?
+            {
+                push_version(&store, project_id, analysis_v, &server_url)?;
+            }
+        }
+        other => bail!(
+            "Unknown push kind: '{}'. Use design, analysis, or all",
+            other
+        ),
+    }
+
+    Ok(())
+}
+
+fn run_init(args: &InitArgs) -> Result<()> {
+    use svt_core::config::ProjectConfig;
+
+    let project_name = match &args.project {
+        Some(name) => name.clone(),
+        None => derive_project_name().unwrap_or_else(|| "my-project".to_string()),
+    };
+
+    // Create .svt/ and .svt/data/ directories
+    std::fs::create_dir_all(".svt/data").context("creating .svt/data directory")?;
+
+    // Write .svt/config.yaml
+    let config_path = PathBuf::from(".svt/config.yaml");
+    if config_path.exists() {
+        bail!(".svt/config.yaml already exists. Aborting.");
+    }
+
+    let config = ProjectConfig {
+        project: project_name.clone(),
+        name: None,
+        description: None,
+        design: vec![],
+        sources: vec![],
+        server: None,
+    };
+
+    let yaml = serde_yaml::to_string(&config).context("serializing config")?;
+    std::fs::write(&config_path, &yaml).context("writing .svt/config.yaml")?;
+
+    // Append .svt/data to .gitignore if not already present
+    let gitignore_path = PathBuf::from(".gitignore");
+    let needs_append = if gitignore_path.exists() {
+        let content = std::fs::read_to_string(&gitignore_path).context("reading .gitignore")?;
+        !content.lines().any(|line| line.trim() == ".svt/data")
+    } else {
+        true
+    };
+
+    if needs_append {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&gitignore_path)
+            .context("opening .gitignore")?;
+        writeln!(file, ".svt/data")?;
+    }
+
+    println!("Initialized project '{}' in .svt/", project_name);
+    println!("  Created .svt/config.yaml");
+    println!("  Created .svt/data/");
+
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let loader = build_plugin_loader(&cli.plugins);
+    let loader = build_plugin_loader(&cli.plugins, cli.plugin_dir.as_deref());
+
+    // Resolve project config (config file + defaults)
+    let resolved = ResolvedConfig::resolve(&cli.project_dir)?;
 
     match &cli.command {
-        Commands::Import(args) => run_import(&cli.store, &cli.project, args),
-        Commands::Check(args) => run_check(&cli.store, &cli.project, args, &loader),
-        Commands::Analyze(args) => run_analyze(&cli.store, &cli.project, args, &loader),
-        Commands::Export(args) => run_export(&cli.store, &cli.project, args, &loader),
-        Commands::Diff(args) => run_diff(&cli.store, args),
-        Commands::Push(args) => run_push(&cli.store, &cli.project, args),
+        Commands::Import(args) => {
+            run_import(&resolved.store_path, &resolved.project_id, args, &resolved)
+        }
+        Commands::Check(args) => {
+            run_check(&resolved.store_path, &resolved.project_id, args, &loader)
+        }
+        Commands::Analyze(args) => run_analyze(
+            &resolved.store_path,
+            &resolved.project_id,
+            args,
+            &loader,
+            &resolved,
+        ),
+        Commands::Export(args) => {
+            run_export(&resolved.store_path, &resolved.project_id, args, &loader)
+        }
+        Commands::Diff(args) => run_diff(&resolved.store_path, args),
+        Commands::Push(args) => {
+            run_push(&resolved.store_path, &resolved.project_id, args, &resolved)
+        }
         Commands::Plugin(args) => match &args.command {
             PluginCommands::List => run_plugin_list(&loader),
-            PluginCommands::Install(install_args) => plugin_commands::run_install(
-                &install_args.source,
-                install_args.global,
-                install_args.force,
-            ),
-            PluginCommands::Remove(remove_args) => {
-                plugin_commands::run_remove(&remove_args.name, remove_args.global)
+            PluginCommands::Install(install_args) => {
+                plugin_commands::run_install(&install_args.source, install_args.force)
             }
+            PluginCommands::Remove(remove_args) => plugin_commands::run_remove(&remove_args.name),
             PluginCommands::Info(info_args) => plugin_commands::run_info(&info_args.path),
         },
         Commands::Store(args) => match &args.command {
-            StoreCommands::Info => run_store_info(&cli.store),
+            StoreCommands::Info => run_store_info(&resolved.store_path),
             StoreCommands::Compact(compact_args) => {
-                run_store_compact(&cli.store, &cli.project, compact_args)
+                run_store_compact(&resolved.store_path, &resolved.project_id, compact_args)
             }
-            StoreCommands::Reset(reset_args) => run_store_reset(&cli.store, reset_args),
+            StoreCommands::Reset(reset_args) => run_store_reset(&resolved.store_path, reset_args),
         },
+        Commands::Init(args) => run_init(args),
     }
 }
