@@ -856,3 +856,82 @@ fn analyze_without_path_uses_default() {
         .success()
         .stdout(predicate::str::contains("Analyzed"));
 }
+
+#[test]
+fn analyze_with_config_empty_sources_does_not_panic() {
+    let dir = TempDir::new().unwrap();
+
+    // Config exists but sources list is empty — should fall back to project dir, not panic
+    let svt_dir = dir.path().join(".svt");
+    fs::create_dir_all(svt_dir.join("data")).unwrap();
+    fs::write(
+        svt_dir.join("config.yaml"),
+        "project: test-proj\nsources: []\n",
+    )
+    .unwrap();
+
+    svt_in(&dir)
+        .arg("analyze")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Analyzed"));
+}
+
+#[test]
+fn analyze_with_config_source_path_is_used() {
+    let dir = TempDir::new().unwrap();
+
+    // Create a subdirectory as the source
+    let src_dir = dir.path().join("src");
+    fs::create_dir_all(&src_dir).unwrap();
+
+    let svt_dir = dir.path().join(".svt");
+    fs::create_dir_all(svt_dir.join("data")).unwrap();
+    fs::write(
+        svt_dir.join("config.yaml"),
+        "project: test-proj\nsources:\n  - path: src\n",
+    )
+    .unwrap();
+
+    svt_in(&dir)
+        .arg("analyze")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Analyzed"));
+}
+
+#[test]
+fn import_with_config_no_design_files_gives_error() {
+    let dir = TempDir::new().unwrap();
+
+    // Config exists but has no design files listed
+    write_config(&dir, "test-proj", &[]);
+
+    svt_in(&dir)
+        .arg("import")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("No design files"));
+}
+
+#[test]
+fn push_with_no_server_anywhere_gives_error() {
+    let dir = TempDir::new().unwrap();
+    write_config(&dir, "test-proj", &[]);
+
+    // Import something first so there's data to push
+    let design_path = write_design_yaml(&dir);
+    svt_in(&dir)
+        .arg("import")
+        .arg("--file")
+        .arg(&design_path)
+        .assert()
+        .success();
+
+    // Push with no --server flag and no server in config
+    svt_in(&dir)
+        .arg("push")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("No server URL"));
+}
