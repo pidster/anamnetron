@@ -58,7 +58,8 @@ pub enum ConfigError {
     Validation(String),
 }
 
-fn default_sources() -> Vec<SourceConfig> {
+/// Default source configuration: analyze the project root directory.
+pub fn default_sources() -> Vec<SourceConfig> {
     vec![SourceConfig {
         path: PathBuf::from("."),
         exclude: vec![],

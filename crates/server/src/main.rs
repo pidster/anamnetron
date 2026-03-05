@@ -14,8 +14,8 @@ use clap::Parser;
 use tokio::net::TcpListener;
 use tracing::info;
 
-use svt_core::model::{Project, DEFAULT_PROJECT_ID};
-use svt_core::store::{CozoStore, GraphStore};
+use svt_core::model::DEFAULT_PROJECT_ID;
+use svt_core::store::CozoStore;
 
 use crate::state::AppState;
 
@@ -53,26 +53,12 @@ async fn main() -> anyhow::Result<()> {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating store directory {}", parent.display()))?;
     }
-    let mut store = CozoStore::new_persistent(store_path)?;
+    let store = CozoStore::new_persistent(store_path)?;
     info!(path = %store_path.display(), "using persistent store");
-
-    // Ensure the default project exists
-    let project_id = DEFAULT_PROJECT_ID;
-    if !store.project_exists(project_id)? {
-        let now = chrono::Utc::now().to_rfc3339();
-        store.create_project(&Project {
-            id: project_id.to_string(),
-            name: project_id.to_string(),
-            created_at: now,
-            description: None,
-            metadata: None,
-        })?;
-        info!(project = %project_id, "created project");
-    }
 
     let state = Arc::new(AppState {
         store: std::sync::RwLock::new(store),
-        default_project: project_id.to_string(),
+        default_project: DEFAULT_PROJECT_ID.to_string(),
     });
 
     let static_dir = std::path::PathBuf::from("web/dist");

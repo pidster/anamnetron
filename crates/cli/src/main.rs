@@ -602,8 +602,11 @@ fn run_analyze(
     let analyze_path = if let Some(ref path) = args.path {
         path.clone()
     } else if let Some(ref config) = resolved.config {
-        // Use the first source path from config, resolved relative to project dir
-        resolved.project_dir.join(&config.sources[0].path)
+        if let Some(source) = config.sources.first() {
+            resolved.project_dir.join(&source.path)
+        } else {
+            resolved.project_dir.clone()
+        }
     } else {
         PathBuf::from(".")
     };
@@ -1170,7 +1173,7 @@ fn run_init(args: &InitArgs) -> Result<()> {
         name: None,
         description: None,
         design: vec![],
-        sources: vec![],
+        sources: svt_core::config::default_sources(),
         server: None,
     };
 
