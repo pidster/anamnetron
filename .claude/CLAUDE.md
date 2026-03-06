@@ -71,7 +71,7 @@ cargo llvm-cov --html    # Code coverage (HTML report in target/llvm-cov/html/)
 - `clippy` and `rustfmt` enforced (pre-commit hooks)
 - Public APIs require documentation (`#[warn(missing_docs)]`)
 - Property-based tests for graph operations (proptest)
-- All layers target high test coverage
+- **>95% region coverage is mandatory** for new code (`cargo llvm-cov`)
 
 ## Conventions
 

@@ -1,6 +1,7 @@
 # Testing Standards
 
-- All layers target high test coverage — thoroughness is preferred over speed of delivery
+- **>95% region coverage is mandatory** — new code must maintain or improve coverage (check with `cargo llvm-cov`)
+- Thoroughness is preferred over speed of delivery
 - Unit tests live alongside the code in `#[cfg(test)]` modules
 - Integration tests live in `tests/` directories within each crate
 - Use property-based testing (proptest) for graph operations, serialization round-trips, and conformance logic
