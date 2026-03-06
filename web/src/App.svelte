@@ -608,6 +608,11 @@
   <nav class="toolbar">
     <div class="toolbar-left">
       <span class="logo">Anamnetron</span>
+      <ProjectSelector
+        projects={graphStore.projects}
+        selectedProject={graphStore.selectedProject}
+        onselect={selectProject}
+      />
       {#if graphStore.snapshots.length > 1 && graphStore.selectedVersion}
         <select
           bind:value={compareVersion}
@@ -704,11 +709,6 @@
         >All</button>
       </span>
       <SearchBar onsearch={handleSearch} />
-      <ProjectSelector
-        projects={graphStore.projects}
-        selectedProject={graphStore.selectedProject}
-        onselect={selectProject}
-      />
       <SnapshotSelector
         snapshots={graphStore.snapshots}
         selectedVersion={graphStore.selectedVersion}
