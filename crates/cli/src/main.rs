@@ -1152,8 +1152,6 @@ fn run_push(
 }
 
 fn run_init(args: &InitArgs) -> Result<()> {
-    use svt_core::config::ProjectConfig;
-
     let project_name = match &args.project {
         Some(name) => name.clone(),
         None => derive_project_name().unwrap_or_else(|| "my-project".to_string()),
@@ -1168,16 +1166,39 @@ fn run_init(args: &InitArgs) -> Result<()> {
         bail!(".svt/config.yaml already exists. Aborting.");
     }
 
-    let config = ProjectConfig {
-        project: project_name.clone(),
-        name: None,
-        description: None,
-        design: vec![],
-        sources: svt_core::config::default_sources(),
-        server: None,
+    // Check for common design file locations
+    let design_file = ["design/architecture.yaml", "design/architecture.yml"]
+        .iter()
+        .find(|p| PathBuf::from(p).exists());
+
+    let design_section = if let Some(path) = design_file {
+        format!("design:\n  - {path}")
+    } else {
+        "# design:\n#   - design/architecture.yaml".to_string()
     };
 
-    let yaml = serde_yaml::to_string(&config).context("serializing config")?;
+    let yaml = format!(
+        "\
+# SVT project configuration
+project: {project_name}
+# name: {project_name}
+# description: A brief description of the project
+
+# Design model files (relative paths, .yaml/.yml/.json)
+{design_section}
+
+# Source directories to analyze
+sources:
+  - path: .
+#   exclude:
+#     - vendor
+#     - node_modules
+
+# Remote server (uncomment to enable push)
+# server:
+#   url: http://localhost:3000
+"
+    );
     std::fs::write(&config_path, &yaml).context("writing .svt/config.yaml")?;
 
     // Append .svt/data to .gitignore if not already present
