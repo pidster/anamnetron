@@ -14,6 +14,7 @@ pub mod store;
 
 use std::sync::Arc;
 
+use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
 use axum::Router;
 use tower_http::cors::CorsLayer;
@@ -34,8 +35,9 @@ pub fn api_router(state: Arc<AppState>) -> Router {
             "/api/projects/{project}",
             get(projects::get_project_handler),
         )
-        // Project-scoped push
+        // Project-scoped push (50 MB limit for large analysis snapshots)
         .route("/api/projects/{project}/push", post(push::push_snapshot))
+        .layer(DefaultBodyLimit::max(50 * 1024 * 1024))
         // Project-scoped snapshots
         .route(
             "/api/projects/{project}/snapshots",
