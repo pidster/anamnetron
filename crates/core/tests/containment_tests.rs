@@ -245,6 +245,135 @@ fn five_level_hierarchy_descendants_at_each_level() {
     );
 }
 
+#[test]
+fn query_descendants_with_sub_kind_filter_only() {
+    let (store, v) = setup_hierarchy();
+    let filter = NodeFilter {
+        sub_kind: Some("function".to_string()),
+        ..Default::default()
+    };
+    let descendants = store
+        .query_descendants(v, &"sys".to_string(), Some(&filter))
+        .unwrap();
+    assert_eq!(descendants.len(), 1);
+    assert_eq!(descendants[0].id, "unit1");
+    assert_eq!(descendants[0].sub_kind, "function");
+}
+
+#[test]
+fn query_descendants_with_language_filter_only() {
+    let mut store = CozoStore::new_in_memory().unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+        .unwrap();
+
+    // Root node
+    store
+        .add_node(
+            v,
+            &helpers::make_node("root", "/app", NodeKind::System, "workspace"),
+        )
+        .unwrap();
+
+    // Rust child
+    let mut rust_node = helpers::make_node("rs1", "/app/rs1", NodeKind::Unit, "function");
+    rust_node.language = Some("rust".to_string());
+    store.add_node(v, &rust_node).unwrap();
+
+    // Python child
+    let mut py_node = helpers::make_node("py1", "/app/py1", NodeKind::Unit, "function");
+    py_node.language = Some("python".to_string());
+    store.add_node(v, &py_node).unwrap();
+
+    store
+        .add_edge(v, &helpers::make_contains("c1", "root", "rs1"))
+        .unwrap();
+    store
+        .add_edge(v, &helpers::make_contains("c2", "root", "py1"))
+        .unwrap();
+
+    let filter = NodeFilter {
+        language: Some("rust".to_string()),
+        ..Default::default()
+    };
+    let descendants = store
+        .query_descendants(v, &"root".to_string(), Some(&filter))
+        .unwrap();
+    assert_eq!(descendants.len(), 1);
+    assert_eq!(descendants[0].id, "rs1");
+}
+
+#[test]
+fn query_descendants_with_all_filters_combined() {
+    let mut store = CozoStore::new_in_memory().unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+        .unwrap();
+
+    store
+        .add_node(
+            v,
+            &helpers::make_node("root", "/app", NodeKind::System, "workspace"),
+        )
+        .unwrap();
+
+    // Node matching all filters
+    let mut matching = helpers::make_node("match", "/app/match", NodeKind::Unit, "function");
+    matching.language = Some("rust".to_string());
+    store.add_node(v, &matching).unwrap();
+
+    // Node matching kind only
+    let mut wrong_sub = helpers::make_node("wrong_sub", "/app/wrong_sub", NodeKind::Unit, "struct");
+    wrong_sub.language = Some("rust".to_string());
+    store.add_node(v, &wrong_sub).unwrap();
+
+    // Node matching kind+sub_kind but wrong language
+    let mut wrong_lang =
+        helpers::make_node("wrong_lang", "/app/wrong_lang", NodeKind::Unit, "function");
+    wrong_lang.language = Some("python".to_string());
+    store.add_node(v, &wrong_lang).unwrap();
+
+    store
+        .add_edge(v, &helpers::make_contains("c1", "root", "match"))
+        .unwrap();
+    store
+        .add_edge(v, &helpers::make_contains("c2", "root", "wrong_sub"))
+        .unwrap();
+    store
+        .add_edge(v, &helpers::make_contains("c3", "root", "wrong_lang"))
+        .unwrap();
+
+    let filter = NodeFilter {
+        kind: Some(NodeKind::Unit),
+        sub_kind: Some("function".to_string()),
+        language: Some("rust".to_string()),
+    };
+    let descendants = store
+        .query_descendants(v, &"root".to_string(), Some(&filter))
+        .unwrap();
+    assert_eq!(descendants.len(), 1);
+    assert_eq!(descendants[0].id, "match");
+}
+
+#[test]
+fn query_descendants_with_filter_matching_nothing_returns_empty() {
+    let (store, v) = setup_hierarchy();
+    let filter = NodeFilter {
+        kind: Some(NodeKind::System),
+        sub_kind: Some("nonexistent".to_string()),
+        ..Default::default()
+    };
+    let descendants = store
+        .query_descendants(v, &"sys".to_string(), Some(&filter))
+        .unwrap();
+    assert!(
+        descendants.is_empty(),
+        "expected empty result for non-matching filter"
+    );
+}
+
 proptest! {
     #[test]
     fn ancestor_chain_has_no_duplicates(depth in 2usize..8) {

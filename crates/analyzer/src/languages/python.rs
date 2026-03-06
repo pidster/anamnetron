@@ -1217,4 +1217,339 @@ def main():
             calls
         );
     }
+
+    // --- Additional coverage tests ---
+
+    #[test]
+    fn empty_file_no_warnings() {
+        let result = parse_py_source("");
+        assert!(result.items.is_empty());
+        assert!(result.warnings.is_empty());
+    }
+
+    #[test]
+    fn file_with_only_imports_produces_only_relations() {
+        let result = parse_py_source("import os\nimport sys\nfrom pathlib import Path\n");
+        assert!(
+            result.items.is_empty(),
+            "import-only file should have no items"
+        );
+        let imports: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Depends)
+            .collect();
+        assert!(
+            imports.len() >= 3,
+            "should have at least 3 import dependencies"
+        );
+    }
+
+    #[test]
+    fn decorated_class_extracted() {
+        let result = parse_py_source(
+            r#"from dataclasses import dataclass
+
+@dataclass
+class Config:
+    host: str
+    port: int
+"#,
+        );
+        let classes: Vec<_> = result
+            .items
+            .iter()
+            .filter(|i| i.sub_kind == "class")
+            .collect();
+        assert_eq!(classes.len(), 1);
+        assert!(classes[0].qualified_name.contains("Config"));
+    }
+
+    #[test]
+    fn decorated_method_in_class_extracted() {
+        let result = parse_py_source(
+            r#"class Service:
+    @staticmethod
+    def create():
+        pass
+
+    @classmethod
+    def from_config(cls):
+        pass
+"#,
+        );
+        let methods: Vec<_> = result
+            .items
+            .iter()
+            .filter(|i| i.sub_kind == "method")
+            .collect();
+        assert_eq!(methods.len(), 2, "should extract both decorated methods");
+    }
+
+    #[test]
+    fn multiple_classes_extracted() {
+        let result = parse_py_source(
+            r#"class Foo:
+    pass
+
+class Bar:
+    pass
+
+class Baz:
+    pass
+"#,
+        );
+        let classes: Vec<_> = result
+            .items
+            .iter()
+            .filter(|i| i.sub_kind == "class")
+            .collect();
+        assert_eq!(classes.len(), 3);
+    }
+
+    #[test]
+    fn from_import_with_multiple_names() {
+        let result = parse_py_source("from os.path import join, exists, isdir\n");
+        let imports: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Depends)
+            .collect();
+        assert!(!imports.is_empty(), "from import should produce dependency");
+        assert!(imports
+            .iter()
+            .any(|r| r.target_qualified_name == "os::path"));
+    }
+
+    #[test]
+    fn dotted_import_statement() {
+        let result = parse_py_source("import os.path\n");
+        let imports: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Depends)
+            .collect();
+        assert!(imports
+            .iter()
+            .any(|r| r.target_qualified_name == "os::path"));
+    }
+
+    #[test]
+    fn private_methods_skipped_except_init() {
+        let result = parse_py_source(
+            r#"class MyClass:
+    def __init__(self):
+        pass
+    def _private(self):
+        pass
+    def __dunder(self):
+        pass
+    def public(self):
+        pass
+"#,
+        );
+        let methods: Vec<_> = result
+            .items
+            .iter()
+            .filter(|i| i.sub_kind == "method")
+            .collect();
+        // __init__ should be kept, _private and __dunder should be skipped
+        assert_eq!(
+            methods.len(),
+            2,
+            "should keep __init__ and public, skip _private and __dunder"
+        );
+        let names: Vec<_> = methods.iter().map(|m| m.qualified_name.as_str()).collect();
+        assert!(names.iter().any(|n| n.contains("__init__")));
+        assert!(names.iter().any(|n| n.contains("public")));
+    }
+
+    #[test]
+    fn function_metadata_includes_loc() {
+        let result = parse_py_source(
+            r#"def multi_line():
+    x = 1
+    y = 2
+    z = x + y
+    return z
+"#,
+        );
+        let func = result
+            .items
+            .iter()
+            .find(|i| i.sub_kind == "function")
+            .expect("should have a function");
+        let loc = func.metadata.as_ref().unwrap()["loc"].as_u64().unwrap();
+        assert!(
+            loc >= 4,
+            "multi-line function should have loc >= 4, got {loc}"
+        );
+    }
+
+    #[test]
+    fn class_metadata_includes_loc() {
+        let result = parse_py_source(
+            r#"class Big:
+    x = 1
+    y = 2
+    def method(self):
+        pass
+"#,
+        );
+        let cls = result
+            .items
+            .iter()
+            .find(|i| i.sub_kind == "class")
+            .expect("should have a class");
+        let loc = cls.metadata.as_ref().unwrap()["loc"].as_u64().unwrap();
+        assert!(loc >= 4, "multi-line class should have loc >= 4, got {loc}");
+    }
+
+    #[test]
+    fn descriptor_has_correct_fields() {
+        let desc = PythonAnalyzer::descriptor();
+        assert_eq!(desc.language_id, "python");
+        assert!(desc.manifest_files.contains(&"pyproject.toml".to_string()));
+        assert!(desc.manifest_files.contains(&"setup.py".to_string()));
+        assert!(desc.source_extensions.contains(&".py".to_string()));
+        assert!(desc.skip_directories.contains(&"__pycache__".to_string()));
+        assert_eq!(desc.top_level_kind, NodeKind::Service);
+        assert_eq!(desc.top_level_sub_kind, "package");
+    }
+
+    #[test]
+    fn default_trait_creates_analyzer() {
+        let analyzer = PythonAnalyzer::default();
+        assert_eq!(analyzer.language_id(), "python");
+    }
+
+    #[test]
+    fn parser_returns_boxed_language_parser() {
+        let _parser = PythonAnalyzer::parser();
+    }
+
+    #[test]
+    fn syntax_error_still_extracts_valid_items() {
+        let result = parse_py_source(
+            r#"def valid():
+    pass
+
+def broken(
+"#,
+        );
+        let funcs: Vec<_> = result
+            .items
+            .iter()
+            .filter(|i| i.sub_kind == "function")
+            .collect();
+        assert!(
+            !funcs.is_empty(),
+            "should extract valid items despite syntax errors"
+        );
+    }
+
+    #[test]
+    fn nested_function_call_in_for_loop() {
+        let result = parse_py_source(
+            r#"def process():
+    pass
+
+def main():
+    for i in range(10):
+        process()
+"#,
+        );
+        let calls: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Calls)
+            .collect();
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.target_qualified_name == "mypackage::process"),
+            "should find calls inside for loops, got: {:?}",
+            calls
+        );
+    }
+
+    #[test]
+    fn attribute_call_on_non_self_object() {
+        let result = parse_py_source(
+            r#"def main():
+    logger.info("hello")
+"#,
+        );
+        let calls: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Calls)
+            .collect();
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.target_qualified_name == "logger::info"),
+            "non-self attribute call should use object name, got: {:?}",
+            calls
+        );
+    }
+
+    #[test]
+    fn relative_import_double_dot_with_module() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("a/b")).unwrap();
+        let file = root.join("a/b/mod.py");
+        std::fs::write(&file, "from ..config import Settings\n").unwrap();
+
+        let analyzer = PythonAnalyzer::new();
+        let mut result = analyzer.analyze_crate("mypkg", &[file.as_path()]);
+        analyzer.post_process(root, "mypkg", &mut result);
+
+        let rel = result
+            .relations
+            .iter()
+            .find(|r| r.kind == EdgeKind::Depends);
+        assert!(rel.is_some(), "should have a dependency");
+        // File is a/b/mod.py → module QN is mypkg::a::b::mod
+        // ".." goes up 2 levels from mypkg::a::b::mod → mypkg::a
+        // So "..config" resolves to mypkg::a::config
+        assert_eq!(
+            rel.unwrap().target_qualified_name,
+            "mypkg::a::config",
+            "double-dot relative import should resolve correctly"
+        );
+    }
+
+    #[test]
+    fn is_python_test_file_patterns() {
+        assert!(is_python_test_file(Path::new("test_foo.py")));
+        assert!(is_python_test_file(Path::new("foo_test.py")));
+        assert!(is_python_test_file(Path::new("conftest.py")));
+        assert!(!is_python_test_file(Path::new("foo.py")));
+        assert!(!is_python_test_file(Path::new("testing.py")));
+    }
+
+    #[test]
+    fn python_file_to_module_qn_returns_none_for_unrelated_path() {
+        let root = Path::new("/project/src");
+        let result = python_file_to_module_qn(root, "/other/path/file.py:1", "mypkg");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn emit_module_items_root_level_file() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("main.py"), "").unwrap();
+
+        let files = vec![root.join("main.py")];
+        let items = emit_python_module_items(root, "mypkg", &files);
+
+        let qns: Vec<_> = items.iter().map(|i| i.qualified_name.as_str()).collect();
+        assert!(
+            qns.contains(&"mypkg::main"),
+            "should emit file-level module for root file"
+        );
+    }
 }

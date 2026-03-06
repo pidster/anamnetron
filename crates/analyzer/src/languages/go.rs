@@ -1052,4 +1052,357 @@ func main() {
             calls
         );
     }
+
+    // --- Additional coverage tests ---
+
+    #[test]
+    fn package_only_file_produces_no_items() {
+        let result = parse_go_source("package main\n");
+        assert!(
+            result.items.is_empty(),
+            "package-only file should have no items"
+        );
+        assert!(result.warnings.is_empty());
+    }
+
+    #[test]
+    fn file_with_only_imports_produces_only_relations() {
+        let result = parse_go_source(
+            r#"package main
+
+import (
+    "fmt"
+    "os"
+)
+"#,
+        );
+        assert!(
+            result.items.is_empty(),
+            "import-only file should have no items"
+        );
+        let imports: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Depends)
+            .collect();
+        assert_eq!(imports.len(), 2, "should have 2 import dependencies");
+    }
+
+    #[test]
+    fn extracts_type_alias() {
+        // Go type definition (not Go type alias with `=`, which tree-sitter handles differently)
+        let result = parse_go_source("package main\n\ntype ID int\n");
+        let aliases: Vec<_> = result
+            .items
+            .iter()
+            .filter(|i| i.sub_kind == "type_alias")
+            .collect();
+        assert_eq!(aliases.len(), 1);
+        assert!(aliases[0].qualified_name.contains("ID"));
+    }
+
+    #[test]
+    fn extracts_interface_with_multiple_methods() {
+        let result = parse_go_source(
+            r#"package main
+
+type Service interface {
+    Start() error
+    Stop() error
+    Status() string
+}
+"#,
+        );
+        let ifaces: Vec<_> = result
+            .items
+            .iter()
+            .filter(|i| i.sub_kind == "interface")
+            .collect();
+        assert_eq!(ifaces.len(), 1);
+        assert!(ifaces[0].qualified_name.contains("Service"));
+    }
+
+    #[test]
+    fn extracts_struct_with_embedded_type() {
+        let result = parse_go_source(
+            r#"package main
+
+type Base struct {
+    ID int
+}
+
+type Extended struct {
+    Base
+    Name string
+}
+"#,
+        );
+        let structs: Vec<_> = result
+            .items
+            .iter()
+            .filter(|i| i.sub_kind == "struct")
+            .collect();
+        assert_eq!(structs.len(), 2, "should extract both Base and Extended");
+    }
+
+    #[test]
+    fn extracts_multiple_functions() {
+        let result = parse_go_source(
+            r#"package main
+
+func foo() {}
+func bar() {}
+func baz() {}
+"#,
+        );
+        let funcs: Vec<_> = result
+            .items
+            .iter()
+            .filter(|i| i.sub_kind == "function")
+            .collect();
+        assert_eq!(funcs.len(), 3);
+    }
+
+    #[test]
+    fn method_with_value_receiver() {
+        let result = parse_go_source(
+            "package main\n\ntype Server struct{}\n\nfunc (s Server) Name() string { return \"\" }\n",
+        );
+        let methods: Vec<_> = result
+            .items
+            .iter()
+            .filter(|i| i.sub_kind == "method")
+            .collect();
+        assert_eq!(methods.len(), 1);
+        assert!(
+            methods[0].qualified_name.contains("Server::Name"),
+            "should extract method with value receiver, got: {}",
+            methods[0].qualified_name
+        );
+    }
+
+    #[test]
+    fn grouped_import_declaration() {
+        let result = parse_go_source(
+            r#"package main
+
+import (
+    "fmt"
+    "net/http"
+    "os"
+)
+"#,
+        );
+        let imports: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Depends)
+            .collect();
+        assert_eq!(imports.len(), 3, "should extract 3 grouped imports");
+    }
+
+    #[test]
+    fn aliased_import_used_in_call() {
+        let result = parse_go_source(
+            r#"package main
+
+import h "net/http"
+
+func main() {
+    h.ListenAndServe(":8080", nil)
+}
+"#,
+        );
+        let calls: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Calls)
+            .collect();
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.target_qualified_name == "net/http::ListenAndServe"),
+            "aliased import call should resolve to full path, got: {:?}",
+            calls
+        );
+    }
+
+    #[test]
+    fn multiple_methods_on_same_receiver() {
+        let result = parse_go_source(
+            r#"package main
+
+type DB struct{}
+
+func (d *DB) Open() {}
+func (d *DB) Close() {}
+func (d *DB) Query() {}
+"#,
+        );
+        let methods: Vec<_> = result
+            .items
+            .iter()
+            .filter(|i| i.sub_kind == "method")
+            .collect();
+        assert_eq!(methods.len(), 3, "should extract 3 methods on DB");
+        assert!(methods.iter().all(|m| m.qualified_name.contains("DB")));
+    }
+
+    #[test]
+    fn nested_call_in_for_loop() {
+        let result = parse_go_source(
+            r#"package main
+
+func process() {}
+
+func main() {
+    for i := 0; i < 10; i++ {
+        process()
+    }
+}
+"#,
+        );
+        let calls: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Calls)
+            .collect();
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.target_qualified_name == "myapp::process"),
+            "should find calls inside for loops"
+        );
+    }
+
+    #[test]
+    fn function_metadata_includes_loc() {
+        let result = parse_go_source(
+            r#"package main
+
+func multi() {
+    x := 1
+    y := 2
+    _ = x + y
+}
+"#,
+        );
+        let func = result
+            .items
+            .iter()
+            .find(|i| i.sub_kind == "function")
+            .expect("should have a function");
+        let loc = func.metadata.as_ref().unwrap()["loc"].as_u64().unwrap();
+        assert!(
+            loc >= 4,
+            "multi-line function should have loc >= 4, got {loc}"
+        );
+    }
+
+    #[test]
+    fn descriptor_has_correct_fields() {
+        let desc = GoAnalyzer::descriptor();
+        assert_eq!(desc.language_id, "go");
+        assert!(desc.manifest_files.contains(&"go.mod".to_string()));
+        assert!(desc.source_extensions.contains(&".go".to_string()));
+        assert!(desc.skip_directories.contains(&"vendor".to_string()));
+        assert_eq!(desc.top_level_kind, NodeKind::Service);
+        assert_eq!(desc.top_level_sub_kind, "module");
+    }
+
+    #[test]
+    fn default_trait_creates_analyzer() {
+        let analyzer = GoAnalyzer::default();
+        assert_eq!(analyzer.language_id(), "go");
+    }
+
+    #[test]
+    fn parser_returns_boxed_language_parser() {
+        let _parser = GoAnalyzer::parser();
+        // Just verify it constructs without panic
+    }
+
+    #[test]
+    fn single_import_outside_group() {
+        let result = parse_go_source("package main\n\nimport \"fmt\"\n");
+        let imports: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Depends)
+            .collect();
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].target_qualified_name, "fmt");
+    }
+
+    #[test]
+    fn syntax_error_still_extracts_valid_items() {
+        let result = parse_go_source(
+            r#"package main
+
+func valid() {}
+
+func broken( {
+"#,
+        );
+        // tree-sitter is error-tolerant; it should still find the valid function
+        let funcs: Vec<_> = result
+            .items
+            .iter()
+            .filter(|i| i.sub_kind == "function")
+            .collect();
+        assert!(
+            !funcs.is_empty(),
+            "should extract valid items despite syntax errors"
+        );
+    }
+
+    #[test]
+    fn multiple_type_declarations_in_group() {
+        let result = parse_go_source(
+            r#"package main
+
+type (
+    Request struct {
+        URL string
+    }
+    Response struct {
+        Code int
+    }
+)
+"#,
+        );
+        let structs: Vec<_> = result
+            .items
+            .iter()
+            .filter(|i| i.sub_kind == "struct")
+            .collect();
+        assert_eq!(
+            structs.len(),
+            2,
+            "should extract both grouped type declarations"
+        );
+    }
+
+    #[test]
+    fn local_variable_method_call() {
+        let result = parse_go_source(
+            r#"package main
+
+func main() {
+    s := Server{}
+    s.Start()
+}
+"#,
+        );
+        let calls: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Calls)
+            .collect();
+        assert!(
+            calls.iter().any(|c| c.target_qualified_name == "s::Start"),
+            "local variable method call should use variable name as operand, got: {:?}",
+            calls
+        );
+    }
 }

@@ -536,6 +536,123 @@ mod tests {
     }
 
     #[test]
+    fn analyze_project_rejects_nonexistent_root() {
+        let project_root = PathBuf::from("/nonexistent/path/that/does/not/exist");
+        let mut store = CozoStore::new_in_memory().unwrap();
+        let err = analyze_project(&mut store, DEFAULT_PROJECT_ID, &project_root, None).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("does not exist"),
+            "error should mention missing root, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn analyzer_error_discovery_variant_displays_correctly() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "test error");
+        let discovery_err = crate::discovery::DiscoveryError::Io(io_err);
+        let err = AnalyzerError::Discovery(discovery_err);
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("discovery error"),
+            "AnalyzerError::Discovery should display 'discovery error', got: {msg}"
+        );
+        assert!(
+            msg.contains("test error"),
+            "should contain inner error message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn aggregate_method_call_stats_with_method_call_warnings() {
+        let warnings = vec![
+            crate::types::AnalysisWarning {
+                source_ref: "test.rs".to_string(),
+                message: "10 method call(s): 7 resolved, 3 could not be resolved without type information".to_string(),
+            },
+            crate::types::AnalysisWarning {
+                source_ref: "other.rs".to_string(),
+                message: "5 method call(s): 2 resolved, 3 could not be resolved without type information".to_string(),
+            },
+        ];
+        let (resolved, unresolved) = aggregate_method_call_stats(&warnings);
+        assert_eq!(resolved, 9, "should sum resolved counts across warnings");
+        assert_eq!(
+            unresolved, 6,
+            "should sum unresolved counts across warnings"
+        );
+    }
+
+    #[test]
+    fn aggregate_method_call_stats_with_no_method_call_warnings() {
+        let warnings = vec![crate::types::AnalysisWarning {
+            source_ref: "test.rs".to_string(),
+            message: "some other warning".to_string(),
+        }];
+        let (resolved, unresolved) = aggregate_method_call_stats(&warnings);
+        assert_eq!(resolved, 0);
+        assert_eq!(unresolved, 0);
+    }
+
+    #[test]
+    fn aggregate_method_call_stats_with_empty_warnings() {
+        let (resolved, unresolved) = aggregate_method_call_stats(&[]);
+        assert_eq!(resolved, 0);
+        assert_eq!(unresolved, 0);
+    }
+
+    #[test]
+    fn aggregate_method_call_stats_with_mixed_warnings() {
+        let warnings = vec![
+            crate::types::AnalysisWarning {
+                source_ref: "a.rs".to_string(),
+                message: "unrelated warning about something".to_string(),
+            },
+            crate::types::AnalysisWarning {
+                source_ref: "b.rs".to_string(),
+                message:
+                    "8 method call(s): 5 resolved, 3 could not be resolved without type information"
+                        .to_string(),
+            },
+            crate::types::AnalysisWarning {
+                source_ref: "c.rs".to_string(),
+                message: "another unrelated warning".to_string(),
+            },
+        ];
+        let (resolved, unresolved) = aggregate_method_call_stats(&warnings);
+        assert_eq!(resolved, 5, "should only count from method call warnings");
+        assert_eq!(unresolved, 3);
+    }
+
+    #[test]
+    fn aggregate_method_call_stats_resolved_only() {
+        let warnings = vec![crate::types::AnalysisWarning {
+            source_ref: "test.rs".to_string(),
+            message: "4 method call(s): 4 resolved".to_string(),
+        }];
+        let (resolved, unresolved) = aggregate_method_call_stats(&warnings);
+        assert_eq!(resolved, 4);
+        assert_eq!(
+            unresolved, 0,
+            "no 'could not be resolved' means 0 unresolved"
+        );
+    }
+
+    #[test]
+    fn incremental_analysis_rejects_nonexistent_root() {
+        let project_root = PathBuf::from("/nonexistent/path");
+        let mut store = CozoStore::new_in_memory().unwrap();
+        let err =
+            analyze_project_incremental(&mut store, DEFAULT_PROJECT_ID, &project_root, None, None)
+                .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("does not exist"),
+            "incremental should reject nonexistent root, got: {msg}"
+        );
+    }
+
+    #[test]
     fn incremental_analysis_skips_unchanged_units() {
         let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()

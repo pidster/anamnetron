@@ -85,3 +85,42 @@ fn store_info_with_multiple_versions_reports_each() {
     assert_eq!(info.snapshots[1].node_count, 2);
     assert_eq!(info.snapshots[1].edge_count, 1);
 }
+
+#[test]
+fn store_info_reports_project_summaries() {
+    let mut store = CozoStore::new_in_memory().unwrap();
+    helpers::ensure_default_project(&mut store);
+
+    let v1 = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+        .unwrap();
+    store
+        .add_node(v1, &helpers::make_node_default("n1", "/svc/a"))
+        .unwrap();
+
+    let v2 = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Analysis, None)
+        .unwrap();
+    store
+        .add_node(v2, &helpers::make_node_default("n2", "/svc/b"))
+        .unwrap();
+
+    let info = store.store_info().unwrap();
+
+    assert_eq!(info.project_count, 1);
+    assert_eq!(info.projects.len(), 1);
+    assert_eq!(info.projects[0].id, DEFAULT_PROJECT_ID);
+    assert_eq!(info.projects[0].name, "Default Project");
+    assert_eq!(info.projects[0].snapshot_count, 2);
+}
+
+#[test]
+fn store_info_empty_store_has_no_projects() {
+    let store = CozoStore::new_in_memory().unwrap();
+    let info = store.store_info().unwrap();
+
+    // A fresh store (post-migration) has a default project but no snapshots
+    assert_eq!(info.snapshot_count, 0);
+    assert_eq!(info.project_count, 1, "migration creates default project");
+    assert_eq!(info.projects[0].snapshot_count, 0);
+}

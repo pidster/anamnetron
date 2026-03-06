@@ -121,6 +121,7 @@ macro_rules! declare_plugin {
         /// The caller must ensure the returned pointer is freed by converting
         /// it back into a `Box<dyn SvtPlugin>`.
         #[no_mangle]
+        #[allow(improper_ctypes_definitions)]
         pub extern "C" fn svt_plugin_create() -> *mut dyn $crate::plugin::SvtPlugin {
             let plugin: Box<dyn $crate::plugin::SvtPlugin> = Box::new(<$plugin_type>::default());
             Box::into_raw(plugin)
@@ -293,6 +294,105 @@ mod tests {
             exports.get("mock").is_some(),
             "mock format should be registered in the export registry"
         );
+    }
+
+    /// A plugin that overrides language_parsers with a mock.
+    struct LanguagePlugin;
+
+    impl SvtPlugin for LanguagePlugin {
+        fn name(&self) -> &str {
+            "language-plugin"
+        }
+
+        fn version(&self) -> &str {
+            "0.3.0"
+        }
+
+        fn api_version(&self) -> u32 {
+            SVT_PLUGIN_API_VERSION
+        }
+
+        fn language_parsers(&self) -> Vec<(LanguageDescriptor, Box<dyn LanguageParser>)> {
+            use crate::model::NodeKind;
+            vec![(
+                LanguageDescriptor {
+                    language_id: "mock-lang".to_string(),
+                    manifest_files: vec!["mock.toml".to_string()],
+                    source_extensions: vec![".mock".to_string()],
+                    skip_directories: vec![],
+                    top_level_kind: NodeKind::Component,
+                    top_level_sub_kind: "mock".to_string(),
+                },
+                Box::new(MockParser),
+            )]
+        }
+    }
+
+    /// Minimal mock LanguageParser that does nothing.
+    struct MockParser;
+
+    impl LanguageParser for MockParser {
+        fn parse(
+            &self,
+            _unit_name: &str,
+            _files: &[&std::path::Path],
+        ) -> crate::analysis::ParseResult {
+            crate::analysis::ParseResult {
+                items: vec![],
+                relations: vec![],
+                warnings: vec![],
+            }
+        }
+    }
+
+    #[test]
+    fn language_plugin_provides_parsers() {
+        let plugin = LanguagePlugin;
+        let parsers = plugin.language_parsers();
+        assert_eq!(parsers.len(), 1, "should provide exactly one parser");
+        assert_eq!(parsers[0].0.language_id, "mock-lang");
+        assert_eq!(parsers[0].0.source_extensions, vec![".mock"]);
+    }
+
+    #[test]
+    fn contributing_plugin_language_parsers_default_is_empty() {
+        // ContributingPlugin overrides evaluators and formats but NOT language_parsers
+        let plugin = ContributingPlugin;
+        assert!(
+            plugin.language_parsers().is_empty(),
+            "ContributingPlugin should have empty language_parsers by default"
+        );
+    }
+
+    /// Test the declare_plugin! macro compiles and produces a valid function pointer.
+    #[derive(Default)]
+    struct MacroTestPlugin;
+
+    impl SvtPlugin for MacroTestPlugin {
+        fn name(&self) -> &str {
+            "macro-test"
+        }
+        fn version(&self) -> &str {
+            "0.0.1"
+        }
+        fn api_version(&self) -> u32 {
+            SVT_PLUGIN_API_VERSION
+        }
+    }
+
+    // Expand the macro in test context to verify it compiles.
+    crate::declare_plugin!(MacroTestPlugin);
+
+    #[test]
+    fn declare_plugin_macro_creates_valid_plugin() {
+        // Safety: we own the pointer and immediately convert it back
+        let raw = svt_plugin_create();
+        assert!(!raw.is_null(), "macro should produce a non-null pointer");
+        // Convert back to Box to test and free
+        let plugin: Box<dyn SvtPlugin> = unsafe { Box::from_raw(raw) };
+        assert_eq!(plugin.name(), "macro-test");
+        assert_eq!(plugin.version(), "0.0.1");
+        assert_eq!(plugin.api_version(), SVT_PLUGIN_API_VERSION);
     }
 
     #[test]

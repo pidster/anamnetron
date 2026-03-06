@@ -609,4 +609,241 @@ api_version = {}
         let result = run_info(dir.path());
         assert!(result.is_err(), "info should fail when no manifest exists");
     }
+
+    // --- Additional coverage tests ---
+
+    #[test]
+    fn resolve_manifest_rejects_non_toml_non_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let bad_path = dir.path().join("plugin.txt");
+        std::fs::write(&bad_path, "content").unwrap();
+
+        let result = resolve_manifest(&bad_path);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("directory") || err.contains(".toml"),
+            "should explain valid source types, got: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_manifest_from_toml_with_missing_parent() {
+        // A .toml path whose parent is "." (current dir)
+        let dir = tempfile::tempdir().unwrap();
+        let manifest_path = dir.path().join("standalone.toml");
+        let content = format!(
+            r#"[plugin]
+name = "standalone"
+version = "1.0.0"
+api_version = {}
+"#,
+            SVT_PLUGIN_API_VERSION
+        );
+        std::fs::write(&manifest_path, content).unwrap();
+
+        let (manifest, resolved_dir) = resolve_manifest(&manifest_path).unwrap();
+        assert_eq!(manifest.plugin.name, "standalone");
+        assert_eq!(resolved_dir, dir.path());
+    }
+
+    #[test]
+    fn resolve_manifest_fails_with_malformed_toml_in_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("svt-plugin.toml"), "not valid toml [[[").unwrap();
+
+        let result = resolve_manifest(dir.path());
+        assert!(result.is_err(), "malformed TOML should fail");
+    }
+
+    #[test]
+    fn resolve_manifest_fails_with_malformed_toml_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.toml");
+        std::fs::write(&path, "not valid toml [[[").unwrap();
+
+        let result = resolve_manifest(&path);
+        assert!(result.is_err(), "malformed TOML file should fail");
+    }
+
+    #[test]
+    fn install_fails_with_empty_name_in_manifest() {
+        let src = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+
+        let content = format!(
+            r#"[plugin]
+name = ""
+version = "0.1.0"
+api_version = {}
+"#,
+            SVT_PLUGIN_API_VERSION
+        );
+        std::fs::write(src.path().join("svt-plugin.toml"), content).unwrap();
+        write_test_library(src.path(), "empty-name");
+
+        let result = install_to_dir(src.path(), target.path(), false);
+        assert!(result.is_err(), "empty name should fail validation");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("name") || err.contains("validation"),
+            "error should mention validation, got: {err}"
+        );
+    }
+
+    #[test]
+    fn install_from_toml_file_directly() {
+        let src = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+
+        let manifest_path = src.path().join("my-plugin.toml");
+        let content = format!(
+            r#"[plugin]
+name = "toml-direct"
+version = "0.1.0"
+api_version = {}
+"#,
+            SVT_PLUGIN_API_VERSION
+        );
+        std::fs::write(&manifest_path, content).unwrap();
+        write_test_library(src.path(), "toml-direct");
+
+        let result = install_to_dir(&manifest_path, target.path(), false);
+        assert!(
+            result.is_ok(),
+            "install from .toml file should succeed: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn info_with_incompatible_api_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = r#"[plugin]
+name = "old-plugin"
+version = "1.0.0"
+api_version = 99
+"#;
+        std::fs::write(dir.path().join("svt-plugin.toml"), content).unwrap();
+
+        let result = run_info(dir.path());
+        // run_info should succeed (it prints compatibility info, doesn't fail)
+        assert!(
+            result.is_ok(),
+            "info should succeed even with incompatible API version: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn info_with_empty_contributions() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = format!(
+            r#"[plugin]
+name = "empty-contrib"
+version = "1.0.0"
+api_version = {}
+
+[contributions]
+language_ids = []
+constraint_kinds = []
+export_formats = []
+"#,
+            SVT_PLUGIN_API_VERSION
+        );
+        std::fs::write(dir.path().join("svt-plugin.toml"), content).unwrap();
+
+        let result = run_info(dir.path());
+        assert!(
+            result.is_ok(),
+            "info with empty contributions should succeed: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn info_with_all_contribution_types() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = format!(
+            r#"[plugin]
+name = "full-contrib"
+version = "2.0.0"
+description = "Fully loaded"
+authors = ["Bob <bob@example.com>"]
+license = "MIT"
+api_version = {}
+
+[contributions]
+language_ids = ["java", "kotlin"]
+constraint_kinds = ["custom-check"]
+export_formats = ["custom-fmt"]
+"#,
+            SVT_PLUGIN_API_VERSION
+        );
+        std::fs::write(dir.path().join("svt-plugin.toml"), content).unwrap();
+
+        let result = run_info(dir.path());
+        assert!(
+            result.is_ok(),
+            "info with all contributions should succeed: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn info_fails_for_nonexistent_toml_file() {
+        let result = run_info(Path::new("/nonexistent/plugin.toml"));
+        assert!(result.is_err(), "info should fail for nonexistent file");
+    }
+
+    #[test]
+    fn target_dir_returns_plugins_subdirectory() {
+        let result = target_dir();
+        // Should succeed and end with "plugins"
+        assert!(result.is_ok(), "target_dir should succeed");
+        let dir = result.unwrap();
+        assert!(
+            dir.ends_with("plugins"),
+            "target_dir should end with 'plugins', got: {}",
+            dir.display()
+        );
+    }
+
+    #[test]
+    fn install_to_dir_with_zero_api_version_fails() {
+        let src = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+
+        let content = r#"[plugin]
+name = "zero-api"
+version = "0.1.0"
+api_version = 0
+"#;
+        std::fs::write(src.path().join("svt-plugin.toml"), content).unwrap();
+        write_test_library(src.path(), "zero-api");
+
+        let result = install_to_dir(src.path(), target.path(), false);
+        assert!(result.is_err(), "api_version 0 should fail validation");
+    }
+
+    #[test]
+    fn info_with_no_description_or_authors() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = format!(
+            r#"[plugin]
+name = "minimal-info"
+version = "0.1.0"
+api_version = {}
+"#,
+            SVT_PLUGIN_API_VERSION
+        );
+        std::fs::write(dir.path().join("svt-plugin.toml"), content).unwrap();
+
+        let result = run_info(dir.path());
+        assert!(
+            result.is_ok(),
+            "info with minimal manifest should succeed: {:?}",
+            result.err()
+        );
+    }
 }

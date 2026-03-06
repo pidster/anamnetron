@@ -273,4 +273,283 @@ mod tests {
         assert_eq!(children.len(), 1);
         assert_eq!(children[0]["id"], "n2");
     }
+
+    #[tokio::test]
+    async fn get_children_returns_empty_for_leaf_node() {
+        let app = test_app_with_data();
+        let resp = app
+            .oneshot(get_request("/api/snapshots/1/nodes/n2/children"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let children: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+        assert!(children.is_empty(), "leaf node should have no children");
+    }
+
+    #[tokio::test]
+    async fn get_children_returns_404_for_missing_node() {
+        let app = test_app_with_data();
+        let resp = app
+            .oneshot(get_request("/api/snapshots/1/nodes/missing/children"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 404);
+    }
+
+    #[tokio::test]
+    async fn get_ancestors_returns_parent_chain() {
+        let app = test_app_with_data();
+        let resp = app
+            .oneshot(get_request("/api/snapshots/1/nodes/n2/ancestors"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let ancestors: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+        assert!(
+            ancestors.iter().any(|a| a["id"] == "n1"),
+            "n2's ancestor should include n1"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_ancestors_returns_empty_for_root_node() {
+        let app = test_app_with_data();
+        let resp = app
+            .oneshot(get_request("/api/snapshots/1/nodes/n1/ancestors"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let ancestors: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+        assert!(ancestors.is_empty(), "root node should have no ancestors");
+    }
+
+    #[tokio::test]
+    async fn get_ancestors_returns_404_for_missing_node() {
+        let app = test_app_with_data();
+        let resp = app
+            .oneshot(get_request("/api/snapshots/1/nodes/missing/ancestors"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 404);
+    }
+
+    fn test_app_with_dependencies() -> Router<()> {
+        let mut store = CozoStore::new_in_memory().unwrap();
+        let v = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+            .unwrap();
+        store
+            .add_node(v, &make_node("n1", "/app", NodeKind::System))
+            .unwrap();
+        store
+            .add_node(v, &make_node("n2", "/app/core", NodeKind::Service))
+            .unwrap();
+        store
+            .add_node(v, &make_node("n3", "/app/cli", NodeKind::Service))
+            .unwrap();
+        // n3 depends on n2
+        store
+            .add_edge(
+                v,
+                &svt_core::model::Edge {
+                    id: "e-dep".to_string(),
+                    source: "n3".to_string(),
+                    target: "n2".to_string(),
+                    kind: EdgeKind::Depends,
+                    provenance: Provenance::Design,
+                    metadata: None,
+                },
+            )
+            .unwrap();
+        let state = Arc::new(AppState {
+            store: RwLock::new(store),
+            default_project: DEFAULT_PROJECT_ID.to_string(),
+        });
+        api_router(state)
+    }
+
+    #[tokio::test]
+    async fn get_dependencies_returns_outgoing_depends_edges() {
+        let app = test_app_with_dependencies();
+        let resp = app
+            .oneshot(get_request("/api/snapshots/1/nodes/n3/dependencies"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let edges: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0]["source"], "n3");
+        assert_eq!(edges[0]["target"], "n2");
+    }
+
+    #[tokio::test]
+    async fn get_dependencies_returns_empty_for_node_without_deps() {
+        let app = test_app_with_dependencies();
+        let resp = app
+            .oneshot(get_request("/api/snapshots/1/nodes/n1/dependencies"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let edges: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+        assert!(edges.is_empty(), "n1 has no outgoing depends edges");
+    }
+
+    #[tokio::test]
+    async fn get_dependencies_returns_404_for_missing_node() {
+        let app = test_app_with_dependencies();
+        let resp = app
+            .oneshot(get_request("/api/snapshots/1/nodes/missing/dependencies"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 404);
+    }
+
+    #[tokio::test]
+    async fn get_dependents_returns_incoming_depends_edges() {
+        let app = test_app_with_dependencies();
+        let resp = app
+            .oneshot(get_request("/api/snapshots/1/nodes/n2/dependents"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let edges: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0]["source"], "n3");
+        assert_eq!(edges[0]["target"], "n2");
+    }
+
+    #[tokio::test]
+    async fn get_dependents_returns_empty_for_node_without_dependents() {
+        let app = test_app_with_dependencies();
+        let resp = app
+            .oneshot(get_request("/api/snapshots/1/nodes/n3/dependents"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let edges: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+        assert!(edges.is_empty(), "n3 has no incoming depends edges");
+    }
+
+    #[tokio::test]
+    async fn get_dependents_returns_404_for_missing_node() {
+        let app = test_app_with_dependencies();
+        let resp = app
+            .oneshot(get_request("/api/snapshots/1/nodes/missing/dependents"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 404);
+    }
+
+    // --- Project-scoped endpoint tests ---
+
+    #[tokio::test]
+    async fn list_project_nodes_returns_all() {
+        let app = test_app_with_data();
+        let resp = app
+            .oneshot(get_request("/api/projects/default/snapshots/1/nodes"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let nodes: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(nodes.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn get_project_node_returns_single() {
+        let app = test_app_with_data();
+        let resp = app
+            .oneshot(get_request("/api/projects/default/snapshots/1/nodes/n1"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let node: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(node["canonical_path"], "/app");
+    }
+
+    #[tokio::test]
+    async fn get_project_node_returns_404_for_missing() {
+        let app = test_app_with_data();
+        let resp = app
+            .oneshot(get_request(
+                "/api/projects/default/snapshots/1/nodes/missing",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 404);
+    }
+
+    #[tokio::test]
+    async fn get_project_children_returns_child_nodes() {
+        let app = test_app_with_data();
+        let resp = app
+            .oneshot(get_request(
+                "/api/projects/default/snapshots/1/nodes/n1/children",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let children: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0]["id"], "n2");
+    }
+
+    #[tokio::test]
+    async fn get_project_ancestors_returns_parent_chain() {
+        let app = test_app_with_data();
+        let resp = app
+            .oneshot(get_request(
+                "/api/projects/default/snapshots/1/nodes/n2/ancestors",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let ancestors: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+        assert!(
+            ancestors.iter().any(|a| a["id"] == "n1"),
+            "n2's ancestor should include n1"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_project_dependencies_returns_edges() {
+        let app = test_app_with_dependencies();
+        let resp = app
+            .oneshot(get_request(
+                "/api/projects/default/snapshots/1/nodes/n3/dependencies",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let edges: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0]["target"], "n2");
+    }
+
+    #[tokio::test]
+    async fn get_project_dependents_returns_edges() {
+        let app = test_app_with_dependencies();
+        let resp = app
+            .oneshot(get_request(
+                "/api/projects/default/snapshots/1/nodes/n2/dependents",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let edges: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0]["source"], "n3");
+    }
 }

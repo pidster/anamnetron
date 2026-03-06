@@ -1717,4 +1717,375 @@ function main(): void {
             calls
         );
     }
+
+    // --- Heritage clause with generics tests ---
+
+    #[test]
+    fn extends_with_generic_extracts_base_name() {
+        let result = parse_ts_source(
+            "my-app",
+            r#"
+export class Derived extends Base<string> {}
+"#,
+        );
+        let extends: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Extends)
+            .collect();
+        assert!(
+            !extends.is_empty(),
+            "should emit at least one Extends edge for generic base class"
+        );
+        assert!(
+            extends
+                .iter()
+                .any(|e| e.source_qualified_name == "my-app::Derived"
+                    && e.target_qualified_name == "Base"),
+            "should resolve generic Base<string> to 'Base', got: {:?}",
+            extends
+        );
+    }
+
+    #[test]
+    fn multiple_implements_with_generics() {
+        let result = parse_ts_source(
+            "my-app",
+            r#"
+interface Iterable<T> { next(): T; }
+interface Disposable { dispose(): void; }
+class Stream implements Iterable<number>, Disposable {
+    next(): number { return 0; }
+    dispose(): void {}
+}
+"#,
+        );
+        let implements: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Implements)
+            .collect();
+        assert_eq!(
+            implements.len(),
+            2,
+            "should emit 2 Implements edges, got: {:?}",
+            implements
+        );
+        let targets: Vec<_> = implements
+            .iter()
+            .map(|r| r.target_qualified_name.as_str())
+            .collect();
+        assert!(
+            targets.contains(&"Iterable"),
+            "should resolve generic Iterable<number> to Iterable"
+        );
+        assert!(targets.contains(&"Disposable"));
+    }
+
+    // --- Type alias tests ---
+
+    #[test]
+    fn extracts_non_exported_type_alias() {
+        let result = parse_ts_source("my-app", "type Status = 'active' | 'inactive';");
+        let types: Vec<_> = result
+            .items
+            .iter()
+            .filter(|i| i.sub_kind == "type-alias")
+            .collect();
+        assert!(
+            types.iter().any(|t| t.qualified_name == "my-app::Status"),
+            "should extract non-exported type alias, got: {:?}",
+            types
+        );
+        assert!(
+            !types[0].tags.contains(&"exported".to_string()),
+            "non-exported type alias should not have exported tag"
+        );
+    }
+
+    // --- Arrow function / const declaration tests ---
+
+    #[test]
+    fn extracts_non_exported_function() {
+        let result = parse_ts_source("my-app", "function internalFn(): void {}");
+        assert!(
+            result
+                .items
+                .iter()
+                .any(|i| i.qualified_name == "my-app::internalFn" && i.sub_kind == "function"),
+            "should extract non-exported function declaration"
+        );
+    }
+
+    // --- Svelte component with class extraction ---
+
+    #[test]
+    fn svelte_extracts_class_from_script_block() {
+        let mut file = NamedTempFile::with_suffix(".svelte").unwrap();
+        write!(
+            file,
+            r#"<script lang="ts">
+export class AppState {{
+    count: number;
+    increment(): void {{}}
+}}
+</script>
+
+<p>Hello</p>"#,
+        )
+        .unwrap();
+        let analyzer = TypeScriptAnalyzer::new();
+        let result = analyzer.analyze_crate("my-app", &[file.path()]);
+        assert!(
+            result
+                .items
+                .iter()
+                .any(|i| i.qualified_name == "my-app::AppState" && i.sub_kind == "class"),
+            "should extract class from Svelte script block, got: {:?}",
+            result.items
+        );
+        assert!(
+            result
+                .items
+                .iter()
+                .any(|i| i.qualified_name == "my-app::AppState::count"),
+            "should extract class property from Svelte script block"
+        );
+        assert!(
+            result
+                .items
+                .iter()
+                .any(|i| i.qualified_name == "my-app::AppState::increment"),
+            "should extract class method from Svelte script block"
+        );
+    }
+
+    // --- Enum with numeric values ---
+
+    #[test]
+    fn extracts_enum_with_numeric_values() {
+        let result = parse_ts_source(
+            "my-app",
+            r#"
+export enum HttpStatus {
+    OK = 200,
+    NotFound = 404,
+    InternalError = 500,
+}
+"#,
+        );
+        let variants: Vec<_> = result
+            .items
+            .iter()
+            .filter(|i| i.sub_kind == "variant")
+            .collect();
+        assert_eq!(variants.len(), 3, "should extract 3 numeric enum variants");
+        assert!(variants
+            .iter()
+            .any(|v| v.qualified_name == "my-app::HttpStatus::OK"));
+        assert!(variants
+            .iter()
+            .any(|v| v.qualified_name == "my-app::HttpStatus::NotFound"));
+        assert!(variants
+            .iter()
+            .any(|v| v.qualified_name == "my-app::HttpStatus::InternalError"));
+    }
+
+    // --- Interface with multiple method signatures ---
+
+    #[test]
+    fn extracts_interface_with_multiple_methods_and_properties() {
+        let result = parse_ts_source(
+            "my-app",
+            r#"
+export interface Repository {
+    name: string;
+    url: string;
+    fetch(): Promise<void>;
+    push(branch: string): Promise<boolean>;
+    clone(dest: string): void;
+}
+"#,
+        );
+        let methods: Vec<_> = result
+            .items
+            .iter()
+            .filter(|i| {
+                i.sub_kind == "method" && i.qualified_name.starts_with("my-app::Repository")
+            })
+            .collect();
+        let props: Vec<_> = result
+            .items
+            .iter()
+            .filter(|i| {
+                i.sub_kind == "property" && i.qualified_name.starts_with("my-app::Repository")
+            })
+            .collect();
+        assert_eq!(methods.len(), 3, "should extract 3 interface methods");
+        assert_eq!(props.len(), 2, "should extract 2 interface properties");
+    }
+
+    // --- resolve_ts_import tests ---
+
+    #[test]
+    fn resolve_ts_import_strips_relative_prefix_and_extension() {
+        assert_eq!(
+            resolve_ts_import("./lib/api.ts", "my-app"),
+            Some("my-app::lib::api".to_string())
+        );
+        assert_eq!(
+            resolve_ts_import("../utils/helpers.tsx", "my-app"),
+            Some("my-app::utils::helpers".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_ts_import_handles_svelte_extension() {
+        assert_eq!(
+            resolve_ts_import("./components/App.svelte", "my-app"),
+            Some("my-app::components::App".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_ts_import_returns_none_for_empty_after_strip() {
+        assert_eq!(resolve_ts_import("./", "my-app"), None);
+    }
+
+    // --- file_to_module_qn tests ---
+
+    #[test]
+    fn file_to_module_qn_maps_nested_file() {
+        let root = Path::new("/project/src");
+        let source_ref = "/project/src/lib/utils.ts:10";
+        assert_eq!(
+            file_to_module_qn(root, source_ref, "my-app"),
+            Some("my-app::lib::utils".to_string())
+        );
+    }
+
+    #[test]
+    fn file_to_module_qn_maps_index_file_to_parent() {
+        let root = Path::new("/project/src");
+        let source_ref = "/project/src/lib/index.ts:1";
+        assert_eq!(
+            file_to_module_qn(root, source_ref, "my-app"),
+            Some("my-app::lib".to_string())
+        );
+    }
+
+    #[test]
+    fn file_to_module_qn_returns_none_for_outside_root() {
+        let root = Path::new("/project/src");
+        let source_ref = "/other/path/file.ts:1";
+        assert_eq!(file_to_module_qn(root, source_ref, "my-app"), None);
+    }
+
+    // --- emit_ts_module_items tests ---
+
+    #[test]
+    fn emit_ts_module_items_creates_directory_and_file_modules() {
+        let root = Path::new("/project/src");
+        let files = vec![PathBuf::from("/project/src/lib/utils.ts")];
+        let items = emit_ts_module_items(root, "my-app", &files);
+        let qns: Vec<_> = items.iter().map(|i| i.qualified_name.as_str()).collect();
+        assert!(
+            qns.contains(&"my-app::lib"),
+            "should emit directory module, got: {:?}",
+            qns
+        );
+        assert!(
+            qns.contains(&"my-app::lib::utils"),
+            "should emit file module, got: {:?}",
+            qns
+        );
+    }
+
+    #[test]
+    fn emit_ts_module_items_skips_index_files() {
+        let root = Path::new("/project/src");
+        let files = vec![PathBuf::from("/project/src/lib/index.ts")];
+        let items = emit_ts_module_items(root, "my-app", &files);
+        let qns: Vec<_> = items.iter().map(|i| i.qualified_name.as_str()).collect();
+        assert!(qns.contains(&"my-app::lib"), "should emit directory module");
+        assert!(
+            !qns.iter().any(|q| q.contains("index")),
+            "should not emit index file as module, got: {:?}",
+            qns
+        );
+    }
+
+    #[test]
+    fn emit_ts_module_items_svelte_files_are_components() {
+        let root = Path::new("/project/src");
+        let files = vec![PathBuf::from("/project/src/App.svelte")];
+        let items = emit_ts_module_items(root, "my-app", &files);
+        let app = items
+            .iter()
+            .find(|i| i.qualified_name == "my-app::App")
+            .expect("should emit App component item");
+        assert_eq!(
+            app.sub_kind, "component",
+            "svelte files should be components"
+        );
+        assert_eq!(app.language, "svelte");
+        assert_eq!(app.kind, NodeKind::Unit);
+    }
+
+    // --- Object method call (non-this receiver) ---
+
+    #[test]
+    fn extracts_object_method_call_with_named_receiver() {
+        let result = parse_ts_source(
+            "my-app",
+            r#"
+function main(): void {
+    console.log("hello");
+}
+"#,
+        );
+        let calls: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Calls)
+            .collect();
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.source_qualified_name == "my-app::main"
+                    && c.target_qualified_name == "console::log"),
+            "should emit call edge with receiver::method format, got: {:?}",
+            calls
+        );
+    }
+
+    // --- Descriptor tests ---
+
+    #[test]
+    fn descriptor_has_correct_language_and_extensions() {
+        let desc = TypeScriptAnalyzer::descriptor();
+        assert_eq!(desc.language_id, "typescript");
+        assert!(desc.source_extensions.contains(&".ts".to_string()));
+        assert!(desc.source_extensions.contains(&".tsx".to_string()));
+        assert!(desc.source_extensions.contains(&".svelte".to_string()));
+        assert!(desc.manifest_files.contains(&"package.json".to_string()));
+    }
+
+    #[test]
+    fn test_file_items_have_test_tag() {
+        let mut file = NamedTempFile::with_suffix(".test.ts").unwrap();
+        write!(file, "export function testHelper(): void {{}}").unwrap();
+        let analyzer = TypeScriptAnalyzer::new();
+        let result = analyzer.analyze_crate("my-app", &[file.path()]);
+        let item = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name == "my-app::testHelper")
+            .expect("should extract function from test file");
+        assert!(
+            item.tags.contains(&"test".to_string()),
+            "items from test files should have 'test' tag, got: {:?}",
+            item.tags
+        );
+    }
 }

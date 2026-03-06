@@ -175,3 +175,61 @@ fn edge_metadata_survives_round_trip() {
     assert!(edges[0].metadata.is_some());
     assert_eq!(edges[0].provenance, Provenance::Analysis);
 }
+
+#[test]
+fn get_all_edges_with_kind_filter_returns_only_matching() {
+    let (mut store, v) = setup_two_nodes();
+    store
+        .add_edge(v, &helpers::make_edge("e1", "a", "b", EdgeKind::Depends))
+        .unwrap();
+    store
+        .add_edge(v, &helpers::make_edge("e2", "a", "b", EdgeKind::Contains))
+        .unwrap();
+    store
+        .add_edge(v, &helpers::make_edge("e3", "a", "b", EdgeKind::Calls))
+        .unwrap();
+
+    let depends = store.get_all_edges(v, Some(EdgeKind::Depends)).unwrap();
+    assert_eq!(depends.len(), 1);
+    assert_eq!(depends[0].kind, EdgeKind::Depends);
+
+    let contains = store.get_all_edges(v, Some(EdgeKind::Contains)).unwrap();
+    assert_eq!(contains.len(), 1);
+    assert_eq!(contains[0].kind, EdgeKind::Contains);
+
+    let all = store.get_all_edges(v, None).unwrap();
+    assert_eq!(all.len(), 3);
+}
+
+#[test]
+fn get_all_edges_empty_version_returns_empty() {
+    let mut store = CozoStore::new_in_memory().unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+        .unwrap();
+
+    let edges = store.get_all_edges(v, None).unwrap();
+    assert!(edges.is_empty());
+}
+
+#[test]
+fn add_edges_batch_empty_is_noop() {
+    let (mut store, v) = setup_two_nodes();
+    store.add_edges_batch(v, &[]).unwrap();
+    let edges = store.get_all_edges(v, None).unwrap();
+    assert!(edges.is_empty());
+}
+
+#[test]
+fn add_nodes_batch_empty_is_noop() {
+    let mut store = CozoStore::new_in_memory().unwrap();
+    helpers::ensure_default_project(&mut store);
+    let v = store
+        .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+        .unwrap();
+
+    store.add_nodes_batch(v, &[]).unwrap();
+    let nodes = store.get_all_nodes(v).unwrap();
+    assert!(nodes.is_empty());
+}

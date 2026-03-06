@@ -132,6 +132,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn list_project_edges_returns_all() {
+        let mut store = make_store_with_project();
+        let v = store
+            .create_snapshot(DEFAULT_PROJECT_ID, SnapshotKind::Design, None)
+            .unwrap();
+        store
+            .add_node(
+                v,
+                &svt_core::model::Node {
+                    id: "n1".to_string(),
+                    canonical_path: "/a".to_string(),
+                    qualified_name: None,
+                    kind: NodeKind::System,
+                    sub_kind: "test".to_string(),
+                    name: "a".to_string(),
+                    language: None,
+                    provenance: Provenance::Design,
+                    source_ref: None,
+                    metadata: None,
+                },
+            )
+            .unwrap();
+        store
+            .add_node(
+                v,
+                &svt_core::model::Node {
+                    id: "n2".to_string(),
+                    canonical_path: "/b".to_string(),
+                    qualified_name: None,
+                    kind: NodeKind::System,
+                    sub_kind: "test".to_string(),
+                    name: "b".to_string(),
+                    language: None,
+                    provenance: Provenance::Design,
+                    source_ref: None,
+                    metadata: None,
+                },
+            )
+            .unwrap();
+        store
+            .add_edge(
+                v,
+                &Edge {
+                    id: "e1".to_string(),
+                    source: "n1".to_string(),
+                    target: "n2".to_string(),
+                    kind: EdgeKind::Depends,
+                    provenance: Provenance::Design,
+                    metadata: None,
+                },
+            )
+            .unwrap();
+
+        let state = Arc::new(AppState {
+            store: RwLock::new(store),
+            default_project: DEFAULT_PROJECT_ID.to_string(),
+        });
+        let app = crate::routes::api_router(state);
+        let resp = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/projects/default/snapshots/1/edges")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let edges: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0]["kind"], "depends");
+    }
+
+    #[tokio::test]
     async fn list_edges_with_kind_filter() {
         let mut store = make_store_with_project();
         let v = store

@@ -109,7 +109,6 @@ pub fn api_router(state: Arc<AppState>) -> Router {
 }
 
 /// Build the full router with API routes and optional static file serving.
-///
 /// If `static_dir` is provided and the directory exists, serves static files at `/`.
 /// API routes take priority over static files.
 pub fn full_router(state: Arc<AppState>, static_dir: Option<std::path::PathBuf>) -> Router {
@@ -126,4 +125,117 @@ pub fn full_router(state: Arc<AppState>, static_dir: Option<std::path::PathBuf>)
     }
 
     router
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, RwLock};
+
+    use http_body_util::BodyExt;
+    use svt_core::model::DEFAULT_PROJECT_ID;
+    use svt_core::store::CozoStore;
+    use tower::ServiceExt;
+
+    use crate::state::AppState;
+
+    fn make_state() -> Arc<AppState> {
+        let store = CozoStore::new_in_memory().unwrap();
+        Arc::new(AppState {
+            store: RwLock::new(store),
+            default_project: DEFAULT_PROJECT_ID.to_string(),
+        })
+    }
+
+    fn get_request(uri: &str) -> axum::http::Request<axum::body::Body> {
+        axum::http::Request::builder()
+            .uri(uri)
+            .body(axum::body::Body::empty())
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn api_router_health_endpoint_responds() {
+        let app = api_router(make_state());
+        let resp = app.oneshot(get_request("/api/health")).await.unwrap();
+        assert_eq!(resp.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn api_router_unknown_route_returns_404() {
+        let app = api_router(make_state());
+        let resp = app.oneshot(get_request("/api/nonexistent")).await.unwrap();
+        assert_eq!(resp.status(), 404);
+    }
+
+    #[tokio::test]
+    async fn full_router_without_static_dir_serves_api() {
+        let app = full_router(make_state(), None);
+        let resp = app.oneshot(get_request("/api/health")).await.unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["status"], "ok");
+    }
+
+    #[tokio::test]
+    async fn full_router_with_nonexistent_static_dir_serves_api() {
+        let fake_dir = std::path::PathBuf::from("/tmp/svt-nonexistent-dir-test");
+        let app = full_router(make_state(), Some(fake_dir));
+        let resp = app.oneshot(get_request("/api/health")).await.unwrap();
+        assert_eq!(resp.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn full_router_with_existing_static_dir_serves_api_and_fallback() {
+        let tmp = std::env::temp_dir().join("svt-static-test");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("index.html"), "<html></html>").unwrap();
+
+        let app = full_router(make_state(), Some(tmp.clone()));
+
+        // API still works
+        let resp = app
+            .clone()
+            .oneshot(get_request("/api/health"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+
+        // Fallback serves index.html for unknown paths
+        let resp = app
+            .oneshot(get_request("/some/unknown/path"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        assert!(
+            String::from_utf8_lossy(&body).contains("<html>"),
+            "should serve index.html as fallback"
+        );
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn api_router_store_info_endpoint_responds() {
+        let app = api_router(make_state());
+        let resp = app.oneshot(get_request("/api/store/info")).await.unwrap();
+        assert_eq!(resp.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn api_router_projects_endpoint_responds() {
+        let app = api_router(make_state());
+        let resp = app.oneshot(get_request("/api/projects")).await.unwrap();
+        assert_eq!(resp.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn api_router_snapshots_endpoint_responds() {
+        let app = api_router(make_state());
+        let resp = app.oneshot(get_request("/api/snapshots")).await.unwrap();
+        assert_eq!(resp.status(), 200);
+    }
 }

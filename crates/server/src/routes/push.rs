@@ -183,6 +183,87 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn push_with_constraints_creates_all() {
+        let app = test_app();
+        let body = serde_json::json!({
+            "kind": "design",
+            "nodes": [
+                {
+                    "id": "n1",
+                    "canonical_path": "/app/a",
+                    "kind": "component",
+                    "sub_kind": "module",
+                    "name": "a",
+                    "provenance": "design"
+                }
+            ],
+            "edges": [],
+            "constraints": [
+                {
+                    "id": "c1",
+                    "name": "no-cycles",
+                    "kind": "no_circular_dependency",
+                    "scope": "/app/**",
+                    "message": "No cycles allowed",
+                    "severity": "error"
+                }
+            ]
+        });
+
+        let resp = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/projects/my-project/push")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::to_string(&body).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), 201);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let result: PushResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(result.nodes_created, 1);
+        assert_eq!(result.edges_created, 0);
+        assert_eq!(result.constraints_created, 1);
+    }
+
+    #[tokio::test]
+    async fn push_empty_snapshot_succeeds() {
+        let app = test_app();
+        let body = serde_json::json!({
+            "kind": "design",
+            "nodes": [],
+            "edges": []
+        });
+
+        let resp = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/projects/empty-proj/push")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::to_string(&body).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), 201);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let result: PushResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(result.nodes_created, 0);
+        assert_eq!(result.edges_created, 0);
+        assert_eq!(result.constraints_created, 0);
+    }
+
+    #[tokio::test]
     async fn push_rejects_invalid_project_id() {
         let app = test_app();
         let body = serde_json::json!({

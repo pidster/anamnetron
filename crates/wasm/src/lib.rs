@@ -621,4 +621,220 @@ mod tests {
         assert_eq!(parse_edge_kind("depends").unwrap(), EdgeKind::Depends);
         assert_eq!(parse_edge_kind("calls").unwrap(), EdgeKind::Calls);
     }
+
+    // --- Error path / edge case tests ---
+
+    #[test]
+    fn invalid_nodes_json_fails_deserialization() {
+        let result: Result<Vec<Node>, _> = serde_json::from_str("not valid json");
+        assert!(result.is_err(), "invalid JSON should fail deserialization");
+    }
+
+    #[test]
+    fn invalid_edges_json_fails_deserialization() {
+        let result: Result<Vec<Edge>, _> = serde_json::from_str("not valid json");
+        assert!(result.is_err(), "invalid JSON should fail deserialization");
+    }
+
+    #[test]
+    fn wrong_json_type_fails_deserialization() {
+        let result: Result<Vec<Node>, _> = serde_json::from_str("{}");
+        assert!(
+            result.is_err(),
+            "non-array JSON should fail deserialization"
+        );
+    }
+
+    #[test]
+    fn load_snapshot_with_explicit_project_id() {
+        let mut store = WasmStore::new().expect("store creation should succeed");
+        // Create a separate project
+        let _ = store.store.create_project(&Project {
+            id: "custom-project".to_string(),
+            name: "Custom".to_string(),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            description: None,
+            metadata: None,
+        });
+        let version = store
+            .load_snapshot("[]", "[]", Some("custom-project".to_string()))
+            .expect("load with project_id should succeed");
+        assert_eq!(version, 1);
+    }
+
+    #[test]
+    fn get_all_nodes_on_empty_store_returns_empty() {
+        let store = WasmStore::new().expect("store creation should succeed");
+        // Version 1 doesn't exist — create a snapshot with no data first
+        let mut store = store;
+        let version = store
+            .load_snapshot("[]", "[]", None)
+            .expect("empty snapshot should succeed");
+        let json = store
+            .get_all_nodes(version)
+            .expect("get_all_nodes should succeed");
+        let nodes: Vec<Node> = serde_json::from_str(&json).unwrap();
+        assert!(nodes.is_empty(), "empty snapshot should have no nodes");
+    }
+
+    #[test]
+    fn get_all_edges_on_empty_store_returns_empty() {
+        let mut store = WasmStore::new().expect("store creation should succeed");
+        let version = store
+            .load_snapshot("[]", "[]", None)
+            .expect("empty snapshot should succeed");
+        let json = store
+            .get_all_edges(version, None)
+            .expect("get_all_edges should succeed");
+        let edges: Vec<Edge> = serde_json::from_str(&json).unwrap();
+        assert!(edges.is_empty(), "empty snapshot should have no edges");
+    }
+
+    #[test]
+    fn search_empty_pattern_matches_nothing() {
+        let store = make_test_store();
+        let json = store.search(1, "").expect("search should succeed");
+        let results: Vec<Node> = serde_json::from_str(&json).unwrap();
+        assert!(
+            results.is_empty(),
+            "empty pattern should match nothing, got {} results",
+            results.len()
+        );
+    }
+
+    #[test]
+    fn search_no_match_returns_empty() {
+        let store = make_test_store();
+        let json = store
+            .search(1, "/nonexistent/**")
+            .expect("search should succeed");
+        let results: Vec<Node> = serde_json::from_str(&json).unwrap();
+        assert!(
+            results.is_empty(),
+            "non-matching pattern should return empty"
+        );
+    }
+
+    #[test]
+    fn search_special_characters_in_pattern() {
+        let store = make_test_store();
+        // Pattern with brackets, not a valid glob but should not panic
+        let result = store.search(1, "/app/[invalid");
+        // Should either succeed (no matches) or return an error, but not panic
+        assert!(
+            result.is_ok() || result.is_err(),
+            "special chars should not cause panic"
+        );
+    }
+
+    #[test]
+    fn get_node_with_empty_string_id() {
+        let store = make_test_store();
+        let json = store.get_node(1, "").expect("get_node should succeed");
+        assert_eq!(json, "null", "empty string ID should return null");
+    }
+
+    #[test]
+    fn get_edges_with_nonexistent_node() {
+        let store = make_test_store();
+        let json = store
+            .get_edges(1, "nonexistent_node", "outgoing", None)
+            .expect("get_edges should succeed");
+        let edges: Vec<Edge> = serde_json::from_str(&json).unwrap();
+        assert!(
+            edges.is_empty(),
+            "nonexistent node should return empty edges"
+        );
+    }
+
+    #[test]
+    fn parse_direction_rejects_invalid_values() {
+        assert!(parse_direction("sideways").is_err());
+        assert!(parse_direction("").is_err());
+        assert!(parse_direction("OUTGOING").is_err());
+    }
+
+    #[test]
+    fn parse_edge_kind_rejects_invalid_values() {
+        assert!(parse_edge_kind("bogus_kind").is_err());
+        assert!(parse_edge_kind("").is_err());
+        assert!(parse_edge_kind("CONTAINS").is_err());
+    }
+
+    #[test]
+    fn get_children_of_leaf_returns_empty() {
+        let store = make_test_store();
+        let json = store
+            .get_children(1, "n2")
+            .expect("get_children should succeed");
+        let children: Vec<Node> = serde_json::from_str(&json).unwrap();
+        assert!(children.is_empty(), "leaf node should have no children");
+    }
+
+    #[test]
+    fn get_ancestors_of_root_returns_empty() {
+        let store = make_test_store();
+        let json = store
+            .get_ancestors(1, "n1")
+            .expect("get_ancestors should succeed");
+        let ancestors: Vec<Node> = serde_json::from_str(&json).unwrap();
+        assert!(ancestors.is_empty(), "root node should have no ancestors");
+    }
+
+    #[test]
+    fn get_descendants_of_leaf_returns_empty() {
+        let store = make_test_store();
+        let json = store
+            .get_descendants(1, "n2")
+            .expect("get_descendants should succeed");
+        let descendants: Vec<Node> = serde_json::from_str(&json).unwrap();
+        assert!(
+            descendants.is_empty(),
+            "leaf node should have no descendants"
+        );
+    }
+
+    #[test]
+    fn get_dependencies_of_node_with_none_returns_empty() {
+        let store = make_test_store();
+        let json = store
+            .get_dependencies(1, "n2", false)
+            .expect("get_dependencies should succeed");
+        let deps: Vec<Node> = serde_json::from_str(&json).unwrap();
+        assert!(deps.is_empty(), "n2 should have no outgoing depends edges");
+    }
+
+    #[test]
+    fn get_dependents_of_node_with_none_returns_empty() {
+        let store = make_test_store();
+        let json = store
+            .get_dependents(1, "n3", false)
+            .expect("get_dependents should succeed");
+        let dependents: Vec<Node> = serde_json::from_str(&json).unwrap();
+        assert!(
+            dependents.is_empty(),
+            "n3 should have no dependents (nothing depends on n3)"
+        );
+    }
+
+    #[test]
+    fn get_node_by_path_returns_null_for_missing() {
+        let store = make_test_store();
+        let json = store
+            .get_node_by_path(1, "/nonexistent/path")
+            .expect("get_node_by_path should succeed");
+        assert_eq!(json, "null");
+    }
+
+    #[test]
+    fn multiple_snapshots_create_separate_versions() {
+        let mut store = WasmStore::new().expect("store creation should succeed");
+        let v1 = store
+            .load_snapshot("[]", "[]", None)
+            .expect("first snapshot");
+        let v2 = store
+            .load_snapshot("[]", "[]", None)
+            .expect("second snapshot");
+        assert_ne!(v1, v2, "each snapshot should get a unique version");
+    }
 }

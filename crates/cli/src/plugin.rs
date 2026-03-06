@@ -500,4 +500,224 @@ api_version = 1
         assert_eq!(PluginSource::CliFlag.to_string(), "cli-flag");
         assert_eq!(PluginSource::BinaryAdjacent.to_string(), "binary-adjacent");
     }
+
+    #[test]
+    fn plugin_source_eq_and_clone() {
+        let a = PluginSource::CliFlag;
+        let b = a.clone();
+        assert_eq!(a, b);
+
+        let c = PluginSource::BinaryAdjacent;
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn loader_default_creates_empty() {
+        let loader = PluginLoader::default();
+        assert!(loader.plugins().is_empty());
+    }
+
+    #[test]
+    fn loader_debug_shows_count() {
+        let loader = PluginLoader::new();
+        let debug = format!("{:?}", loader);
+        assert!(
+            debug.contains("plugin_count: 0"),
+            "debug output should show plugin_count, got: {debug}"
+        );
+    }
+
+    #[test]
+    fn find_sidecar_manifest_with_malformed_toml_returns_none() {
+        let dir = tempfile::tempdir().expect("failed to create tempdir");
+        let lib_path = dir.path().join("libmy_plugin.dylib");
+        std::fs::write(&lib_path, b"fake").unwrap();
+
+        // Write malformed TOML as the sidecar
+        std::fs::write(
+            dir.path().join("my_plugin.svt-plugin.toml"),
+            "this is not valid toml [[[",
+        )
+        .unwrap();
+
+        let result = find_sidecar_manifest(&lib_path);
+        assert!(
+            result.is_none(),
+            "malformed TOML sidecar should return None"
+        );
+    }
+
+    #[test]
+    fn find_sidecar_manifest_prefers_stem_named_over_generic() {
+        let dir = tempfile::tempdir().expect("failed to create tempdir");
+        let lib_path = dir.path().join("libmy_plugin.dylib");
+        std::fs::write(&lib_path, b"fake").unwrap();
+
+        // Write stem-named manifest
+        std::fs::write(
+            dir.path().join("my_plugin.svt-plugin.toml"),
+            r#"[plugin]
+name = "stem-named"
+version = "1.0.0"
+api_version = 1
+"#,
+        )
+        .unwrap();
+
+        // Write generic manifest
+        std::fs::write(
+            dir.path().join("svt-plugin.toml"),
+            r#"[plugin]
+name = "generic"
+version = "1.0.0"
+api_version = 1
+"#,
+        )
+        .unwrap();
+
+        let result = find_sidecar_manifest(&lib_path);
+        assert!(result.is_some());
+        assert_eq!(
+            result.unwrap().plugin.name,
+            "stem-named",
+            "should prefer stem-named manifest"
+        );
+    }
+
+    #[test]
+    fn find_sidecar_manifest_falls_back_to_generic_when_stem_is_malformed() {
+        let dir = tempfile::tempdir().expect("failed to create tempdir");
+        let lib_path = dir.path().join("libmy_plugin.dylib");
+        std::fs::write(&lib_path, b"fake").unwrap();
+
+        // Write malformed stem-named manifest
+        std::fs::write(dir.path().join("my_plugin.svt-plugin.toml"), "not valid").unwrap();
+
+        // Write valid generic manifest
+        std::fs::write(
+            dir.path().join("svt-plugin.toml"),
+            r#"[plugin]
+name = "fallback"
+version = "1.0.0"
+api_version = 1
+"#,
+        )
+        .unwrap();
+
+        let result = find_sidecar_manifest(&lib_path);
+        assert!(result.is_some());
+        assert_eq!(
+            result.unwrap().plugin.name,
+            "fallback",
+            "should fall back to generic manifest"
+        );
+    }
+
+    #[test]
+    fn scan_directory_reports_errors_for_invalid_libraries() {
+        let dir = tempfile::tempdir().expect("failed to create tempdir");
+        let ext = shared_library_extension();
+        // Write a fake library file with the right extension but invalid content
+        std::fs::write(
+            dir.path().join(format!("libfake.{ext}")),
+            b"not a real library",
+        )
+        .unwrap();
+
+        let mut loader = PluginLoader::new();
+        let errors = loader.scan_directory(dir.path());
+        assert!(
+            !errors.is_empty(),
+            "loading invalid library should produce errors"
+        );
+        assert!(
+            loader.plugins().is_empty(),
+            "no plugins should be loaded from invalid libraries"
+        );
+    }
+
+    #[test]
+    fn scan_directory_with_source_uses_given_source() {
+        let dir = tempfile::tempdir().expect("failed to create tempdir");
+        let mut loader = PluginLoader::new();
+        let errors = loader.scan_directory_with_source(dir.path(), PluginSource::CliFlag);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn register_language_parsers_with_no_plugins_is_noop() {
+        let loader = PluginLoader::new();
+        let mut registry = OrchestratorRegistry::new();
+        loader.register_language_parsers(&mut registry);
+        // Should not panic and registry should remain empty
+    }
+
+    #[test]
+    fn register_constraints_with_no_plugins_is_noop() {
+        let loader = PluginLoader::new();
+        let mut constraints = ConstraintRegistry::new();
+        loader.register_constraints(&mut constraints);
+        assert!(constraints.kinds().is_empty());
+    }
+
+    #[test]
+    fn register_exports_with_no_plugins_is_noop() {
+        let loader = PluginLoader::new();
+        let mut exports = ExportRegistry::new();
+        loader.register_exports(&mut exports);
+        assert!(exports.names().is_empty());
+    }
+
+    #[test]
+    fn load_with_source_cli_flag() {
+        let mut loader = PluginLoader::new();
+        let result = loader.load_with_source(
+            Path::new("/nonexistent/libfake.dylib"),
+            PluginSource::CliFlag,
+        );
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            PluginError::LoadFailed { .. } => {}
+            other => panic!("expected LoadFailed, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn load_with_source_binary_adjacent() {
+        let mut loader = PluginLoader::new();
+        let result = loader.load_with_source(
+            Path::new("/nonexistent/libfake.dylib"),
+            PluginSource::BinaryAdjacent,
+        );
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            PluginError::LoadFailed { .. } => {}
+            other => panic!("expected LoadFailed, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn find_sidecar_manifest_strips_lib_prefix() {
+        let dir = tempfile::tempdir().expect("failed to create tempdir");
+        // Library named "libfoo.dylib" — sidecar should match on "foo"
+        let lib_path = dir.path().join("libfoo.dylib");
+        std::fs::write(&lib_path, b"fake").unwrap();
+
+        std::fs::write(
+            dir.path().join("foo.svt-plugin.toml"),
+            r#"[plugin]
+name = "foo-plugin"
+version = "1.0.0"
+api_version = 1
+"#,
+        )
+        .unwrap();
+
+        let result = find_sidecar_manifest(&lib_path);
+        assert!(
+            result.is_some(),
+            "should find manifest with lib prefix stripped"
+        );
+        assert_eq!(result.unwrap().plugin.name, "foo-plugin");
+    }
 }

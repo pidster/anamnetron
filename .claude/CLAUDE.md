@@ -61,6 +61,8 @@ cargo clippy             # Lint
 cargo fmt --check        # Format check
 cargo audit              # Dependency audit
 cd web && npm test        # Run web tests
+cargo llvm-cov           # Code coverage (text summary)
+cargo llvm-cov --html    # Code coverage (HTML report in target/llvm-cov/html/)
 ```
 
 ## Coding Standards
