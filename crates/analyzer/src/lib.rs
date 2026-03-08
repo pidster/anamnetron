@@ -16,6 +16,8 @@ pub mod languages;
 pub mod mapping;
 pub mod metrics;
 pub mod orchestrator;
+pub mod type_flow;
+pub mod type_metadata;
 pub mod types;
 
 use std::collections::HashMap;
@@ -152,6 +154,24 @@ pub fn analyze_project_with_registry(
         let _metrics_span = info_span!("enrich_metrics").entered();
         crate::metrics::enrich_metrics(&mut all_items, project_root);
         info!(items = all_items.len(), "metric enrichment complete");
+    }
+
+    // Phase 6.6: Type-flow analysis — infer transforms and data_flow edges.
+    {
+        let _flow_span = info_span!("type_flow_analysis").entered();
+        let combined = svt_core::analysis::ParseResult {
+            items: all_items.clone(),
+            relations: all_relations.clone(),
+            warnings: vec![],
+        };
+        let type_flow = crate::type_flow::TypeFlowAnalysis::from_parse_results(&[combined]);
+        let flow_relations = type_flow.analyze();
+        debug!(
+            flow_edges = flow_relations.len(),
+            signatures = type_flow.signature_count(),
+            "type-flow analysis complete"
+        );
+        all_relations.extend(flow_relations);
     }
 
     info!(
@@ -372,6 +392,23 @@ pub fn analyze_project_incremental_with_registry(
         let _metrics_span = info_span!("enrich_metrics").entered();
         crate::metrics::enrich_metrics(&mut all_items, project_root);
         info!(items = all_items.len(), "metric enrichment complete");
+    }
+
+    // Phase 6.6: Type-flow analysis — infer transforms and data_flow edges.
+    {
+        let _flow_span = info_span!("type_flow_analysis").entered();
+        let combined = svt_core::analysis::ParseResult {
+            items: all_items.clone(),
+            relations: all_relations.clone(),
+            warnings: vec![],
+        };
+        let type_flow = crate::type_flow::TypeFlowAnalysis::from_parse_results(&[combined]);
+        let flow_relations = type_flow.analyze();
+        debug!(
+            flow_edges = flow_relations.len(),
+            "type-flow analysis complete"
+        );
+        all_relations.extend(flow_relations);
     }
 
     // Phase 7: Map to graph and upsert (overwrites copied data for changed units).

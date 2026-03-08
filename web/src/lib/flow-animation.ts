@@ -28,8 +28,8 @@ const DOT_RADIUS: Record<string, number> = {
 
 /** Dot color per edge kind (fallback). */
 const DOT_COLOR: Record<string, string> = {
-  calls: "rgba(76, 175, 80, 0.8)",
-  data_flow: "rgba(255, 152, 0, 0.7)",
+  calls: "rgba(76, 175, 80, 0.9)",
+  data_flow: "rgba(76, 175, 80, 0.85)",
 };
 
 /**

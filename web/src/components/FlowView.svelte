@@ -3,7 +3,7 @@
   import cytoscape from "cytoscape";
   import fcose from "cytoscape-fcose";
   import type { CytoscapeGraph } from "../lib/types";
-  import { EDGE_STYLES, KIND_COLORS } from "../lib/visual-encoding";
+  import { EDGE_STYLES, KIND_COLORS, SUB_KIND_SHAPES } from "../lib/visual-encoding";
   import { flowStore } from "../stores/flow.svelte";
   import { graphStore } from "../stores/graph.svelte";
   import { buildFlowElements, computeClientRoots, type FlowNode, type FlowEdge } from "../lib/flow-layout";
@@ -57,17 +57,59 @@
         selector: "node",
         style: {
           label: "data(label)",
-          "text-valign": "center",
+          "text-valign": "bottom",
           "text-halign": "center",
-          "font-size": "10px",
+          "text-margin-y": 4,
+          "font-size": "9px",
           color: textColor,
           "text-outline-color": surfaceColor,
           "text-outline-width": 1.5,
           "background-color": accentColor,
-          width: 30,
-          height: 30,
+          width: 24,
+          height: 24,
           "border-width": 1,
           "border-color": borderColor,
+        },
+      },
+      // Size by kind — visual hierarchy
+      {
+        selector: "node.kind-system",
+        style: {
+          width: 50,
+          height: 50,
+          "font-size": "13px",
+          "font-weight": "bold",
+          "text-valign": "center",
+          "text-halign": "center",
+          "text-margin-y": 0,
+        },
+      },
+      {
+        selector: "node.kind-service",
+        style: {
+          width: 38,
+          height: 38,
+          "font-size": "11px",
+          "font-weight": "bold",
+          "text-valign": "center",
+          "text-halign": "center",
+          "text-margin-y": 0,
+        },
+      },
+      {
+        selector: "node.kind-component",
+        style: {
+          width: 28,
+          height: 28,
+          "font-size": "9px",
+        },
+      },
+      {
+        selector: "node.kind-unit",
+        style: {
+          width: 20,
+          height: 20,
+          "font-size": "8px",
         },
       },
       // Compound node (parent) style
@@ -84,6 +126,7 @@
           "text-halign": "center",
           "font-size": "11px",
           "font-weight": "bold",
+          "text-margin-y": 0,
           padding: "12px",
         } as cytoscape.Css.Node,
       },
@@ -102,8 +145,6 @@
       {
         selector: "node.root",
         style: {
-          width: 38,
-          height: 38,
           "border-width": 2.5,
           "border-color": accentColor,
         },
@@ -137,40 +178,55 @@
       },
     ];
 
-    // Node kind colors
+    // Node kind colors — use lighter lavender for unit to distinguish from system purple
+    const kindColorOverrides: Record<string, string> = {
+      unit: "#b39ddb", // lighter lavender vs system's #7b68ee
+    };
     for (const [kind, cssVar] of Object.entries(KIND_COLORS)) {
-      const color = getCssVar(cssVar) || accentColor;
+      const color = kindColorOverrides[kind] || getCssVar(cssVar) || accentColor;
       styles.push({
         selector: `node.kind-${kind}`,
         style: { "background-color": color },
       });
     }
 
-    // Base edge style
+    // Sub-kind shapes — adds visual texture
+    for (const [subKind, shape] of Object.entries(SUB_KIND_SHAPES)) {
+      styles.push({
+        selector: `node[sub_kind="${subKind}"]`,
+        style: { shape: shape as cytoscape.Css.NodeShape },
+      });
+    }
+
+    // Base edge style — bezier curves for most edges
     styles.push({
       selector: "edge",
       style: {
-        width: 1.5,
+        width: 1,
         "curve-style": "bezier",
         "target-arrow-shape": "triangle",
         "target-arrow-color": borderColor,
         "line-color": borderColor,
-        "arrow-scale": 0.7,
-        opacity: 0.6,
+        "arrow-scale": 0.6,
+        opacity: 0.5,
       },
     });
 
     // Edge kind styles
+    const flowColor = getCssVar("--pass") || "#4caf50"; // green for data flow paths
     for (const [kind, edgeStyle] of Object.entries(EDGE_STYLES)) {
-      const color = getCssVar(edgeStyle.cssVar) || accentColor;
+      const isFlow = kind === "calls" || kind === "data_flow";
+      const color = isFlow ? flowColor : (getCssVar(edgeStyle.cssVar) || accentColor);
       styles.push({
         selector: `edge[kind="${kind}"]`,
         style: {
           "line-color": color,
           "target-arrow-color": color,
-          "line-style": edgeStyle.lineStyle as "solid" | "dashed" | "dotted",
+          "curve-style": isFlow ? "straight" : "bezier",
+          "line-style": (isFlow ? "solid" : edgeStyle.lineStyle) as "solid" | "dashed" | "dotted",
           "target-arrow-shape": edgeStyle.arrowShape as cytoscape.Css.ArrowShape,
-          width: kind === "calls" || kind === "data_flow" ? 2 : 1.2,
+          width: isFlow ? 1.5 : 0.8,
+          opacity: isFlow ? 0.75 : 0.5,
         },
       });
     }
@@ -236,12 +292,12 @@
           name: "fcose",
           quality: elements.nodes.length > 100 ? "draft" : "default",
           animate: false,
-          nodeRepulsion: () => 4500,
-          idealEdgeLength: () => 100,
+          nodeRepulsion: () => 6000,
+          idealEdgeLength: () => 120,
           edgeElasticity: () => 0.45,
-          gravity: 0.25,
+          gravity: 0.2,
           gravityRange: 3.8,
-          nodeSeparation: 75,
+          nodeSeparation: 100,
           // Pin roots toward top, sinks toward bottom
           alignmentConstraint: {
             vertical: rootIds.length > 0 ? [rootIds] : undefined,

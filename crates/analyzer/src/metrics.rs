@@ -275,9 +275,18 @@ mod tests {
         let project_root = manifest_dir.parent().unwrap().parent().unwrap();
         let rel_path = "crates/analyzer/src/lib.rs";
 
+        // Find the actual line number of analyze_project dynamically
+        let source = std::fs::read_to_string(project_root.join(rel_path)).unwrap();
+        let line_num = source
+            .lines()
+            .enumerate()
+            .find(|(_, l)| l.contains("pub fn analyze_project("))
+            .map(|(i, _)| i + 1)
+            .unwrap_or(49);
+
         let mut items = vec![make_item(
             "svt_analyzer::analyze_project",
-            &format!("{rel_path}:46"),
+            &format!("{rel_path}:{line_num}"),
             "rust",
         )];
 

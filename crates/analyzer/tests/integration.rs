@@ -127,6 +127,69 @@ fn warnings_collected_not_dropped() {
 }
 
 #[test]
+fn data_flow_metadata_present_on_functions() {
+    let mut store = CozoStore::new_in_memory().unwrap();
+    let summary = analyze_project(&mut store, DEFAULT_PROJECT_ID, &project_root(), None).unwrap();
+
+    let nodes = store.get_all_nodes(summary.version).unwrap();
+    let functions: Vec<_> = nodes.iter().filter(|n| n.sub_kind == "function").collect();
+
+    let with_return_type = functions
+        .iter()
+        .filter(|n| {
+            n.metadata
+                .as_ref()
+                .is_some_and(|m| m.get("return_type").is_some())
+        })
+        .count();
+    let with_param_types = functions
+        .iter()
+        .filter(|n| {
+            n.metadata
+                .as_ref()
+                .is_some_and(|m| m.get("param_types").is_some())
+        })
+        .count();
+
+    // At least some functions in this codebase should have domain type params/returns
+    assert!(
+        with_return_type > 0,
+        "some functions should have return_type metadata, got 0 out of {}",
+        functions.len()
+    );
+    assert!(
+        with_param_types > 0,
+        "some functions should have param_types metadata, got 0 out of {}",
+        functions.len()
+    );
+
+    // Transforms edges should be detected from signature-based analysis
+    let edges = store.get_all_edges(summary.version, None).unwrap();
+    let transforms_count = edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Transforms)
+        .count();
+    assert!(
+        transforms_count > 0,
+        "should detect at least one Transforms edge from signature analysis"
+    );
+
+    // Calls edges should attribute to function-level callers (not module-level)
+    let calls: Vec<_> = edges.iter().filter(|e| e.kind == EdgeKind::Calls).collect();
+    assert!(!calls.is_empty(), "should have Calls edges in the analysis");
+    // Verify that Calls sources are function nodes (have type sigs), not just modules
+    let fn_ids: std::collections::HashSet<&str> = functions.iter().map(|n| n.id.as_str()).collect();
+    let calls_from_functions = calls
+        .iter()
+        .filter(|e| fn_ids.contains(e.source.as_str()))
+        .count();
+    assert!(
+        calls_from_functions > 0,
+        "some Calls edges should have function-level sources, not just module-level"
+    );
+}
+
+#[test]
 fn multiple_crates_all_represented() {
     let mut store = CozoStore::new_in_memory().unwrap();
     let summary = analyze_project(&mut store, DEFAULT_PROJECT_ID, &project_root(), None).unwrap();

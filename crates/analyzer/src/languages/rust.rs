@@ -10,6 +10,7 @@ use std::path::Path;
 use svt_core::analysis::LanguageParser as CoreLanguageParser;
 use svt_core::model::{EdgeKind, NodeKind};
 
+use crate::type_metadata::{self, RUST_TYPE_CONFIG};
 use crate::types::{AnalysisItem, AnalysisRelation, AnalysisWarning};
 
 use super::{LanguageAnalyzer, ParseResult};
@@ -481,6 +482,10 @@ fn visit_node(
             } else {
                 vec![]
             };
+            // Build data flow metadata (param_types, return_type) for the function.
+            let data_flow_meta =
+                build_data_flow_metadata(node, state.source, module_context, &state.use_aliases);
+
             if let Some(type_qn) = impl_type {
                 // Method inside an impl block — parent under the type.
                 if let Some(name) = item_name(node, state.source) {
@@ -488,6 +493,14 @@ fn visit_node(
                     let line = node.start_position().row + 1;
                     let source_ref = format!("{}:{line}", state.file_path.display());
                     let loc = node.end_position().row - node.start_position().row + 1;
+                    let mut metadata = serde_json::json!({"loc": loc});
+                    if let Some(df) = data_flow_meta {
+                        if let Some(obj) = metadata.as_object_mut() {
+                            if let Some(df_obj) = df.as_object() {
+                                obj.extend(df_obj.iter().map(|(k, v)| (k.clone(), v.clone())));
+                            }
+                        }
+                    }
                     state.items.push(AnalysisItem {
                         qualified_name,
                         kind: NodeKind::Unit,
@@ -495,20 +508,35 @@ fn visit_node(
                         parent_qualified_name: Some(type_qn.to_string()),
                         source_ref,
                         language: "rust".to_string(),
-                        metadata: Some(serde_json::json!({"loc": loc})),
+                        metadata: Some(metadata),
                         tags,
                     });
                 }
             } else {
-                extract_named_item(
+                extract_named_item_with_data_flow(
                     node,
                     state,
                     module_context,
                     NodeKind::Unit,
                     "function",
                     tags,
+                    data_flow_meta,
                 );
             }
+            // Compute the caller's qualified name for Calls edge attribution.
+            let caller_qn = if let Some(type_qn) = impl_type {
+                item_name(node, state.source)
+                    .map(|name| format!("{type_qn}::{name}"))
+                    .unwrap_or_else(|| build_qualified_name(module_context))
+            } else {
+                item_name(node, state.source)
+                    .map(|name| {
+                        let module_qn = build_qualified_name(module_context);
+                        format!("{module_qn}::{name}")
+                    })
+                    .unwrap_or_else(|| build_qualified_name(module_context))
+            };
+
             // Build local type map from function parameters and body.
             let mut local_type_map = node
                 .child_by_field_name("parameters")
@@ -527,7 +555,14 @@ fn visit_node(
 
             // Descend into the function body to find call expressions.
             if let Some(body) = node.child_by_field_name("body") {
-                visit_call_expressions(body, state, module_context, impl_type, &local_type_map);
+                visit_call_expressions(
+                    body,
+                    state,
+                    module_context,
+                    impl_type,
+                    &local_type_map,
+                    &caller_qn,
+                );
             }
         }
         "impl_item" => {
@@ -574,6 +609,53 @@ fn extract_named_item(
         source_ref,
         language: "rust".to_string(),
         metadata: Some(serde_json::json!({"loc": loc})),
+        tags,
+    });
+}
+
+/// Extract a named function item with optional data flow metadata.
+///
+/// Like [`extract_named_item`] but merges data flow metadata (param_types,
+/// return_type) into the item's metadata JSON when present.
+fn extract_named_item_with_data_flow(
+    node: tree_sitter::Node<'_>,
+    state: &mut FileParseState<'_>,
+    module_context: &[String],
+    kind: NodeKind,
+    sub_kind: &str,
+    tags: Vec<String>,
+    data_flow_meta: Option<serde_json::Value>,
+) {
+    let Some(name) = item_name(node, state.source) else {
+        return;
+    };
+
+    // Register the type name so local definitions shadow use-aliases.
+    state.local_types.insert(name.clone());
+
+    let parent_qualified_name = build_qualified_name(module_context);
+    let qualified_name = format!("{parent_qualified_name}::{name}");
+    let line = node.start_position().row + 1;
+    let source_ref = format!("{}:{line}", state.file_path.display());
+    let loc = node.end_position().row - node.start_position().row + 1;
+
+    let mut metadata = serde_json::json!({"loc": loc});
+    if let Some(df) = data_flow_meta {
+        if let Some(obj) = metadata.as_object_mut() {
+            if let Some(df_obj) = df.as_object() {
+                obj.extend(df_obj.iter().map(|(k, v)| (k.clone(), v.clone())));
+            }
+        }
+    }
+
+    state.items.push(AnalysisItem {
+        qualified_name,
+        kind,
+        sub_kind: sub_kind.to_string(),
+        parent_qualified_name: Some(parent_qualified_name),
+        source_ref,
+        language: "rust".to_string(),
+        metadata: Some(metadata),
         tags,
     });
 }
@@ -1685,6 +1767,128 @@ fn extract_param_types(
     type_map
 }
 
+/// Primitive and well-known standard library types excluded from data flow metadata.
+///
+/// Unwrap `Result<T, E>` and `Option<T>` wrappers in tree-sitter AST nodes
+/// to extract the inner data type.
+///
+/// For `Result<T, E>`, returns the resolved qualified name of `T`.
+/// For `Option<T>`, returns the resolved qualified name of `T`.
+/// For reference types, strips `&`/`&mut` and recurses.
+/// For other types, delegates to `extract_type_from_annotation`.
+fn unwrap_wrapper_type_ast(
+    type_node: tree_sitter::Node<'_>,
+    source: &[u8],
+    module_context: &[String],
+    use_aliases: &HashMap<String, UseAliasInfo>,
+) -> Option<String> {
+    if type_node.kind() == "generic_type" {
+        let base = type_node.child_by_field_name("type")?;
+        let base_name = base.utf8_text(source).ok()?;
+        if RUST_TYPE_CONFIG.wrapper_types.contains(&base_name) {
+            // Extract the first type argument (T in Result<T, E> or Option<T>).
+            let type_args = type_node.child_by_field_name("type_arguments")?;
+            let first_arg = type_args.named_child(0)?;
+            // Recursively unwrap in case of nested wrappers (e.g., Option<Result<T, E>>).
+            return unwrap_wrapper_type_ast(first_arg, source, module_context, use_aliases);
+        }
+    }
+    // For reference types, strip the reference and recurse.
+    if type_node.kind() == "reference_type" {
+        let inner = type_node.child_by_field_name("type")?;
+        return unwrap_wrapper_type_ast(inner, source, module_context, use_aliases);
+    }
+
+    extract_type_from_annotation(type_node, source, module_context, use_aliases)
+}
+
+/// Build data flow metadata (param_types and return_type) for a function node.
+///
+/// Extracts parameter types and return type from the tree-sitter AST, then
+/// delegates filtering and construction to the shared [`type_metadata`] module.
+/// Returns a JSON value suitable for merging into the function's metadata object,
+/// or `None` if there are no data-flow-relevant types to record.
+fn build_data_flow_metadata(
+    func_node: tree_sitter::Node<'_>,
+    source: &[u8],
+    module_context: &[String],
+    use_aliases: &HashMap<String, UseAliasInfo>,
+) -> Option<serde_json::Value> {
+    // Extract raw parameter (name, type) pairs from the AST.
+    let raw_params = func_node
+        .child_by_field_name("parameters")
+        .map(|params| extract_raw_param_types(params, source, module_context, use_aliases))
+        .unwrap_or_default();
+
+    // Extract raw return type from the AST.
+    let raw_return = func_node
+        .child_by_field_name("return_type")
+        .and_then(|rt| unwrap_wrapper_type_ast(rt, source, module_context, use_aliases));
+
+    // Delegate filtering and construction to the shared module.
+    let data_flow = type_metadata::build_data_flow_metadata(
+        &raw_params,
+        raw_return.as_deref(),
+        &RUST_TYPE_CONFIG,
+    )?;
+
+    let mut metadata = serde_json::json!({});
+    type_metadata::merge_into_metadata(&mut metadata, &data_flow);
+    Some(metadata)
+}
+
+/// Extract raw parameter (name, type) pairs from a function's parameters node.
+///
+/// This performs tree-sitter AST extraction only — no filtering of primitives
+/// or skip types. Skips `self`/`&self` parameters.
+fn extract_raw_param_types(
+    params_node: tree_sitter::Node<'_>,
+    source: &[u8],
+    module_context: &[String],
+    use_aliases: &HashMap<String, UseAliasInfo>,
+) -> Vec<(String, String)> {
+    let mut entries = Vec::new();
+
+    for i in 0..params_node.named_child_count() {
+        let Some(child) = params_node.named_child(i) else {
+            continue;
+        };
+
+        if child.kind() != "parameter" {
+            continue;
+        }
+
+        let pattern = match child.child_by_field_name("pattern") {
+            Some(p) => p,
+            None => continue,
+        };
+        let type_node = match child.child_by_field_name("type") {
+            Some(t) => t,
+            None => continue,
+        };
+
+        let param_name = match pattern.utf8_text(source) {
+            Ok(name) => name.trim().to_string(),
+            Err(_) => continue,
+        };
+
+        if param_name == "self" || param_name.is_empty() {
+            continue;
+        }
+
+        // Unwrap Result/Option and strip references via AST traversal.
+        let type_qn = match unwrap_wrapper_type_ast(type_node, source, module_context, use_aliases)
+        {
+            Some(t) => t,
+            None => continue,
+        };
+
+        entries.push((param_name, type_qn));
+    }
+
+    entries
+}
+
 /// Resolve a scoped call path to a fully qualified name.
 ///
 /// Applies heuristic resolution for common call patterns:
@@ -1736,6 +1940,7 @@ fn visit_call_expressions(
     module_context: &[String],
     impl_type: Option<&str>,
     local_type_map: &HashMap<String, String>,
+    caller_qn: &str,
 ) {
     for i in 0..node.named_child_count() {
         let Some(child) = node.named_child(i) else {
@@ -1744,7 +1949,7 @@ fn visit_call_expressions(
 
         if child.kind() == "call_expression" {
             if let Some(function) = child.child_by_field_name("function") {
-                let source_qn = build_qualified_name(module_context);
+                let source_qn = caller_qn.to_string();
 
                 match function.kind() {
                     "identifier" | "scoped_identifier" => {
@@ -1825,7 +2030,14 @@ fn visit_call_expressions(
         }
 
         // Recurse into children to find nested call expressions.
-        visit_call_expressions(child, state, module_context, impl_type, local_type_map);
+        visit_call_expressions(
+            child,
+            state,
+            module_context,
+            impl_type,
+            local_type_map,
+            caller_qn,
+        );
     }
 }
 
@@ -3923,6 +4135,245 @@ mod tests {
             1,
             "my_crate::protocol should appear exactly once, got: {:?}",
             protocol_modules
+        );
+    }
+
+    // --- Data flow metadata tests ---
+
+    /// Helper to find a function item by qualified name and extract its metadata.
+    fn get_function_metadata(result: &ParseResult, qn: &str) -> Option<serde_json::Value> {
+        result
+            .items
+            .iter()
+            .find(|i| i.qualified_name == qn && i.sub_kind == "function")
+            .and_then(|i| i.metadata.clone())
+    }
+
+    #[test]
+    fn function_return_type_captured_in_metadata() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub struct Node;
+            pub struct Edge;
+            pub fn transform(input: Node) -> Edge { Edge }
+            "#,
+        );
+        let meta = get_function_metadata(&result, "my_crate::transform")
+            .expect("function should have metadata");
+        assert_eq!(
+            meta["return_type"], "my_crate::Edge",
+            "return_type should be the resolved qualified name"
+        );
+        let params = meta["param_types"]
+            .as_array()
+            .expect("param_types should be an array");
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0]["name"], "input");
+        assert_eq!(params[0]["type"], "my_crate::Node");
+    }
+
+    #[test]
+    fn result_return_type_unwrapped_to_inner_type() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub struct MyError;
+            pub struct Output;
+            pub struct Input;
+            pub fn process(data: Input) -> Result<Output, MyError> { Ok(Output) }
+            "#,
+        );
+        let meta = get_function_metadata(&result, "my_crate::process")
+            .expect("function should have metadata");
+        assert_eq!(
+            meta["return_type"], "my_crate::Output",
+            "Result<T, E> should be unwrapped to T"
+        );
+    }
+
+    #[test]
+    fn option_return_type_unwrapped_to_inner_type() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub struct Config;
+            pub struct Input;
+            pub fn maybe_config(data: Input) -> Option<Config> { Some(Config) }
+            "#,
+        );
+        let meta = get_function_metadata(&result, "my_crate::maybe_config")
+            .expect("function should have metadata");
+        assert_eq!(
+            meta["return_type"], "my_crate::Config",
+            "Option<T> should be unwrapped to T"
+        );
+    }
+
+    #[test]
+    fn primitive_return_type_excluded_from_metadata() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub struct Input;
+            pub fn count(data: Input) -> u32 { 0 }
+            "#,
+        );
+        let meta = get_function_metadata(&result, "my_crate::count")
+            .expect("function should have metadata");
+        assert!(
+            meta.get("return_type").is_none(),
+            "primitive return types should be excluded from metadata, got: {meta:?}"
+        );
+    }
+
+    #[test]
+    fn string_return_type_excluded_from_metadata() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub struct Input;
+            pub fn to_string(data: Input) -> String { String::new() }
+            "#,
+        );
+        let meta = get_function_metadata(&result, "my_crate::to_string")
+            .expect("function should have metadata");
+        assert!(
+            meta.get("return_type").is_none(),
+            "String return type should be excluded from metadata"
+        );
+    }
+
+    #[test]
+    fn reference_return_type_stripped_to_base() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub struct Config;
+            pub struct Input;
+            pub fn get_config(data: Input) -> &Config { &Config }
+            "#,
+        );
+        let meta = get_function_metadata(&result, "my_crate::get_config")
+            .expect("function should have metadata");
+        assert_eq!(
+            meta["return_type"], "my_crate::Config",
+            "reference types should be stripped to base type"
+        );
+    }
+
+    #[test]
+    fn method_return_type_captured_in_metadata() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub struct Processor;
+            pub struct Input;
+            pub struct Output;
+            impl Processor {
+                pub fn run(&self, data: Input) -> Output { Output }
+            }
+            "#,
+        );
+        let meta = get_function_metadata(&result, "my_crate::Processor::run")
+            .expect("method should have metadata");
+        assert_eq!(
+            meta["return_type"], "my_crate::Output",
+            "method return type should be captured"
+        );
+        let params = meta["param_types"]
+            .as_array()
+            .expect("param_types should be an array");
+        assert_eq!(
+            params.len(),
+            1,
+            "self parameter should be excluded from param_types"
+        );
+        assert_eq!(params[0]["name"], "data");
+        assert_eq!(params[0]["type"], "my_crate::Input");
+    }
+
+    #[test]
+    fn function_with_no_typed_params_or_return_has_no_data_flow_metadata() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub fn simple() { }
+            "#,
+        );
+        let meta = get_function_metadata(&result, "my_crate::simple")
+            .expect("function should have metadata");
+        assert!(
+            meta.get("param_types").is_none(),
+            "function with no relevant params should not have param_types"
+        );
+        assert!(
+            meta.get("return_type").is_none(),
+            "function with no return type should not have return_type"
+        );
+        // Should still have loc metadata
+        assert!(meta.get("loc").is_some(), "function should still have loc");
+    }
+
+    #[test]
+    fn primitive_param_types_excluded_from_metadata() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub fn add(a: u32, b: i64) -> bool { true }
+            "#,
+        );
+        let meta =
+            get_function_metadata(&result, "my_crate::add").expect("function should have metadata");
+        assert!(
+            meta.get("param_types").is_none(),
+            "primitive param types should be excluded"
+        );
+        assert!(
+            meta.get("return_type").is_none(),
+            "primitive return type should be excluded"
+        );
+    }
+
+    #[test]
+    fn nested_result_option_unwrapped() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub struct MyError;
+            pub struct Data;
+            pub struct Input;
+            pub fn deep(input: Input) -> Result<Option<Data>, MyError> { Ok(Some(Data)) }
+            "#,
+        );
+        let meta = get_function_metadata(&result, "my_crate::deep")
+            .expect("function should have metadata");
+        // Result<Option<Data>, MyError> → unwrap Result → Option<Data> → unwrap Option → Data
+        assert_eq!(
+            meta["return_type"], "my_crate::Data",
+            "nested Result<Option<T>> should unwrap to T"
+        );
+    }
+
+    #[test]
+    fn mut_reference_param_type_stripped() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub struct Buffer;
+            pub struct Output;
+            pub fn fill(buf: &mut Buffer) -> Output { Output }
+            "#,
+        );
+        let meta = get_function_metadata(&result, "my_crate::fill")
+            .expect("function should have metadata");
+        let params = meta["param_types"]
+            .as_array()
+            .expect("param_types should be an array");
+        assert_eq!(params.len(), 1);
+        assert_eq!(
+            params[0]["type"], "my_crate::Buffer",
+            "&mut T should be stripped to T"
         );
     }
 }

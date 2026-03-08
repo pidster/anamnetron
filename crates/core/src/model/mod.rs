@@ -91,6 +91,8 @@ pub enum EdgeKind {
     DataFlow,
     /// Public visibility boundary.
     Exports,
+    /// Type conversion between data types.
+    Transforms,
 }
 
 /// Origin of a piece of knowledge in the graph.
@@ -282,6 +284,7 @@ mod tests {
             EdgeKind::Extends,
             EdgeKind::DataFlow,
             EdgeKind::Exports,
+            EdgeKind::Transforms,
         ] {
             let json = serde_json::to_string(&kind).unwrap();
             let back: EdgeKind = serde_json::from_str(&json).unwrap();
