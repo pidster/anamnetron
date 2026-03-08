@@ -1,6 +1,6 @@
 ---
 source: crates/core/src/export/dot.rs
-assertion_line: 233
+assertion_line: 246
 expression: output
 ---
 digraph architecture {

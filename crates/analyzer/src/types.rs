@@ -112,6 +112,8 @@ pub struct AnalysisSummary {
     pub go_packages_analyzed: usize,
     /// Number of Python packages analyzed.
     pub python_packages_analyzed: usize,
+    /// Number of Java modules analyzed.
+    pub java_packages_analyzed: usize,
     /// Number of source files parsed.
     pub files_analyzed: usize,
     /// Number of nodes created in the store.

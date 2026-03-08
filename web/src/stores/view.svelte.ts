@@ -1,5 +1,5 @@
 /** View mode types for the main visualisation area. */
-export type ViewMode = "treemap" | "bundle" | "matrix" | "chord" | "sunburst" | "mermaid";
+export type ViewMode = "treemap" | "bundle" | "matrix" | "chord" | "sunburst" | "mermaid" | "flow";
 
 /** Store for the currently active view mode. */
 class ViewStore {

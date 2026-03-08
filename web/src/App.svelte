@@ -30,6 +30,7 @@
   import SunburstView from "./components/SunburstView.svelte";
   import BundleView from "./components/BundleView.svelte";
   import MatrixView from "./components/MatrixView.svelte";
+  import FlowView from "./components/FlowView.svelte";
 
   let showConformance = $state(false);
   let conformanceDesign = $state<Version | null>(null);
@@ -650,6 +651,7 @@
           { mode: "chord" as ViewMode, label: "Chord", disabled: false },
           { mode: "sunburst" as ViewMode, label: "Sunburst", disabled: false },
           { mode: "mermaid" as ViewMode, label: "Mermaid", disabled: false },
+          { mode: "flow" as ViewMode, label: "Flow", disabled: false },
         ] as item}
           <button
             class="view-btn"
@@ -766,9 +768,9 @@
     traversalIndex={fullTraversalIndex}
     {labelMap}
     focusNodeId={focusStore.focusNodeId}
-    onnavigate={(nodeId) => selectNode(nodeId)}
-    onfocus={(nodeId) => focusStore.focus(nodeId)}
-    onclearfocus={() => focusStore.clear()}
+    onnavigate={(nodeId) => selectNode(nodeId, viewStore.mode !== "flow")}
+    onfocus={(nodeId) => { if (viewStore.mode !== "flow") focusStore.focus(nodeId); }}
+    onclearfocus={() => { if (viewStore.mode !== "flow") focusStore.clear(); }}
   />
 
   <div class="main-content">
@@ -776,7 +778,7 @@
       traversalIndex={fullTraversalIndex}
       {labelMap}
       {phantomIds}
-      onselectnode={(nodeId) => selectNode(nodeId)}
+      onselectnode={(nodeId) => selectNode(nodeId, viewStore.mode !== "flow")}
     />
     <div class="graph-area">
       {#if graphStore.loading && !graphStore.graph}
@@ -813,6 +815,13 @@
         {:else if viewStore.mode === "sunburst"}
           <ErrorBoundary name="Sunburst View">
             <SunburstView graph={filteredVisibleGraph} onselectnode={(nodeId) => selectNode(nodeId)} />
+          </ErrorBoundary>
+        {:else if viewStore.mode === "flow"}
+          <ErrorBoundary name="Flow View">
+            <FlowView graph={filteredVisibleGraph} onselectnode={(nodeId) => {
+              selectionStore.selectSingle(nodeId);
+              selectionStore.panelOpen = true;
+            }} />
           </ErrorBoundary>
         {/if}
       {:else}

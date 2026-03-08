@@ -36,6 +36,10 @@ pub mod conformance;
 #[cfg(feature = "store")]
 pub mod diff;
 
+/// Root detection: identify entry points and terminal nodes from graph topology.
+#[cfg(feature = "store")]
+pub mod roots;
+
 /// Export graph data in various formats (Mermaid, JSON, DOT).
 #[cfg(feature = "store")]
 pub mod export;

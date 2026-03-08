@@ -6,6 +6,7 @@
 
 pub mod descriptor;
 pub mod go;
+pub mod java;
 pub mod python;
 pub mod rust;
 pub mod typescript;
@@ -113,6 +114,7 @@ impl OrchestratorRegistry {
         registry.register(Box::new(typescript::orchestrator()));
         registry.register(Box::new(go::orchestrator()));
         registry.register(Box::new(python::orchestrator()));
+        registry.register(Box::new(java::orchestrator()));
         registry
     }
 
@@ -167,7 +169,7 @@ mod tests {
             .map(|o| o.language_id())
             .collect();
         ids.sort();
-        assert_eq!(ids, vec!["go", "python", "rust", "typescript"]);
+        assert_eq!(ids, vec!["go", "java", "python", "rust", "typescript"]);
     }
 
     #[test]

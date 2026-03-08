@@ -132,9 +132,11 @@ fn discover_by_descriptor(root: &Path, descriptor: &LanguageDescriptor) -> Vec<L
 ///
 /// Strategy (tried in order):
 /// 1. `go.mod` — regex for `module <path>`, use last path segment
-/// 2. JSON — look for `"name"` field
-/// 3. TOML — look for `[project].name` or `[package].name`
-/// 4. Fallback — use the directory name
+/// 2. `pom.xml` — extract `<artifactId>` (first occurrence outside `<parent>`)
+/// 3. `build.gradle` / `build.gradle.kts` — fallback to directory name
+/// 4. JSON — look for `"name"` field
+/// 5. TOML — look for `[project].name` or `[package].name`
+/// 6. Fallback — use the directory name
 fn extract_name_from_manifest(manifest_path: &Path, unit_dir: &Path) -> String {
     let content = match std::fs::read_to_string(manifest_path) {
         Ok(c) => c,
@@ -157,6 +159,19 @@ fn extract_name_from_manifest(manifest_path: &Path, unit_dir: &Path) -> String {
                 }
             }
         }
+    }
+
+    // pom.xml: extract <artifactId> (skip those inside <parent> block).
+    if file_name == "pom.xml" {
+        if let Some(name) = extract_maven_artifact_id(&content) {
+            return name;
+        }
+        return dir_name_fallback(unit_dir);
+    }
+
+    // build.gradle / build.gradle.kts: use directory name as fallback.
+    if file_name == "build.gradle" || file_name == "build.gradle.kts" {
+        return dir_name_fallback(unit_dir);
     }
 
     // JSON: { "name": "..." }
@@ -191,6 +206,47 @@ fn extract_name_from_manifest(manifest_path: &Path, unit_dir: &Path) -> String {
     }
 
     dir_name_fallback(unit_dir)
+}
+
+/// Extract the `<artifactId>` from a `pom.xml` file, skipping the `<parent>` block.
+///
+/// Uses simple line-based parsing — no XML crate dependency needed.
+fn extract_maven_artifact_id(content: &str) -> Option<String> {
+    let mut in_parent = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.contains("<parent>") || trimmed.contains("<parent ") {
+            in_parent = true;
+        }
+        if in_parent {
+            if trimmed.contains("</parent>") {
+                in_parent = false;
+            }
+            continue;
+        }
+        if let Some(artifact_id) = extract_xml_tag_value(trimmed, "artifactId") {
+            return Some(artifact_id);
+        }
+    }
+    None
+}
+
+/// Extract the text content of a simple XML tag from a single line.
+///
+/// E.g., `<artifactId>my-app</artifactId>` returns `Some("my-app")`.
+fn extract_xml_tag_value(line: &str, tag: &str) -> Option<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    if let Some(start) = line.find(&open) {
+        if let Some(end) = line.find(&close) {
+            let value = &line[start + open.len()..end];
+            let value = value.trim();
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
 }
 
 /// Fallback: use the directory name as the unit name.
@@ -343,6 +399,7 @@ fn extract_dependencies_from_manifest(manifest_path: &Path, language_id: &str) -
         "typescript" => parse_ts_dependencies(&content),
         "go" => parse_go_requires(&content),
         "python" => parse_pyproject_dependencies(&content),
+        "java" => parse_java_dependencies(&content),
         _ => vec![],
     }
 }
@@ -453,6 +510,96 @@ fn parse_pyproject_dependencies(content: &str) -> Vec<String> {
         })
         .filter(|n| !n.is_empty())
         .collect()
+}
+
+/// Parse dependency names from a Java manifest file (pom.xml or build.gradle).
+///
+/// Dispatches to Maven or Gradle parser based on content heuristics.
+/// Returns artifact IDs for Maven, or group:artifact short names for Gradle.
+fn parse_java_dependencies(content: &str) -> Vec<String> {
+    // Detect Maven vs Gradle by content.
+    if content.contains("<project") || content.contains("<dependency>") {
+        parse_maven_dependencies(content)
+    } else {
+        parse_gradle_dependencies(content)
+    }
+}
+
+/// Parse dependency artifact IDs from a `pom.xml` file.
+///
+/// Extracts `<artifactId>` from `<dependency>` elements. Only returns the
+/// artifact ID (not the group ID) since workspace-internal filtering matches
+/// by discovered unit names.
+fn parse_maven_dependencies(content: &str) -> Vec<String> {
+    let mut deps = Vec::new();
+    let mut in_dependency = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.contains("<dependency>") || trimmed.contains("<dependency ") {
+            in_dependency = true;
+            continue;
+        }
+        if trimmed.contains("</dependency>") {
+            in_dependency = false;
+            continue;
+        }
+        if in_dependency {
+            if let Some(artifact_id) = extract_xml_tag_value(trimmed, "artifactId") {
+                deps.push(artifact_id);
+            }
+        }
+    }
+
+    deps
+}
+
+/// Parse dependency names from a Gradle build script (`build.gradle` or `build.gradle.kts`).
+///
+/// Extracts artifact names from common dependency declaration patterns:
+/// - `implementation 'group:artifact:version'`
+/// - `implementation "group:artifact:version"`
+/// - `api 'group:artifact:version'`
+/// - `compile 'group:artifact:version'` (legacy)
+///
+/// Returns only the artifact name (second colon-separated segment).
+fn parse_gradle_dependencies(content: &str) -> Vec<String> {
+    let mut deps = Vec::new();
+    let dep_configs = [
+        "implementation",
+        "api",
+        "compile",
+        "compileOnly",
+        "runtimeOnly",
+        "testImplementation",
+        "testCompile",
+    ];
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        for config in &dep_configs {
+            // Match patterns like: implementation 'group:artifact:version'
+            // or: implementation("group:artifact:version")
+            if let Some(rest) = trimmed.strip_prefix(config) {
+                let rest = rest.trim();
+                // Handle both `'group:name:ver'` and `("group:name:ver")`
+                let dep_str = rest
+                    .trim_start_matches('(')
+                    .trim_start_matches(&['"', '\''][..])
+                    .trim_end_matches(')')
+                    .trim_end_matches(&['"', '\''][..]);
+                let parts: Vec<&str> = dep_str.split(':').collect();
+                if parts.len() >= 2 {
+                    let artifact = parts[1].trim();
+                    if !artifact.is_empty() {
+                        deps.push(artifact.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    deps
 }
 
 #[cfg(test)]
@@ -981,5 +1128,370 @@ dependencies = []
         assert_eq!(result.relations[1].source_qualified_name, "app");
         assert_eq!(result.relations[1].target_qualified_name, "lib-b");
         assert_eq!(result.relations[1].kind, EdgeKind::Depends);
+    }
+
+    // --- Maven/Gradle name and dependency extraction tests ---
+
+    #[test]
+    fn extract_name_from_pom_xml() {
+        let dir = TempDir::new().unwrap();
+        let manifest = dir.path().join("pom.xml");
+        std::fs::write(
+            &manifest,
+            "\
+<project>
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>my-service</artifactId>
+  <version>1.0.0</version>
+</project>
+",
+        )
+        .unwrap();
+        assert_eq!(
+            extract_name_from_manifest(&manifest, dir.path()),
+            "my-service"
+        );
+    }
+
+    #[test]
+    fn extract_name_from_pom_xml_skips_parent_artifact_id() {
+        let dir = TempDir::new().unwrap();
+        let manifest = dir.path().join("pom.xml");
+        std::fs::write(
+            &manifest,
+            "\
+<project>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>parent-pom</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <artifactId>child-module</artifactId>
+</project>
+",
+        )
+        .unwrap();
+        assert_eq!(
+            extract_name_from_manifest(&manifest, dir.path()),
+            "child-module",
+            "should skip artifactId inside <parent> block"
+        );
+    }
+
+    #[test]
+    fn extract_name_from_build_gradle_uses_dir_name() {
+        let dir = TempDir::new().unwrap();
+        let sub = dir.path().join("my-gradle-app");
+        std::fs::create_dir_all(&sub).unwrap();
+        let manifest = sub.join("build.gradle");
+        std::fs::write(&manifest, "apply plugin: 'java'\n").unwrap();
+        assert_eq!(extract_name_from_manifest(&manifest, &sub), "my-gradle-app");
+    }
+
+    #[test]
+    fn parse_maven_dependencies_extracts_artifact_ids() {
+        let content = "\
+<project>
+  <dependencies>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>lib-a</artifactId>
+      <version>1.0.0</version>
+    </dependency>
+    <dependency>
+      <groupId>org.external</groupId>
+      <artifactId>external-lib</artifactId>
+      <version>2.0.0</version>
+    </dependency>
+  </dependencies>
+</project>
+";
+        let deps = parse_maven_dependencies(content);
+        assert_eq!(deps.len(), 2);
+        assert!(deps.contains(&"lib-a".to_string()));
+        assert!(deps.contains(&"external-lib".to_string()));
+    }
+
+    #[test]
+    fn parse_maven_dependencies_returns_empty_when_no_deps() {
+        let content = "\
+<project>
+  <artifactId>standalone</artifactId>
+</project>
+";
+        let deps = parse_maven_dependencies(content);
+        assert!(deps.is_empty());
+    }
+
+    #[test]
+    fn parse_gradle_dependencies_extracts_artifact_names() {
+        let content = "\
+plugins {
+    id 'java'
+}
+
+dependencies {
+    implementation 'com.example:lib-a:1.0.0'
+    api \"org.other:lib-b:2.0.0\"
+    testImplementation 'junit:junit:4.13'
+}
+";
+        let deps = parse_gradle_dependencies(content);
+        assert_eq!(deps.len(), 3);
+        assert!(deps.contains(&"lib-a".to_string()));
+        assert!(deps.contains(&"lib-b".to_string()));
+        assert!(deps.contains(&"junit".to_string()));
+    }
+
+    #[test]
+    fn parse_gradle_dependencies_handles_kotlin_dsl() {
+        let content = "\
+dependencies {
+    implementation(\"com.example:my-lib:1.0.0\")
+    api(\"org.other:other-lib:2.0.0\")
+}
+";
+        let deps = parse_gradle_dependencies(content);
+        assert_eq!(deps.len(), 2);
+        assert!(deps.contains(&"my-lib".to_string()));
+        assert!(deps.contains(&"other-lib".to_string()));
+    }
+
+    #[test]
+    fn parse_gradle_dependencies_returns_empty_when_no_deps() {
+        let content = "apply plugin: 'java'\n";
+        let deps = parse_gradle_dependencies(content);
+        assert!(deps.is_empty());
+    }
+
+    #[test]
+    fn java_maven_workspace_dependencies_detected() {
+        let dir = TempDir::new().unwrap();
+
+        // Create two Maven modules: svc depends on shared
+        let svc_dir = dir.path().join("svc");
+        let shared_dir = dir.path().join("shared");
+        std::fs::create_dir_all(&svc_dir).unwrap();
+        std::fs::create_dir_all(&shared_dir).unwrap();
+
+        std::fs::write(
+            svc_dir.join("pom.xml"),
+            "\
+<project>
+  <artifactId>svc</artifactId>
+  <dependencies>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>shared</artifactId>
+      <version>1.0.0</version>
+    </dependency>
+    <dependency>
+      <groupId>org.external</groupId>
+      <artifactId>external-lib</artifactId>
+      <version>2.0.0</version>
+    </dependency>
+  </dependencies>
+</project>
+",
+        )
+        .unwrap();
+        std::fs::write(
+            svc_dir.join("Main.java"),
+            "public class Main { public static void main(String[] args) {} }\n",
+        )
+        .unwrap();
+
+        std::fs::write(
+            shared_dir.join("pom.xml"),
+            "\
+<project>
+  <artifactId>shared</artifactId>
+</project>
+",
+        )
+        .unwrap();
+        std::fs::write(shared_dir.join("Utils.java"), "public class Utils {}\n").unwrap();
+
+        let descriptor = LanguageDescriptor {
+            language_id: "java".to_string(),
+            manifest_files: vec!["pom.xml".to_string()],
+            source_extensions: vec![".java".to_string()],
+            skip_directories: vec!["target".to_string()],
+            top_level_kind: NodeKind::Service,
+            top_level_sub_kind: "module".to_string(),
+        };
+
+        let units = discover_by_descriptor(dir.path(), &descriptor);
+        assert_eq!(units.len(), 2, "should discover both modules");
+
+        let svc_unit = units
+            .iter()
+            .find(|u| u.name == "svc")
+            .expect("should find svc");
+        assert_eq!(
+            svc_unit.workspace_dependencies,
+            vec!["shared".to_string()],
+            "svc should depend on shared (workspace-internal), not external-lib"
+        );
+
+        let shared_unit = units
+            .iter()
+            .find(|u| u.name == "shared")
+            .expect("should find shared");
+        assert!(
+            shared_unit.workspace_dependencies.is_empty(),
+            "shared should have no workspace dependencies"
+        );
+    }
+
+    // --- Java-specific dependency parsing tests ---
+
+    #[test]
+    fn parse_java_dependencies_dispatches_to_maven_for_pom() {
+        let content = "\
+<project>
+  <dependencies>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>core</artifactId>
+      <version>1.0.0</version>
+    </dependency>
+  </dependencies>
+</project>
+";
+        let deps = parse_java_dependencies(content);
+        assert_eq!(deps, vec!["core"]);
+    }
+
+    #[test]
+    fn parse_java_dependencies_dispatches_to_gradle_for_non_xml() {
+        let content = "\
+dependencies {
+    implementation 'com.example:mylib:1.0.0'
+}
+";
+        let deps = parse_java_dependencies(content);
+        assert_eq!(deps, vec!["mylib"]);
+    }
+
+    #[test]
+    fn parse_gradle_dependencies_recognizes_all_config_types() {
+        // Test each config type independently to avoid prefix overlap issues
+        // (e.g., `compile` prefix matches `compileOnly` lines).
+        let configs = [
+            ("implementation", "impl-lib"),
+            ("api", "api-lib"),
+            ("compile", "compile-lib"),
+            ("compileOnly", "co-lib"),
+            ("runtimeOnly", "ro-lib"),
+            ("testImplementation", "ti-lib"),
+            ("testCompile", "tc-lib"),
+        ];
+        for (config, artifact) in &configs {
+            let content = format!("{config} 'com.example:{artifact}:1.0'\n");
+            let deps = parse_gradle_dependencies(&content);
+            assert!(
+                deps.contains(&artifact.to_string()),
+                "{config} should extract artifact '{artifact}', got: {deps:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_maven_dependencies_empty_deps_block() {
+        let content = "\
+<project>
+  <dependencies>
+  </dependencies>
+</project>
+";
+        let deps = parse_maven_dependencies(content);
+        assert!(deps.is_empty());
+    }
+
+    #[test]
+    fn parse_gradle_dependencies_ignores_non_dependency_lines() {
+        let content = "\
+plugins {
+    id 'java'
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'com.example:real-dep:1.0'
+}
+
+task test {
+    doLast { println 'done' }
+}
+";
+        let deps = parse_gradle_dependencies(content);
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0], "real-dep");
+    }
+
+    #[test]
+    fn extract_name_from_build_gradle_kts_uses_dir_name() {
+        let dir = TempDir::new().unwrap();
+        let sub = dir.path().join("my-kotlin-app");
+        std::fs::create_dir_all(&sub).unwrap();
+        let manifest = sub.join("build.gradle.kts");
+        std::fs::write(&manifest, "plugins { kotlin(\"jvm\") }\n").unwrap();
+        assert_eq!(extract_name_from_manifest(&manifest, &sub), "my-kotlin-app");
+    }
+
+    #[test]
+    fn extract_xml_tag_value_returns_none_for_missing_tag() {
+        assert!(extract_xml_tag_value("<groupId>com.example</groupId>", "artifactId").is_none());
+    }
+
+    #[test]
+    fn extract_xml_tag_value_returns_none_for_empty_value() {
+        assert!(extract_xml_tag_value("<artifactId></artifactId>", "artifactId").is_none());
+    }
+
+    #[test]
+    fn extract_xml_tag_value_trims_whitespace() {
+        assert_eq!(
+            extract_xml_tag_value("<artifactId>  my-app  </artifactId>", "artifactId"),
+            Some("my-app".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_maven_artifact_id_returns_none_for_empty_pom() {
+        assert!(extract_maven_artifact_id("<project></project>").is_none());
+    }
+
+    #[test]
+    fn extract_maven_artifact_id_skips_parent_only() {
+        let content = "\
+<project>
+  <parent>
+    <artifactId>parent-pom</artifactId>
+  </parent>
+</project>
+";
+        assert!(
+            extract_maven_artifact_id(content).is_none(),
+            "should skip artifactId inside parent and find none outside"
+        );
+    }
+
+    #[test]
+    fn pom_with_malformed_xml_falls_back_to_dir_name() {
+        let dir = TempDir::new().unwrap();
+        let sub = dir.path().join("fallback-module");
+        std::fs::create_dir_all(&sub).unwrap();
+        let manifest = sub.join("pom.xml");
+        std::fs::write(&manifest, "not valid xml at all").unwrap();
+        assert_eq!(
+            extract_name_from_manifest(&manifest, &sub),
+            "fallback-module"
+        );
     }
 }

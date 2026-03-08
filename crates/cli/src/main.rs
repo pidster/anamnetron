@@ -653,11 +653,12 @@ fn run_analyze(
         println!("    commit: {}", cr);
     }
     println!(
-        "    {} crates, {} TS packages, {} Go modules, {} Python packages, {} files analyzed",
+        "    {} crates, {} TS packages, {} Go modules, {} Python packages, {} Java modules, {} files analyzed",
         summary.crates_analyzed,
         summary.ts_packages_analyzed,
         summary.go_packages_analyzed,
         summary.python_packages_analyzed,
+        summary.java_packages_analyzed,
         summary.files_analyzed
     );
     println!(

@@ -1,6 +1,7 @@
 //! Language-specific analysis drivers.
 
 pub mod go;
+pub mod java;
 pub mod python;
 pub mod rust;
 pub mod svelte;
@@ -45,6 +46,7 @@ impl AnalyzerRegistry {
         registry.register(Box::new(typescript::TypeScriptAnalyzer::new()));
         registry.register(Box::new(go::GoAnalyzer::new()));
         registry.register(Box::new(python::PythonAnalyzer::new()));
+        registry.register(Box::new(java::JavaAnalyzer::new()));
         registry
     }
 
@@ -102,15 +104,22 @@ mod tests {
     }
 
     #[test]
+    fn java_analyzer_has_correct_language_id() {
+        let analyzer = java::JavaAnalyzer::new();
+        assert_eq!(analyzer.language_id(), "java");
+    }
+
+    #[test]
     fn analyzer_registry_with_defaults_has_all_built_ins() {
         let registry = AnalyzerRegistry::with_defaults();
         assert!(registry.get("rust").is_some());
         assert!(registry.get("typescript").is_some());
         assert!(registry.get("go").is_some());
         assert!(registry.get("python").is_some());
+        assert!(registry.get("java").is_some());
         let mut ids = registry.language_ids();
         ids.sort();
-        assert_eq!(ids, vec!["go", "python", "rust", "typescript"]);
+        assert_eq!(ids, vec!["go", "java", "python", "rust", "typescript"]);
     }
 
     #[test]

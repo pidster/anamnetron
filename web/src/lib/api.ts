@@ -116,3 +116,24 @@ export function getProjectEdges(project: string, version: Version, kind?: string
   const params = kind ? `?kind=${encodeURIComponent(kind)}` : "";
   return fetchJson(`${BASE}/api/projects/${encodeURIComponent(project)}/snapshots/${version}/edges${params}`);
 }
+
+/** Root entry returned by the roots API. */
+export interface RootEntry {
+  node_id: string;
+  canonical_path: string;
+  name: string;
+}
+
+/** Root analysis result. */
+export interface RootAnalysis {
+  call_tree_roots: RootEntry[];
+  dependency_sources: RootEntry[];
+  dependency_sinks: RootEntry[];
+  containment_roots: RootEntry[];
+  leaf_sinks: RootEntry[];
+}
+
+/** GET /api/projects/{project}/snapshots/{v}/roots */
+export function getProjectRoots(project: string, version: Version): Promise<RootAnalysis> {
+  return fetchJson(`${BASE}/api/projects/${encodeURIComponent(project)}/snapshots/${version}/roots`);
+}

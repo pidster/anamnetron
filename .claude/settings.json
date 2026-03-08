@@ -42,8 +42,8 @@
       {
         "hooks": [
           {
-            "type": "prompt",
-            "prompt": "Analyze this user prompt: $ARGUMENTS\n\nYou are evaluating whether the orchestrator should delegate this to an agent team. Code changes → implementer (plan mode). Architecture → architect. Code review → reviewer. Tests → test-writer. Simple questions or explicit direct-action requests do not need delegation. Always allow the prompt. Respond with JSON: {\"ok\": true, \"reason\": \"Delegate to [agent] for [task]\"} or {\"ok\": true, \"reason\": \"Simple question, handle directly\"}"
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/user-prompt-submit.sh"
           }
         ]
       }
@@ -53,8 +53,8 @@
         "matcher": "Write",
         "hooks": [
           {
-            "type": "prompt",
-            "prompt": "Evaluate this Write tool call: $ARGUMENTS\n\nCheck: (1) Is a new file truly necessary or should an existing file be edited? (2) Does it respect crate dependency flow (cli/server → analyzer → core)? (3) If in crates/core/, no platform-specific deps (must compile to WASM). (4) If new public API/trait/data model — has design been validated? Respond with JSON: {\"ok\": true, \"reason\": \"checks pass\"} or {\"ok\": false, \"reason\": \"specific concern\"}"
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/pre-tool-write.sh"
           }
         ]
       },
@@ -62,8 +62,8 @@
         "matcher": "Edit",
         "hooks": [
           {
-            "type": "prompt",
-            "prompt": "Evaluate this Edit tool call: $ARGUMENTS\n\nCheck: (1) Has the file been read first? (2) Does the change maintain crate dependency flow (cli/server → analyzer → core)? (3) If crates/core/, preserves WASM compatibility? (4) If changing public API/data model — covered by existing design? (5) Follows existing codebase patterns? Respond with JSON: {\"ok\": true, \"reason\": \"checks pass\"} or {\"ok\": false, \"reason\": \"specific concern\"}"
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/pre-tool-edit.sh"
           }
         ]
       }
@@ -74,7 +74,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [[ \"$TOOL_INPUT\" == *.rs ]]; then rustfmt \"$TOOL_INPUT\" 2>/dev/null || true; fi"
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/post-tool-format.sh"
           }
         ]
       },
@@ -82,8 +82,8 @@
         "matcher": "Edit|Write",
         "hooks": [
           {
-            "type": "prompt",
-            "prompt": "Evaluate this completed Edit/Write: $ARGUMENTS\n\nCheck: (1) Does modified code need tests? (2) Any unwrap()/expect() outside test modules? (3) Public API missing doc comments? (4) Security concerns (path traversal, injection, unsafe)? Respond with JSON: {\"ok\": true, \"reason\": \"checks pass\"} or {\"ok\": false, \"reason\": \"specific concern\"}"
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/post-tool-check.sh"
           }
         ]
       }

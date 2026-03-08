@@ -149,8 +149,6 @@ Prompt-based hooks enforce quality at every edit:
 - **Post-edit**: Checks for missing tests, unwrap/expect usage, doc comments, security concerns
 - **Post-write**: Auto-formats Rust files with rustfmt
 
-## Roadmap Priority (Post-M29)
+## Roadmap Priority (Post-M30)
 
-Next milestones in priority order (see `docs/plan/PROGRESS.md` for full details):
-
-1. **M30: Java Analyzer** — New language with tree-sitter-java, full structural extraction, call graph, Maven/Gradle discovery
+M30 (Java Analyzer) is complete. See `docs/plan/PROGRESS.md` for full details and next milestones.

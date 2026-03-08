@@ -33,8 +33,11 @@
 | **27** | TypeScript Structural Depth | 2026-03-04 | — | Class members (methods/properties/constructors), interface members, enum members/variants, `Extends`/`Implements` heritage edges, non-exported item extraction |
 | **28** | Call Graph Analysis (TS + Go + Python) | 2026-03-04 | — | `visit_ts_call_expressions`, `visit_go_call_expressions` (import alias resolution), `visit_py_call_expressions` (self.method resolution) |
 | **29** | Cross-Package Dependency Extraction | 2026-03-04 | 837 | `workspace_dependencies` on `LanguageUnit`, manifest parsing (package.json/go.mod/pyproject.toml), workspace-internal filtering, `Depends` edge emission |
+| **30** | Java Analyzer | 2026-03-06 | 847 | tree-sitter-java, Maven/Gradle discovery, class/interface/enum/annotation extraction, method/constructor/field members, Extends/Implements edges, call graph, test detection (JUnit/TestNG), cross-module dependencies |
 
-**Current state:** 643 Rust tests + 194 vitest tests = 837 total. All passing. clippy/fmt/audit clean. CI pipeline operational.
+| **31** | Flow View: Root Detection + Force-Directed Graph | 2026-03-08 | 910 | Topology-based root detection (`roots.rs`), force-directed FlowView with Cytoscape.js + fcose, edge particle animation, progressive disclosure, 47 frontend tests |
+
+**Current state:** 669 Rust tests + 241 vitest tests = 910 total. All passing. clippy/fmt/audit clean. CI pipeline operational.
 
 ## What's Working Now
 
@@ -110,8 +113,8 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 ### Web UI — RESOLVED (M16 + M23)
 - ~~No dark mode, no persistence of layout/filter state, no URL routing/permalinks.~~ Dark/light theme toggle, hash-based URL routing, localStorage persistence, keyboard shortcuts, diff view overlay, error boundaries with retry, arrow-key graph traversal, and filtering sidebar all implemented.
 
-### Additional Languages — PARTIALLY RESOLVED (M15)
-- ~~Only Rust and TypeScript analyzers exist.~~ Go and Python analyzers added in M15 with tree-sitter grammars. Java and other languages remain as future goals (PRINCIPLES.md: Extensibility).
+### Additional Languages — RESOLVED (M15 + M30)
+- ~~Only Rust and TypeScript analyzers exist.~~ Go and Python analyzers added in M15 with tree-sitter grammars. Java analyzer added in M30 with full structural extraction, call graph, Maven/Gradle discovery. Five languages now supported: Rust, TypeScript, Go, Python, Java.
 
 ### Analyzer Feature Parity — RESOLVED (M25–M29)
 - ~~The Rust analyzer is significantly more capable than the TypeScript, Go, and Python analyzers.~~ Resolved: test detection added for all languages (M25), module hierarchy for Go and Python (M26), TypeScript structural depth including class/enum members and heritage edges (M27), call graph analysis for all non-Rust languages (M28), cross-package dependency extraction from build tool manifests (M29). See updated parity matrix below.
@@ -411,33 +414,36 @@ All 12 constraints in `design/architecture.yaml` are fully evaluated in both des
 
 The Rust analyzer is the most complete. Other analyzers need to reach parity across these dimensions:
 
-| Feature | Rust | TypeScript | Go | Python |
-|---------|:----:|:----------:|:--:|:------:|
-| **Structural** | | | | |
-| Functions | Y | Y | Y | Y |
-| Methods (class/impl) | Y | Y (members) | Y (receiver) | Y |
-| Structs/Classes | Y | Y | Y | Y |
-| Enums/Variants | Y | Y (members) | — | — |
-| Traits/Interfaces | Y | Y (members) | Y | — |
-| Module hierarchy | Y (file + `mod`) | Y (directory) | Y (directory) | Y (file + directory) |
-| **Edges** | | | | |
-| Depends (imports) | Y | Y (relative only) | Y (raw paths) | Y (relative + absolute) |
-| Calls (call graph) | Y | Y | Y (import-aware) | Y (self-aware) |
-| Implements | Y | Y | — | — |
-| Extends | — | Y | — | — |
-| Exports (re-exports) | Y | — | — | — |
-| Cross-pkg deps | Y (Cargo metadata) | Y (package.json) | Y (go.mod) | Y (pyproject.toml) |
-| **Resolution** | | | | |
-| Import path resolution | Y | Y (post-process) | — | Y (relative imports) |
-| Method call resolution | Y (type inference) | Y (this) | Y (import aliases) | Y (self) |
-| Use/import aliases | Y | — | Y | — |
-| **Metadata** | | | | |
-| LOC | Y | Y | Y | Y |
-| Test detection/tagging | Y | Y | Y | Y |
-| **Post-Processing** | | | | |
-| Qualified name rewriting | Y | Y | Y | Y |
-| Type registry | Y | — | — | — |
-| Structural item emission | Y | Y | Y | Y |
+| Feature | Rust | TypeScript | Go | Python | Java |
+|---------|:----:|:----------:|:--:|:------:|:----:|
+| **Structural** | | | | | |
+| Functions | Y | Y | Y | Y | Y |
+| Methods (class/impl) | Y | Y (members) | Y (receiver) | Y | Y (members) |
+| Structs/Classes | Y | Y | Y | Y | Y |
+| Enums/Variants | Y | Y (members) | — | — | Y |
+| Traits/Interfaces | Y | Y (members) | Y | — | Y |
+| Annotations | — | — | — | — | Y |
+| Constructors | — | Y | — | — | Y |
+| Fields | — | Y | — | — | Y |
+| Module hierarchy | Y (file + `mod`) | Y (directory) | Y (directory) | Y (file + directory) | Y (package dirs) |
+| **Edges** | | | | | |
+| Depends (imports) | Y | Y (relative only) | Y (raw paths) | Y (relative + absolute) | Y |
+| Calls (call graph) | Y | Y | Y (import-aware) | Y (self-aware) | Y (this-aware) |
+| Implements | Y | Y | — | — | Y |
+| Extends | — | Y | — | — | Y |
+| Exports (re-exports) | Y | — | — | — | — |
+| Cross-pkg deps | Y (Cargo metadata) | Y (package.json) | Y (go.mod) | Y (pyproject.toml) | Y (pom.xml/build.gradle) |
+| **Resolution** | | | | | |
+| Import path resolution | Y | Y (post-process) | — | Y (relative imports) | Y (post-process) |
+| Method call resolution | Y (type inference) | Y (this) | Y (import aliases) | Y (self) | Y (this) |
+| Use/import aliases | Y | — | Y | — | — |
+| **Metadata** | | | | | |
+| LOC | Y | Y | Y | Y | Y |
+| Test detection/tagging | Y | Y | Y | Y | Y (JUnit/TestNG) |
+| **Post-Processing** | | | | | |
+| Qualified name rewriting | Y | Y | Y | Y | Y |
+| Type registry | Y | — | — | — | — |
+| Structural item emission | Y | Y | Y | Y | Y |
 
 ## Roadmap (Post-M29)
 
@@ -450,7 +456,8 @@ Priority-ordered next milestones:
 | **M27** | TypeScript Structural Depth | **COMPLETE** | — |
 | **M28** | Call Graph Analysis (TypeScript + Go + Python) | **COMPLETE** | — |
 | **M29** | Cross-Package Dependency Extraction | **COMPLETE** | — |
-| **M30** | Java Analyzer | New language: tree-sitter-java with full structural extraction and call graph | Maven/Gradle project discovery, class hierarchy, annotation processing |
+| **M30** | Java Analyzer | **COMPLETE** | — |
+| **M31** | Flow View: Root Detection + Force-Directed Graph | **COMPLETE** | — |
 
 ### M25: Test Detection (All Languages) — COMPLETE
 
@@ -506,19 +513,52 @@ Priority-ordered next milestones:
 - `resolve_workspace_dependencies()` in `DescriptorOrchestrator` — builds known-unit sets, filters to workspace-internal deps
 - `Depends` edges emitted during `post_process()` for each resolved workspace dependency
 
-### M30: Java Analyzer
+### M30: Java Analyzer — COMPLETE
 
 **Goal:** New language analyzer following established patterns from M25–M29. Should launch with feature parity matching the enhanced TypeScript/Go/Python analyzers.
 
-**Scope:**
-- tree-sitter-java grammar integration
-- Maven (`pom.xml`) and Gradle (`build.gradle`/`build.gradle.kts`) project discovery
-- Class, interface, enum, annotation, method, field extraction
-- Package hierarchy from directory structure (`src/main/java/...`)
-- Import resolution and `Extends`/`Implements` edges
-- Call graph analysis (method calls with type resolution)
-- Test detection: JUnit `@Test`/`@ParameterizedTest`, TestNG `@Test`, files in `src/test/java/`
-- Cross-module dependencies from Maven/Gradle metadata
+**Delivered:**
+- `JavaAnalyzer` implementing `LanguageAnalyzer` + `CoreLanguageParser` traits with tree-sitter-java grammar
+- Structural extraction: classes, interfaces, enums, annotation types, methods, constructors, fields (with nested class support)
+- Package hierarchy from directory structure (`src/main/java/`, `src/test/java/` source root detection)
+- Import extraction (single, wildcard, static imports) with `Depends` edge emission
+- `Extends`/`Implements` edges resolved via import map in `post_process()`
+- Call graph via `visit_java_call_expressions()` — simple calls, qualified calls, `this.method()` resolution
+- Test detection: `@Test`/`@ParameterizedTest`/`@RepeatedTest` annotations (JUnit/TestNG) + `src/test/java/` path-based
+- Maven discovery: `pom.xml` artifact ID extraction (skips `<parent>` block), dependency parsing
+- Gradle discovery: `build.gradle`/`build.gradle.kts` with directory name fallback, dependency parsing (implementation/api/compile/etc.)
+- Cross-module dependencies from Maven/Gradle metadata via `extract_dependencies_from_manifest()`
+- Java orchestrator via `DescriptorOrchestrator` pattern, registered in `OrchestratorRegistry::with_defaults()`
+- `java_packages_analyzed` counter in `AnalysisSummary`, CLI output updated
+- 84 Java-related tests (28 inline parser + 8 discovery + 42 edge-case/coverage + 6 orchestrator/registry)
+- **Result: 653 Rust tests + 194 vitest tests = 847 total**
+
+### M31: Flow View — COMPLETE
+
+**Goal:** New visualization mode for identifying entry points and visualizing execution/data flow through the architecture graph.
+
+**Design doc:** `docs/design/flow-view.md`
+
+**Delivered:**
+- **Root detection** (`crates/core/src/roots.rs`): `detect_roots()` computing 5 root categories from graph topology — call-tree roots, dependency sources, dependency sinks, containment roots, leaf sinks. `RootEntry` struct with node_id, canonical_path, name for frontend display. `DEPENDENCY_RATIO_THRESHOLD` constant for tuning. WASM-compatible, behind `store` feature flag. 14 unit tests.
+- **API endpoint** (`crates/server/src/routes/roots.rs`): `GET /api/projects/{project}/snapshots/{version}/roots` returning `RootAnalysis` as JSON. 2 endpoint tests.
+- **FlowView component** (`web/src/components/FlowView.svelte`): Cytoscape.js + fcose force-directed layout with root-aware positioning (roots pinned top, sinks bottom). Compound nodes for System/Service containment. Edge styling per type matching existing `EDGE_STYLES`. Node selection with connected subgraph highlighting (dim non-connected to 20% opacity). Edge type toggle buttons in toolbar. Animation toggle.
+- **Flow store** (`web/src/stores/flow.svelte.ts`): Reactive store for roots, expandedNodes, activeEdgeKinds, animationEnabled.
+- **Flow layout** (`web/src/lib/flow-layout.ts`): Graph-to-Cytoscape element conversion with ~200 visible node cap via module collapsing. Client-side root fallback computing call-tree roots and containment roots when API unavailable.
+- **Edge animation** (`web/src/lib/flow-animation.ts`): Custom canvas overlay with requestAnimationFrame particle animation on Calls and DataFlow edges (2-3px dots at gentle pace).
+- Wired into App.svelte view switcher, ViewMode type, and api.ts.
+- Release build passes clean.
+
+**Bug fixes (browser testing):**
+- Fixed infinite `$effect` loop: `cy` as `$state` read+written in same effect → changed to plain variable
+- Fixed template reactive loop: loading spinner destroying `containerEl` → always-mounted container with overlay
+- Fixed stack overflow on deep trees: recursive traversal → iterative stack-based
+- Fixed invalid compound parent references: added `nodeMap.has()` guard for depth-filtered graphs
+- Fixed layout freeze: switched to `"draft"` quality for >100 nodes, disabled layout animation
+
+**Frontend tests:**
+- `flow-layout.test.ts`: 30 tests covering buildFlowElements (collapsing, edge remapping, aggregation, CSS classes) and computeClientRoots (call-tree roots, containment roots, edge cases)
+- `flow-store.test.ts`: 17 tests covering FlowStore (toggle, reset, initial state)
 
 ## Plan Documents
 
@@ -555,3 +595,5 @@ Priority-ordered next milestones:
 | `2026-02-20-dynamic-plugin-loading-implementation.md` | M17 implementation plan (COMPLETE) |
 | `2026-02-20-plugin-analyzer-support-design.md` | M18 design (plugin analyzer support) |
 | `2026-02-20-plugin-analyzer-support-implementation.md` | M18 implementation plan (COMPLETE) |
+| `2026-03-06-m30-java-analyzer-design.md` | M30 design (Java analyzer) |
+| `flow-view.md` (in `docs/design/`) | M31 design (Flow View: root detection + force-directed graph) |

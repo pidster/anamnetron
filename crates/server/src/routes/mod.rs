@@ -8,6 +8,7 @@ pub mod health;
 pub mod nodes;
 pub mod projects;
 pub mod push;
+pub mod roots;
 pub mod search;
 pub mod snapshots;
 pub mod store;
@@ -75,6 +76,10 @@ pub fn api_router(state: Arc<AppState>) -> Router {
         .route(
             "/api/projects/{project}/snapshots/{version}/edges",
             get(edges::list_project_edges),
+        )
+        .route(
+            "/api/projects/{project}/snapshots/{version}/roots",
+            get(roots::get_project_roots),
         )
         // Legacy routes (default project)
         .route("/api/snapshots", get(snapshots::list_snapshots))
