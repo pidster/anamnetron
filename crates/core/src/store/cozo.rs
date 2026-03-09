@@ -12,7 +12,7 @@ use crate::model::*;
 ///
 /// Increment this whenever the schema changes. Each increment requires a
 /// corresponding migration step in [`CozoStore::migrate`].
-pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+pub const CURRENT_SCHEMA_VERSION: u32 = 3;
 
 /// CozoDB-backed graph store.
 ///
@@ -62,7 +62,7 @@ impl CozoStore {
             "{ :create constraints { id: String, version: Int => kind: String, name: String, scope: String, target: String?, params: Json?, message: String, severity: String } }",
             "{ :create file_manifest { path: String, version: Int => hash: String, unit_name: String, language: String } }",
             "{ :create projects { id: String => name: String, created_at: String, description: String?, metadata: Json? } }",
-            "{ :create snapshot_projects { version: Int => project_id: String } }",
+            "{ :create snapshot_projects { version: Int, project_id: String } }",
         ];
 
         for query in queries {
@@ -146,6 +146,13 @@ impl CozoStore {
                 self.migrate_v1_to_v2()?;
                 self.set_schema_version(2)?;
             }
+
+            // v2 → v3: make snapshot_projects key composite (version, project_id)
+            // so multiple projects can have the same version number independently.
+            if current < 3 {
+                self.migrate_v2_to_v3()?;
+                self.set_schema_version(3)?;
+            }
         }
 
         Ok(())
@@ -177,11 +184,49 @@ impl CozoStore {
         )?;
 
         // Tag all existing snapshots with the default project
+        // Note: v3 migration will recreate this relation with composite key,
+        // but we still need to insert data here for the v1→v2 step.
         self.run_query(
             "?[version, project_id] := *snapshots{version}, project_id = 'default'
-             :put snapshot_projects { version => project_id }",
+             :put snapshot_projects { version, project_id }",
             Default::default(),
         )?;
+
+        Ok(())
+    }
+
+    /// Migration from v2 to v3: make `snapshot_projects` key composite.
+    ///
+    /// The old schema `{ version: Int => project_id: String }` only allows one
+    /// project per version number.  The new schema `{ version: Int, project_id: String }`
+    /// allows each project to have independent version numbering.
+    fn migrate_v2_to_v3(&self) -> Result<()> {
+        // 1. Read existing rows
+        let existing = self.run_query_immutable(
+            "?[version, project_id] := *snapshot_projects{version, project_id}",
+            Default::default(),
+        )?;
+
+        // 2. Drop the old relation
+        self.run_query("::remove snapshot_projects", Default::default())?;
+
+        // 3. Create with composite key
+        self.run_query(
+            "{ :create snapshot_projects { version: Int, project_id: String } }",
+            Default::default(),
+        )?;
+
+        // 4. Re-insert existing data
+        if !existing.rows.is_empty() {
+            self.run_query(
+                "?[version, project_id] <- $rows
+                 :put snapshot_projects { version, project_id }",
+                BTreeMap::from([(
+                    "rows".to_string(),
+                    DataValue::List(existing.rows.into_iter().map(DataValue::List).collect()),
+                )]),
+            )?;
+        }
 
         Ok(())
     }
@@ -415,12 +460,14 @@ impl GraphStore for CozoStore {
         kind: SnapshotKind,
         commit_ref: Option<&str>,
     ) -> Result<Version> {
-        // Get the next version number by finding the current max
+        // Get the next version number scoped to this project
+        let mut version_params = BTreeMap::new();
+        version_params.insert("project_id".to_string(), DataValue::Str(project_id.into()));
         let result = self.run_query_immutable(
-            "?[version] := *snapshots{version}
+            "?[version] := *snapshot_projects{version, project_id}, project_id == $project_id
              :order -version
              :limit 1",
-            Default::default(),
+            version_params,
         )?;
 
         let max_version: i64 = result
@@ -467,7 +514,7 @@ impl GraphStore for CozoStore {
 
         self.run_query(
             "?[version, project_id] <- [[$version, $project_id]]
-             :put snapshot_projects { version => project_id }",
+             :put snapshot_projects { version, project_id }",
             sp_params,
         )?;
 
@@ -1042,10 +1089,10 @@ impl GraphStore for CozoStore {
 
         // Delete snapshot_projects entries last (other deletions depend on this table)
         self.run_query(
-            "to_remove[version] := *snapshot_projects{version, project_id}, project_id == $project_id, not keep_set[version]
+            "to_remove[version, project_id] := *snapshot_projects{version, project_id}, project_id == $project_id, not keep_set[version]
              keep_set[v] := v in $keep
-             ?[version] := to_remove[version]
-             :rm snapshot_projects {version}",
+             ?[version, project_id] := to_remove[version, project_id]
+             :rm snapshot_projects {version, project_id}",
             params,
         )?;
 

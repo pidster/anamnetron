@@ -1,6 +1,6 @@
 mod helpers;
 
-use svt_core::model::{SnapshotKind, DEFAULT_PROJECT_ID};
+use svt_core::model::{Project, SnapshotKind, DEFAULT_PROJECT_ID};
 use svt_core::store::{CozoStore, GraphStore};
 
 #[test]
@@ -89,4 +89,106 @@ fn list_snapshots_returns_all_in_version_order() {
     assert_eq!(snapshots[1].version, 2);
     assert_eq!(snapshots[1].kind, SnapshotKind::Analysis);
     assert_eq!(snapshots[1].commit_ref, None);
+}
+
+/// Helper to create a named project in the store.
+fn create_project(store: &mut CozoStore, id: &str, name: &str) {
+    store
+        .create_project(&Project {
+            id: id.to_string(),
+            name: name.to_string(),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            description: None,
+            metadata: None,
+        })
+        .unwrap();
+}
+
+#[test]
+fn multi_project_snapshots_get_independent_version_numbers() {
+    let mut store = CozoStore::new_in_memory().unwrap();
+    create_project(&mut store, "project-a", "Project A");
+    create_project(&mut store, "project-b", "Project B");
+
+    let v_a = store
+        .create_snapshot("project-a", SnapshotKind::Analysis, None)
+        .unwrap();
+    let v_b = store
+        .create_snapshot("project-b", SnapshotKind::Analysis, None)
+        .unwrap();
+
+    assert_eq!(v_a, 1, "first snapshot in project-a should be version 1");
+    assert_eq!(
+        v_b, 1,
+        "first snapshot in project-b should be version 1, not influenced by project-a"
+    );
+}
+
+#[test]
+fn sequential_snapshots_in_same_project_increment_correctly() {
+    let mut store = CozoStore::new_in_memory().unwrap();
+    create_project(&mut store, "project-seq", "Sequential Project");
+
+    let v1 = store
+        .create_snapshot("project-seq", SnapshotKind::Analysis, None)
+        .unwrap();
+    let v2 = store
+        .create_snapshot("project-seq", SnapshotKind::Design, None)
+        .unwrap();
+    let v3 = store
+        .create_snapshot("project-seq", SnapshotKind::Analysis, None)
+        .unwrap();
+
+    assert_eq!(v1, 1, "first snapshot should be version 1");
+    assert_eq!(v2, 2, "second snapshot should be version 2");
+    assert_eq!(v3, 3, "third snapshot should be version 3");
+}
+
+/// Interleaved snapshots across projects should each maintain their own version
+/// sequence independently. The `snapshot_projects` table uses a composite key
+/// `{ version: Int, project_id: String }` so each project has independent numbering.
+#[test]
+fn interleaved_multi_project_snapshots_maintain_correct_versions() {
+    let mut store = CozoStore::new_in_memory().unwrap();
+    create_project(&mut store, "project-x", "Project X");
+    create_project(&mut store, "project-y", "Project Y");
+
+    // Interleave: X v1, Y v1, X v2, Y v2
+    let x1 = store
+        .create_snapshot("project-x", SnapshotKind::Analysis, None)
+        .unwrap();
+    let y1 = store
+        .create_snapshot("project-y", SnapshotKind::Analysis, None)
+        .unwrap();
+    let x2 = store
+        .create_snapshot("project-x", SnapshotKind::Design, None)
+        .unwrap();
+    let y2 = store
+        .create_snapshot("project-y", SnapshotKind::Design, None)
+        .unwrap();
+
+    assert_eq!(x1, 1, "project-x first snapshot should be version 1");
+    assert_eq!(y1, 1, "project-y first snapshot should be version 1");
+    assert_eq!(x2, 2, "project-x second snapshot should be version 2");
+    assert_eq!(y2, 2, "project-y second snapshot should be version 2");
+
+    // Verify list_snapshots returns correct per-project views
+    let x_snapshots = store.list_snapshots("project-x").unwrap();
+    let y_snapshots = store.list_snapshots("project-y").unwrap();
+
+    assert_eq!(
+        x_snapshots.len(),
+        2,
+        "project-x should have exactly 2 snapshots"
+    );
+    assert_eq!(
+        y_snapshots.len(),
+        2,
+        "project-y should have exactly 2 snapshots"
+    );
+
+    assert_eq!(x_snapshots[0].version, 1);
+    assert_eq!(x_snapshots[1].version, 2);
+    assert_eq!(y_snapshots[0].version, 1);
+    assert_eq!(y_snapshots[1].version, 2);
 }

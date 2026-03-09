@@ -10,7 +10,7 @@ fn store_info_empty_store_returns_zero_snapshots() {
     let store = CozoStore::new_in_memory().unwrap();
     let info = store.store_info().unwrap();
 
-    assert_eq!(info.schema_version, 2);
+    assert_eq!(info.schema_version, 3);
     assert_eq!(info.snapshot_count, 0);
     assert!(info.snapshots.is_empty());
 }
