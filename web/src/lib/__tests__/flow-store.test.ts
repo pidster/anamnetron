@@ -13,7 +13,7 @@ function emptyRoots(): RootAnalysis {
   };
 }
 
-const ALL_EDGE_KINDS = ["depends", "calls", "implements", "extends", "data_flow", "exports"];
+const ALL_EDGE_KINDS = ["depends", "calls", "implements", "extends", "transforms", "data_flow", "exports"];
 
 describe("FlowStore", () => {
   // Reset before each test to ensure isolation

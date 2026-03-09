@@ -4,6 +4,9 @@ import type { RootAnalysis } from "../stores/flow.svelte";
 /** Maximum visible nodes before module collapsing kicks in. */
 const MAX_VISIBLE_NODES = 200;
 
+/** Edge kinds representing data flow (transforms, data_flow). */
+const DATA_FLOW_EDGE_KINDS = new Set(["transforms", "data_flow"]);
+
 /** Cytoscape node definition for the flow view. */
 export interface FlowNode {
   data: {
@@ -110,46 +113,70 @@ export function buildFlowElements(
     nodeMap.set(n.data.id, n.data);
   }
 
-  // Determine which nodes to collapse for progressive disclosure
+  // Determine which nodes to collapse for progressive disclosure.
+  // Strategy: for very large graphs, collapse all containers;
+  // for medium graphs, collapse component/unit containers.
   const collapsedNodes = new Set<string>();
   const hiddenNodes = new Set<string>();
+  const totalNodes = graph.elements.nodes.length;
 
-  if (graph.elements.nodes.length > MAX_VISIBLE_NODES && expandedNodes.size === 0) {
-    // Collapse nodes that have children and aren't roots or top-level containers
-    for (const [nodeId, children] of childrenMap) {
-      const data = nodeMap.get(nodeId);
-      if (!data) continue;
-      // Keep system/service level expanded, collapse component/unit containers
-      if (data.kind === "component" || data.kind === "unit") {
-        if (children.length > 0 && !expandedNodes.has(nodeId)) {
+  if (totalNodes > MAX_VISIBLE_NODES) {
+    if (totalNodes > 1000) {
+      // Very large graph: collapse every container that isn't explicitly expanded.
+      // Skip nodes already hidden as descendants of an earlier collapse.
+      for (const [nodeId, children] of childrenMap) {
+        if (children.length > 0 && !expandedNodes.has(nodeId) && !hiddenNodes.has(nodeId)) {
           collapsedNodes.add(nodeId);
           collectDescendants(nodeId, childrenMap, hiddenNodes);
+        }
+      }
+    } else {
+      // Medium graph: collapse component/unit containers
+      for (const [nodeId, children] of childrenMap) {
+        if (hiddenNodes.has(nodeId)) continue;
+        const data = nodeMap.get(nodeId);
+        if (!data) continue;
+        if (data.kind === "component" || data.kind === "unit") {
+          if (children.length > 0 && !expandedNodes.has(nodeId)) {
+            collapsedNodes.add(nodeId);
+            collectDescendants(nodeId, childrenMap, hiddenNodes);
+          }
         }
       }
     }
   }
 
-  // If still too many, collapse more aggressively
-  if (graph.elements.nodes.length - hiddenNodes.size > MAX_VISIBLE_NODES) {
+  // If still too many, collapse any visible node with children
+  if (totalNodes - hiddenNodes.size > MAX_VISIBLE_NODES) {
     for (const [nodeId, children] of childrenMap) {
       if (collapsedNodes.has(nodeId) || hiddenNodes.has(nodeId)) continue;
-      const data = nodeMap.get(nodeId);
-      if (!data) continue;
-      if (children.length > 3 && !expandedNodes.has(nodeId)) {
+      if (children.length > 0 && !expandedNodes.has(nodeId)) {
         collapsedNodes.add(nodeId);
         collectDescendants(nodeId, childrenMap, hiddenNodes);
       }
     }
   }
 
-  // For explicitly expanded nodes, un-hide their direct children
+  // For explicitly expanded nodes, un-hide the node itself, its ancestors,
+  // and its direct children so drill-down always works.
   for (const nodeId of expandedNodes) {
+    // Un-hide the expanded node itself
+    hiddenNodes.delete(nodeId);
+    collapsedNodes.delete(nodeId);
+
+    // Un-hide ancestors up to the root so the expanded node is reachable
+    let ancestor = parentMap.get(nodeId);
+    while (ancestor) {
+      hiddenNodes.delete(ancestor);
+      ancestor = parentMap.get(ancestor);
+    }
+
+    // Un-hide direct children
     const children = childrenMap.get(nodeId);
     if (!children) continue;
     for (const child of children) {
       hiddenNodes.delete(child);
     }
-    collapsedNodes.delete(nodeId);
   }
 
   // Build node elements
@@ -205,8 +232,11 @@ export function buildFlowElements(
       target = p;
     }
 
-    // Skip self-loops from collapsing
-    if (source === target) continue;
+    // Skip self-loops from collapsing — except for data flow edges,
+    // which represent internal transformations within collapsed modules.
+    if (source === target) {
+      if (!DATA_FLOW_EDGE_KINDS.has(e.data.kind)) continue;
+    }
     // Skip if either endpoint is still hidden
     if (hiddenNodes.has(source) || hiddenNodes.has(target)) continue;
 

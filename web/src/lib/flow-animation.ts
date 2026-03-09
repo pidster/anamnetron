@@ -16,19 +16,19 @@ interface Particle {
 
 /** Speed multipliers per edge kind. */
 const SPEED: Record<string, number> = {
-  calls: 0.004,
+  transforms: 0.003,
   data_flow: 0.002,
 };
 
 /** Dot radius per edge kind. */
 const DOT_RADIUS: Record<string, number> = {
-  calls: 2,
-  data_flow: 2.5,
+  transforms: 2.5,
+  data_flow: 3,
 };
 
 /** Dot color per edge kind (fallback). */
 const DOT_COLOR: Record<string, string> = {
-  calls: "rgba(76, 175, 80, 0.9)",
+  transforms: "rgba(76, 175, 80, 0.9)",
   data_flow: "rgba(76, 175, 80, 0.85)",
 };
 

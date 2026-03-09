@@ -15,10 +15,11 @@
 
   interface Props {
     graph: CytoscapeGraph | null;
+    focusNodeId?: string | null;
     onselectnode?: (nodeId: string) => void;
   }
 
-  let { graph, onselectnode }: Props = $props();
+  let { graph, focusNodeId, onselectnode }: Props = $props();
 
   let containerEl = $state<HTMLDivElement>(undefined!);
   let cy: cytoscape.Core | null = null;
@@ -212,21 +213,22 @@
       },
     });
 
-    // Edge kind styles
-    const flowColor = getCssVar("--pass") || "#4caf50"; // green for data flow paths
+    // Edge kind styles — data flow edges (transforms, data_flow) are prominent green
+    // straight lines; calls are muted bezier curves to avoid visual dominance.
+    const dataFlowKinds = new Set(["transforms", "data_flow"]);
     for (const [kind, edgeStyle] of Object.entries(EDGE_STYLES)) {
-      const isFlow = kind === "calls" || kind === "data_flow";
-      const color = isFlow ? flowColor : (getCssVar(edgeStyle.cssVar) || accentColor);
+      const isDataFlow = dataFlowKinds.has(kind);
+      const color = getCssVar(edgeStyle.cssVar) || accentColor;
       styles.push({
         selector: `edge[kind="${kind}"]`,
         style: {
           "line-color": color,
           "target-arrow-color": color,
-          "curve-style": isFlow ? "straight" : "bezier",
-          "line-style": (isFlow ? "solid" : edgeStyle.lineStyle) as "solid" | "dashed" | "dotted",
+          "curve-style": "bezier",
+          "line-style": edgeStyle.lineStyle as "solid" | "dashed" | "dotted",
           "target-arrow-shape": edgeStyle.arrowShape as cytoscape.Css.ArrowShape,
-          width: isFlow ? 1.5 : 0.8,
-          opacity: isFlow ? 0.75 : 0.5,
+          width: isDataFlow ? 2 : 0.8,
+          opacity: isDataFlow ? 0.85 : 0.4,
         },
       });
     }
@@ -243,6 +245,24 @@
       style: { opacity: 1, width: 2.5 },
     });
 
+    // Focus subtree highlighting (from tree navigation panel)
+    styles.push({
+      selector: "node.focus-dimmed",
+      style: { opacity: 0.15 },
+    });
+    styles.push({
+      selector: "edge.focus-dimmed",
+      style: { opacity: 0.05 },
+    });
+    styles.push({
+      selector: "node.focus-highlighted",
+      style: { opacity: 1, "border-width": 2, "border-color": accentColor },
+    });
+    styles.push({
+      selector: "edge.focus-highlighted",
+      style: { opacity: 0.9, width: 2 },
+    });
+
     return styles;
   }
 
@@ -257,16 +277,11 @@
 
     if (!containerEl || elements.nodes.length === 0) return;
 
-    // Collect root IDs for alignment constraints
-    const rootIds: string[] = [];
-    const sinkIds: string[] = [];
-    for (const n of elements.nodes as Array<{ data: { rootCategory?: string; id: string } }>) {
-      if (n.data.rootCategory === "call_tree_root" || n.data.rootCategory === "containment_root") {
-        rootIds.push(n.data.id);
-      }
-      if (n.data.rootCategory === "leaf_sink") {
-        sinkIds.push(n.data.id);
-      }
+    // Safety: cap visible nodes to prevent browser hang
+    if (elements.nodes.length > 500) {
+      console.warn(`[FlowView] Too many visible nodes (${elements.nodes.length}), skipping render`);
+      flowStore.error = `Graph too large (${elements.nodes.length} visible nodes). Expand specific modules to explore.`;
+      return;
     }
 
     // Strip compound parents for flat layout when there are many nodes
@@ -290,7 +305,7 @@
         style: buildStylesheet(),
         layout: {
           name: "fcose",
-          quality: elements.nodes.length > 100 ? "draft" : "default",
+          quality: "draft",
           animate: false,
           nodeRepulsion: () => 6000,
           idealEdgeLength: () => 120,
@@ -298,16 +313,6 @@
           gravity: 0.2,
           gravityRange: 3.8,
           nodeSeparation: 100,
-          // Pin roots toward top, sinks toward bottom
-          alignmentConstraint: {
-            vertical: rootIds.length > 0 ? [rootIds] : undefined,
-          },
-          fixedNodeConstraint: undefined,
-          relativePlacementConstraint: rootIds.length > 0 && sinkIds.length > 0
-            ? rootIds.flatMap((r) =>
-                sinkIds.map((s) => ({ top: r, bottom: s, gap: 200 }))
-              ).slice(0, 20) // Cap constraints to avoid layout explosion
-            : undefined,
         } as cytoscape.LayoutOptions,
         minZoom: 0.15,
         maxZoom: 4,
@@ -384,7 +389,7 @@
     // Start particle animation
     stopAnimation = startAnimation(instance, containerEl, {
       isEnabled: () => flowStore.animationEnabled,
-      animatedKinds: new Set(["calls", "data_flow"]),
+      animatedKinds: new Set(["transforms", "data_flow"]),
     });
   }
 
@@ -473,6 +478,31 @@
     });
   });
 
+  // React to focus changes — highlight the focused subtree path
+  $effect(() => {
+    if (!cy) return;
+    const fid = focusNodeId;
+
+    // Clear previous focus highlights
+    cy.elements().removeClass("focus-dimmed focus-highlighted");
+
+    if (!fid) return;
+
+    // Find the focused node and all its descendants + connected edges
+    const focusNode = cy.getElementById(fid);
+    if (focusNode.empty()) return;
+
+    // Collect descendants via successors in the containment (parent) tree
+    const descendants = focusNode.descendants();
+    const subtree = focusNode.union(descendants);
+    const connectedEdges = subtree.connectedEdges();
+
+    // Dim everything, highlight the subtree
+    cy.elements().addClass("focus-dimmed");
+    subtree.removeClass("focus-dimmed").addClass("focus-highlighted");
+    connectedEdges.removeClass("focus-dimmed").addClass("focus-highlighted");
+  });
+
   onMount(() => {
     return () => {
       stopAnimation?.();
@@ -487,6 +517,7 @@
   const edgeKindButtons = [
     { kind: "calls", label: "Calls" },
     { kind: "depends", label: "Depends" },
+    { kind: "transforms", label: "Transforms" },
     { kind: "data_flow", label: "DataFlow" },
     { kind: "implements", label: "Implements" },
     { kind: "extends", label: "Extends" },

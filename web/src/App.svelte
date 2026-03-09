@@ -818,7 +818,7 @@
           </ErrorBoundary>
         {:else if viewStore.mode === "flow"}
           <ErrorBoundary name="Flow View">
-            <FlowView graph={filteredVisibleGraph} onselectnode={(nodeId) => {
+            <FlowView graph={focusedGraph} focusNodeId={focusStore.focusNodeId} onselectnode={(nodeId) => {
               selectionStore.selectSingle(nodeId);
               selectionStore.panelOpen = true;
             }} />

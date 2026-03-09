@@ -1,7 +1,7 @@
 import type { RootAnalysis } from "../lib/api";
 export type { RootEntry, RootAnalysis } from "../lib/api";
 
-const ALL_EDGE_KINDS = ["depends", "calls", "implements", "extends", "data_flow", "exports"];
+const ALL_EDGE_KINDS = ["depends", "calls", "implements", "extends", "transforms", "data_flow", "exports"];
 
 /** Reactive store for flow view state. */
 class FlowStore {

@@ -364,9 +364,9 @@ describe("buildFlowElements", () => {
     expect(result.nodes).toHaveLength(2);
   });
 
-  it("does not collapse nodes with 3 or fewer children in the aggressive pass", () => {
-    // The aggressive pass only collapses nodes with >3 children.
-    // Create a graph >200 nodes where some parents have <=3 children.
+  it("aggressive pass collapses nodes to bring count under MAX_VISIBLE_NODES", () => {
+    // Create a graph >200 nodes where parents have small child counts.
+    // The aggressive pass collapses any node with children to reduce count.
     const topNodes: Array<{ data: CyNodeData }> = [];
     // 70 independent parent nodes, each with exactly 3 children = 70 + 210 = 280 nodes
     for (let i = 0; i < 70; i++) {
@@ -376,13 +376,14 @@ describe("buildFlowElements", () => {
       }
     }
     const graph = makeGraph(topNodes, []);
-    // Total: 280 nodes, exceeds 200. First pass skipped (expandedNodes non-empty).
-    // Aggressive pass: each parent has exactly 3 children (not >3), so none should be collapsed.
+    // Total: 280 nodes, exceeds 200. Medium pass collapses unit containers (none here
+    // since units are leaves). Aggressive pass collapses service parents.
     const result = buildFlowElements(graph, null, new Set(["some_other_node"]));
 
     const collapsedNodes = result.nodes.filter((n) => n.data.collapsed === true);
-    expect(collapsedNodes).toHaveLength(0);
-    expect(result.nodes).toHaveLength(280);
+    expect(collapsedNodes.length).toBeGreaterThan(0);
+    // Visible nodes should be reduced below 280
+    expect(result.nodes.length).toBeLessThan(280);
   });
 
   it("deeply nested hidden nodes are collected as descendants", () => {
