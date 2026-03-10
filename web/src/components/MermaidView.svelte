@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import DOMPurify from "dompurify";
   import { mermaidStore, type DiagramType } from "../stores/mermaid.svelte";
   import type { CytoscapeGraph } from "../lib/types";
   import { generateFlowchart, generateDataFlow, generateSequence, generateC4 } from "../lib/mermaid-gen";
@@ -89,7 +90,7 @@
       .render(id, src)
       .then(({ svg }) => {
         if (renderContainer) {
-          renderContainer.innerHTML = svg;
+          renderContainer.innerHTML = DOMPurify.sanitize(svg);
           // Fix C4 diagram contrast in dark mode.
           // Mermaid C4 uses inline fill/stroke attributes that CSS can't easily override.
           if (isDark && mermaidStore.diagramType === "c4") {

@@ -16,9 +16,12 @@ pub mod store;
 use std::sync::Arc;
 
 use axum::extract::DefaultBodyLimit;
+use axum::http::header::CONTENT_SECURITY_POLICY;
+use axum::http::HeaderValue;
 use axum::routing::{get, post};
 use axum::Router;
 use tower_http::cors::CorsLayer;
+use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::state::AppState;
 
@@ -111,7 +114,15 @@ pub fn api_router(state: Arc<AppState>) -> Router {
         .route("/api/diff", get(diff::get_diff))
         .route("/api/search", get(search::search_nodes))
         .route("/api/store/info", get(store::store_info))
+        // CORS is permissive by default for local development use.
+        // For production deployments, configure restrictive origins via environment.
         .layer(CorsLayer::permissive())
+        .layer(SetResponseHeaderLayer::if_not_present(
+            CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(
+                "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src * data:; font-src 'self' data:",
+            ),
+        ))
         .with_state(state)
 }
 

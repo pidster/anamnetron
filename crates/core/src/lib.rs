@@ -9,6 +9,7 @@
 pub mod canonical;
 
 /// Project configuration: `.svt/config.yaml` parsing, validation, and types.
+#[cfg(feature = "store")]
 pub mod config;
 
 /// Interchange format: YAML/JSON parsing, validation, wire types.

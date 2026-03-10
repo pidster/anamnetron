@@ -33,6 +33,9 @@ jobs:
       - name: Clippy
         run: cargo clippy -- -D warnings
 
+      - name: WASM core check
+        run: cargo check -p svt-core --target wasm32-unknown-unknown --no-default-features
+
       - name: Test
         run: cargo test
 

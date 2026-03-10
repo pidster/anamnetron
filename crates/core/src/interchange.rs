@@ -34,6 +34,7 @@ pub struct ValidationWarning {
 
 /// Top-level interchange document.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InterchangeDocument {
     /// Format version string, must be `"svt/v1"`.
     pub format: String,
@@ -56,6 +57,7 @@ pub struct InterchangeDocument {
 
 /// A node in the interchange format.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InterchangeNode {
     /// Canonical path (required).
     pub canonical_path: String,
@@ -82,6 +84,7 @@ pub struct InterchangeNode {
 
 /// An edge in the interchange format. References canonical paths, not UUIDs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InterchangeEdge {
     /// Source node canonical path.
     pub source: String,
@@ -95,6 +98,7 @@ pub struct InterchangeEdge {
 
 /// A constraint in the interchange format.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InterchangeConstraint {
     /// Human-readable name.
     pub name: String,

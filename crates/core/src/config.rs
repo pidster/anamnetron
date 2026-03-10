@@ -8,6 +8,7 @@ use crate::model::validate_project_id;
 
 /// Project configuration, typically loaded from `.svt/config.yaml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectConfig {
     /// Project ID for multi-tenancy.
     pub project: String,
@@ -27,6 +28,7 @@ pub struct ProjectConfig {
 
 /// A source directory to analyze.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SourceConfig {
     /// Source directory path (relative to project root).
     pub path: PathBuf,
@@ -37,6 +39,7 @@ pub struct SourceConfig {
 
 /// Remote server configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     /// Remote server URL.
     pub url: String,

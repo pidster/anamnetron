@@ -12,6 +12,7 @@ use crate::state::SharedState;
 
 /// Request body for pushing a snapshot.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PushRequest {
     /// Snapshot kind: "design" or "analysis".
     pub kind: SnapshotKind,
@@ -27,6 +28,7 @@ pub struct PushRequest {
 
 /// Response body for a push operation.
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PushResponse {
     /// The version number of the created snapshot.
     pub version: u64,

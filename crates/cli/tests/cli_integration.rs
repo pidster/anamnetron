@@ -2501,7 +2501,8 @@ nodes:
     children:
       - canonical_path: /app/core
         kind: service
-        description: "The core service"
+        metadata:
+          description: "The core service"
       - canonical_path: /app/cli
         kind: service
 edges:
