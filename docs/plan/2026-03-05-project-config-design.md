@@ -1,8 +1,30 @@
 # Project Configuration & CLI Restructure Design
 
 **Date:** 2026-03-05
-**Status:** Draft
+**Status:** Superseded by commit `d984c58` (shipped ~80% of this design) — see [Residual gaps](#residual-gaps-post-implementation) below before relying on any statement in this document.
 **Scope:** `.svt/config.yaml`, CLI flag changes, server simplification, plugin & store directory restructure
+
+> **⚠️ This document no longer matches shipped behaviour.** It was committed alongside its own implementation (`d984c58`), but several decisions were only partially implemented and a few shipped the opposite of what is written here (e.g. `--plugin` and `analyze <PATH>` were retained, not removed; the `--store` migration path never existed). Treat the body below as the *original intent*, and the [Residual gaps](#residual-gaps-post-implementation) section as the authoritative record of what is still outstanding.
+
+## Residual gaps (post-implementation)
+
+Verified against shipped code on 2026-07-27. Three of these have since been fixed (marked ✅); the rest remain open.
+
+**Fixed:**
+- ✅ **Multi-source combined analysis (Decision 5)** — `svt analyze` previously used `config.sources.first()`, silently analyzing only the first source. Now loops over all configured sources into one snapshot.
+- ✅ **`sources[].exclude` honoured** — the field parsed and round-tripped but was never read. Now wired through `AnalysisSource::with_excludes` into the analyzer.
+- ✅ **`ProjectConfig::validate()` wired into config load** — was dead code (called only from its own unit tests). Now runs on load, and gained the two previously-unwritten rules: `server.url` scheme validation and duplicate-entry rejection in `design`/`sources`.
+
+**Still open:**
+- **`svt init` ignores `--project-dir`** — hardcodes relative `.svt/config.yaml`, `.svt/data`, and `.gitignore`, always writing to CWD. Breaks the monorepo workflow this doc describes (`svt --project-dir services/auth init`).
+- **`plugin install` / `plugin remove` ignore `--plugin-dir` / `SVT_PLUGIN_DIR`** — `target_dir()` resolves binary-adjacent only; install/remove cannot target a custom dir even though load/list can.
+- **`--plugin` global flag retained** — the doc specified its removal; it still exists as `plugins: Vec<PathBuf>`.
+- **`analyze <PATH>` positional retained** — the doc specified its removal in favour of config `sources`; it still exists (as an override).
+- **`--store` migration path is fictional** — the doc claims old `.svt/store` still works via a `--store` override, but `--store` was fully removed. There is no escape hatch.
+- **`svt init` is non-interactive** — the doc describes an interactive scaffold; it always writes a static template.
+
+---
+
 
 ## Motivation
 

@@ -26,4 +26,6 @@ Thumbs.db
 .env.local
 
 # SVT files
+# Generated store state is local-only; .svt/config.yaml IS tracked (dogfood config).
 .svt/data
+.svt/store

@@ -1,0 +1,14 @@
+project: software-visualizer-tool
+name: anamnetron
+description: "A software visualization tool that provides insights into code structure and dependencies."
+
+# Dog-food: analyse this project against its own prescriptive design model.
+design:
+  - design/architecture.yaml
+
+sources:
+  - path: crates/
+  - path: web/
+
+server:
+  url: http://localhost:3000
