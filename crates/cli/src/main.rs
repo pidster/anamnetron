@@ -82,6 +82,16 @@ impl ResolvedConfig {
         let config = svt_core::config::ProjectConfig::load_from_project_dir(&project_dir)
             .map_err(|e| anyhow::anyhow!("loading config: {e}"))?;
 
+        // Reject malformed configs up front rather than silently ignoring them.
+        if let Some(ref config) = config {
+            config.validate(&project_dir).map_err(|e| {
+                anyhow::anyhow!(
+                    "invalid config at {}: {e}",
+                    project_dir.join(".svt").join("config.yaml").display()
+                )
+            })?;
+        }
+
         let project_id = config
             .as_ref()
             .map(|c| c.project.clone())
@@ -598,17 +608,38 @@ fn run_analyze(
     loader: &plugin::PluginLoader,
     resolved: &ResolvedConfig,
 ) -> Result<()> {
-    // Resolve analyze path: CLI arg > config sources > default "."
-    let analyze_path = if let Some(ref path) = args.path {
-        path.clone()
+    // Resolve analyze sources: CLI arg > all config sources > default ".".
+    // Multiple config sources combine into ONE analysis snapshot.
+    let sources: Vec<svt_analyzer::AnalysisSource> = if let Some(ref path) = args.path {
+        vec![svt_analyzer::AnalysisSource::new(path.clone())]
     } else if let Some(ref config) = resolved.config {
-        if let Some(source) = config.sources.first() {
-            resolved.project_dir.join(&source.path)
+        if config.sources.is_empty() {
+            vec![svt_analyzer::AnalysisSource::new(
+                resolved.project_dir.clone(),
+            )]
         } else {
-            resolved.project_dir.clone()
+            config
+                .sources
+                .iter()
+                .map(|s| {
+                    svt_analyzer::AnalysisSource::with_excludes(
+                        resolved.project_dir.join(&s.path),
+                        s.exclude.clone(),
+                    )
+                })
+                .collect()
         }
     } else {
-        PathBuf::from(".")
+        vec![svt_analyzer::AnalysisSource::new(PathBuf::from("."))]
+    };
+
+    // Anchor for git detection, metric enrichment, and the file manifest.
+    // With an explicit CLI path the anchor is that path; otherwise it is the
+    // project directory that all configured sources live under.
+    let analyze_path = match args.path {
+        Some(ref path) => path.clone(),
+        None if resolved.config.is_some() => resolved.project_dir.clone(),
+        None => PathBuf::from("."),
     };
 
     let mut store = open_or_create_store(store_path)?;
@@ -627,27 +658,37 @@ fn run_analyze(
         let previous = store
             .latest_version(project_id, SnapshotKind::Analysis)
             .map_err(|e| anyhow::anyhow!("{}", e))?;
-        svt_analyzer::analyze_project_incremental_with_registry(
+        svt_analyzer::analyze_sources_incremental_with_registry(
             &mut store,
             project_id,
             &analyze_path,
+            &sources,
             commit_ref.as_deref(),
             previous,
             registry,
         )
         .map_err(|e| anyhow::anyhow!("{}", e))?
     } else {
-        svt_analyzer::analyze_project_with_registry(
+        svt_analyzer::analyze_sources_with_registry(
             &mut store,
             project_id,
             &analyze_path,
+            &sources,
             commit_ref.as_deref(),
             registry,
         )
         .map_err(|e| anyhow::anyhow!("{}", e))?
     };
 
-    println!("Analyzed {}\n", analyze_path.display());
+    if sources.len() == 1 {
+        println!("Analyzed {}\n", sources[0].root.display());
+    } else {
+        println!("Analyzed {} sources:", sources.len());
+        for source in &sources {
+            println!("  - {}", source.root.display());
+        }
+        println!();
+    }
     println!("  Created analysis snapshot v{}", summary.version);
     if let Some(ref cr) = commit_ref {
         println!("    commit: {}", cr);

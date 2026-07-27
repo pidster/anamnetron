@@ -21,7 +21,7 @@ pub mod type_metadata;
 pub mod types;
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use svt_core::model::{SnapshotKind, Version};
 use svt_core::store::GraphStore;
@@ -40,6 +40,157 @@ pub enum AnalyzerError {
     /// Graph store error.
     #[error("store error: {0}")]
     Store(#[from] svt_core::store::StoreError),
+}
+
+/// A single source directory to analyze, with optional project-level exclusions.
+///
+/// Multiple sources are combined into **one** analysis snapshot (see the
+/// project config design, Decision 5).
+#[derive(Debug, Clone)]
+pub struct AnalysisSource {
+    /// Directory to analyze.
+    pub root: PathBuf,
+    /// Directories to exclude, relative to [`root`](AnalysisSource::root).
+    ///
+    /// Each entry is matched as a leading path-component prefix of a file's
+    /// path relative to `root`. `"vendor"` and `"vendor/"` both exclude
+    /// `<root>/vendor/**`; `"a/b"` excludes `<root>/a/b/**`. These are layered
+    /// on top of each language's built-in skip list, not a replacement for it.
+    pub exclude: Vec<String>,
+}
+
+impl AnalysisSource {
+    /// Create a source with no exclusions.
+    #[must_use]
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self {
+            root: root.into(),
+            exclude: Vec::new(),
+        }
+    }
+
+    /// Create a source with the given exclusions.
+    #[must_use]
+    pub fn with_excludes(root: impl Into<PathBuf>, exclude: Vec<String>) -> Self {
+        Self {
+            root: root.into(),
+            exclude,
+        }
+    }
+}
+
+/// Split an exclude pattern into normalized path components.
+///
+/// Returns `None` for entries that are empty after normalization.
+fn exclude_components(pattern: &str) -> Option<Vec<&str>> {
+    let parts: Vec<&str> = pattern
+        .split(['/', '\\'])
+        .filter(|s| !s.is_empty() && *s != ".")
+        .collect();
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts)
+    }
+}
+
+/// Return true if `path` lies under one of the `exclude` patterns, which are
+/// interpreted relative to `root`.
+fn is_excluded(path: &Path, root: &Path, exclude: &[String]) -> bool {
+    if exclude.is_empty() {
+        return false;
+    }
+    let relative = match path.strip_prefix(root) {
+        Ok(r) => r,
+        // Paths outside the source root are not covered by its excludes.
+        Err(_) => return false,
+    };
+    let components: Vec<&str> = relative
+        .components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .collect();
+
+    exclude
+        .iter()
+        .filter_map(|p| exclude_components(p))
+        .any(|pattern| {
+            components.len() >= pattern.len() && components[..pattern.len()] == pattern[..]
+        })
+}
+
+/// Apply a source's excludes to a discovered unit.
+///
+/// Returns `None` when the unit itself is excluded, or when every one of its
+/// source files was excluded (an emptied unit would otherwise produce a
+/// top-level node for code that was explicitly opted out of analysis).
+fn apply_excludes(
+    mut unit: crate::orchestrator::LanguageUnit,
+    root: &Path,
+    exclude: &[String],
+) -> Option<crate::orchestrator::LanguageUnit> {
+    if exclude.is_empty() {
+        return Some(unit);
+    }
+    if is_excluded(&unit.root, root, exclude) || is_excluded(&unit.source_root, root, exclude) {
+        return None;
+    }
+    let had_files = !unit.source_files.is_empty();
+    unit.source_files.retain(|f| !is_excluded(f, root, exclude));
+    if had_files && unit.source_files.is_empty() {
+        return None;
+    }
+    Some(unit)
+}
+
+/// Discover language units across every source, applying per-source excludes.
+///
+/// Units are deduplicated by (unit name, unit root) so that overlapping or
+/// nested source entries do not analyze the same unit twice.
+fn discover_all<'a>(
+    registry: &'a OrchestratorRegistry,
+    sources: &[AnalysisSource],
+) -> Vec<(
+    &'a dyn crate::orchestrator::LanguageOrchestrator,
+    Vec<crate::orchestrator::LanguageUnit>,
+)> {
+    let mut discovered = Vec::new();
+    for orchestrator in registry.orchestrators() {
+        let mut seen: std::collections::HashSet<(String, PathBuf)> =
+            std::collections::HashSet::new();
+        let mut units = Vec::new();
+        for source in sources {
+            for unit in orchestrator.discover(&source.root) {
+                let Some(unit) = apply_excludes(unit, &source.root, &source.exclude) else {
+                    continue;
+                };
+                if seen.insert((unit.name.clone(), unit.root.clone())) {
+                    units.push(unit);
+                }
+            }
+        }
+        info!(
+            language = orchestrator.language_id(),
+            units = units.len(),
+            "discovered units"
+        );
+        discovered.push((orchestrator.as_ref(), units));
+    }
+    discovered
+}
+
+/// Verify every source root exists and is a directory.
+fn check_sources(sources: &[AnalysisSource]) -> Result<(), AnalyzerError> {
+    for source in sources {
+        if !source.root.is_dir() {
+            return Err(AnalyzerError::Discovery(
+                crate::discovery::DiscoveryError::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("project root does not exist: {}", source.root.display()),
+                )),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Analyze a project and populate an analysis snapshot in the store.
@@ -72,14 +223,34 @@ pub fn analyze_project_with_registry(
     commit_ref: Option<&str>,
     registry: OrchestratorRegistry,
 ) -> Result<AnalysisSummary, AnalyzerError> {
-    if !project_root.is_dir() {
-        return Err(AnalyzerError::Discovery(
-            crate::discovery::DiscoveryError::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("project root does not exist: {}", project_root.display()),
-            )),
-        ));
-    }
+    analyze_sources_with_registry(
+        store,
+        project_id,
+        project_root,
+        &[AnalysisSource::new(project_root)],
+        commit_ref,
+        registry,
+    )
+}
+
+/// Analyze one or more source directories into a **single** analysis snapshot.
+///
+/// Every source is discovered (honouring its `exclude` list), and all resulting
+/// items and relations are combined before mapping to the graph, so a project
+/// configured with several `sources` entries yields one coherent snapshot with
+/// cross-source edges intact.
+///
+/// `project_root` is the project directory that anchors metric enrichment; each
+/// source root is normally a subdirectory of it.
+pub fn analyze_sources_with_registry(
+    store: &mut impl GraphStore,
+    project_id: &str,
+    project_root: &Path,
+    sources: &[AnalysisSource],
+    commit_ref: Option<&str>,
+    registry: OrchestratorRegistry,
+) -> Result<AnalysisSummary, AnalyzerError> {
+    check_sources(sources)?;
 
     let mut all_items: Vec<AnalysisItem> = Vec::new();
     let mut all_relations = Vec::new();
@@ -87,18 +258,24 @@ pub fn analyze_project_with_registry(
     let mut files_analyzed = 0;
     let mut units_per_language: HashMap<String, usize> = HashMap::new();
 
-    for orchestrator in registry.orchestrators() {
+    let discovered = discover_all(&registry, sources);
+
+    for (orchestrator, units) in &discovered {
         let lang = orchestrator.language_id();
         let _lang_span = info_span!("analyze_language", language = lang).entered();
 
-        // Phase 1: project-level extra items (e.g., workspace root).
-        all_items.extend(orchestrator.extra_items(project_root));
+        // Phase 1: project-level extra items (e.g., workspace root), per source.
+        // Overlapping sources can yield the same item, so deduplicate by name.
+        let mut seen_extra: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for source in sources {
+            for item in orchestrator.extra_items(&source.root) {
+                if seen_extra.insert(item.qualified_name.clone()) {
+                    all_items.push(item);
+                }
+            }
+        }
 
-        // Phase 2: discover units.
-        let units = orchestrator.discover(project_root);
-        info!(language = lang, units = units.len(), "discovered units");
-
-        for unit in &units {
+        for unit in units {
             let _unit_span =
                 info_span!("analyze_unit", unit = %unit.name, files = unit.source_files.len())
                     .entered();
@@ -251,24 +428,39 @@ pub fn analyze_project_incremental_with_registry(
     previous_version: Option<Version>,
     registry: OrchestratorRegistry,
 ) -> Result<AnalysisSummary, AnalyzerError> {
-    if !project_root.is_dir() {
-        return Err(AnalyzerError::Discovery(
-            crate::discovery::DiscoveryError::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("project root does not exist: {}", project_root.display()),
-            )),
-        ));
-    }
+    analyze_sources_incremental_with_registry(
+        store,
+        project_id,
+        project_root,
+        &[AnalysisSource::new(project_root)],
+        commit_ref,
+        previous_version,
+        registry,
+    )
+}
 
-    // Phase 1: Discover all units across all orchestrators.
-    let mut discovered: Vec<(
-        &dyn crate::orchestrator::LanguageOrchestrator,
-        Vec<crate::orchestrator::LanguageUnit>,
-    )> = Vec::new();
-    for orchestrator in registry.orchestrators() {
-        let units = orchestrator.discover(project_root);
-        discovered.push((orchestrator.as_ref(), units));
-    }
+/// Incrementally analyze one or more source directories into a single snapshot.
+///
+/// The multi-source counterpart to
+/// [`analyze_project_incremental_with_registry`]. Excludes are applied during
+/// discovery, before the file manifest is built, so excluded files never enter
+/// the manifest and therefore never register as spurious changes.
+///
+/// The manifest is anchored at `project_root` (not per source), so paths remain
+/// stable across runs even if the configured source list changes.
+pub fn analyze_sources_incremental_with_registry(
+    store: &mut impl GraphStore,
+    project_id: &str,
+    project_root: &Path,
+    sources: &[AnalysisSource],
+    commit_ref: Option<&str>,
+    previous_version: Option<Version>,
+    registry: OrchestratorRegistry,
+) -> Result<AnalysisSummary, AnalyzerError> {
+    check_sources(sources)?;
+
+    // Phase 1: Discover all units across all orchestrators and sources.
+    let discovered = discover_all(&registry, sources);
 
     // Collect (language_id, &unit) pairs for manifest building.
     let all_units: Vec<(&str, &crate::orchestrator::LanguageUnit)> = discovered
@@ -332,8 +524,16 @@ pub fn analyze_project_incremental_with_registry(
         let lang = orchestrator.language_id();
         let _lang_span = info_span!("analyze_language", language = lang).entered();
 
-        // Project-level extra items (always emitted).
-        all_items.extend(orchestrator.extra_items(project_root));
+        // Project-level extra items (always emitted), per source, deduplicated
+        // so overlapping sources do not emit the same item twice.
+        let mut seen_extra: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for source in sources {
+            for item in orchestrator.extra_items(&source.root) {
+                if seen_extra.insert(item.qualified_name.clone()) {
+                    all_items.push(item);
+                }
+            }
+        }
 
         for unit in units {
             // Always emit the top-level item and structural items.
@@ -488,6 +688,172 @@ mod tests {
     use std::path::PathBuf;
     use svt_core::model::DEFAULT_PROJECT_ID;
     use svt_core::store::CozoStore;
+
+    #[test]
+    fn empty_exclude_list_excludes_nothing() {
+        let root = Path::new("/proj");
+        assert!(!is_excluded(Path::new("/proj/vendor/a.rs"), root, &[]));
+    }
+
+    #[test]
+    fn exclude_matches_directory_prefix_relative_to_source_root() {
+        let root = Path::new("/proj");
+        let exclude = vec!["vendor".to_string()];
+        assert!(is_excluded(Path::new("/proj/vendor/a.rs"), root, &exclude));
+        assert!(is_excluded(
+            Path::new("/proj/vendor/deep/b.rs"),
+            root,
+            &exclude
+        ));
+        assert!(!is_excluded(Path::new("/proj/src/a.rs"), root, &exclude));
+    }
+
+    #[test]
+    fn exclude_tolerates_trailing_and_leading_slashes() {
+        let root = Path::new("/proj");
+        for pattern in ["vendor/", "/vendor", "./vendor/"] {
+            assert!(
+                is_excluded(Path::new("/proj/vendor/a.rs"), root, &[pattern.to_string()]),
+                "pattern {pattern} should match"
+            );
+        }
+    }
+
+    #[test]
+    fn patterns_that_normalize_to_nothing_exclude_nothing() {
+        let root = Path::new("/proj");
+        for pattern in ["", "/", ".", "./", "//"] {
+            assert!(
+                exclude_components(pattern).is_none(),
+                "pattern {pattern:?} should normalize to nothing"
+            );
+            assert!(
+                !is_excluded(Path::new("/proj/src/a.rs"), root, &[pattern.to_string()]),
+                "pattern {pattern:?} must not exclude anything"
+            );
+        }
+    }
+
+    #[test]
+    fn exclude_matches_multi_component_paths() {
+        let root = Path::new("/proj");
+        let exclude = vec!["third_party/generated".to_string()];
+        assert!(is_excluded(
+            Path::new("/proj/third_party/generated/a.rs"),
+            root,
+            &exclude
+        ));
+        assert!(!is_excluded(
+            Path::new("/proj/third_party/kept/a.rs"),
+            root,
+            &exclude
+        ));
+    }
+
+    #[test]
+    fn exclude_does_not_match_nested_occurrence_of_pattern() {
+        // Excludes anchor at the source root, so a nested `vendor/` is kept.
+        let root = Path::new("/proj");
+        let exclude = vec!["vendor".to_string()];
+        assert!(!is_excluded(
+            Path::new("/proj/src/vendor/a.rs"),
+            root,
+            &exclude
+        ));
+    }
+
+    #[test]
+    fn exclude_does_not_match_partial_component_name() {
+        let root = Path::new("/proj");
+        let exclude = vec!["vend".to_string()];
+        assert!(!is_excluded(Path::new("/proj/vendor/a.rs"), root, &exclude));
+    }
+
+    #[test]
+    fn paths_outside_the_source_root_are_not_excluded() {
+        let root = Path::new("/proj");
+        let exclude = vec!["vendor".to_string()];
+        assert!(!is_excluded(
+            Path::new("/other/vendor/a.rs"),
+            root,
+            &exclude
+        ));
+    }
+
+    /// Build a minimal unit for exclude-filter tests.
+    fn test_unit(root: &str, files: &[&str]) -> crate::orchestrator::LanguageUnit {
+        crate::orchestrator::LanguageUnit {
+            name: "unit".to_string(),
+            language: "rust".to_string(),
+            root: PathBuf::from(root),
+            source_root: PathBuf::from(root),
+            source_files: files.iter().map(PathBuf::from).collect(),
+            top_level_kind: svt_core::model::NodeKind::Component,
+            top_level_sub_kind: "crate".to_string(),
+            source_ref: format!("{root}/Cargo.toml"),
+            parent_qualified_name: None,
+            workspace_dependencies: vec![],
+        }
+    }
+
+    #[test]
+    fn excluded_source_files_are_dropped_from_a_unit() {
+        let unit = test_unit("/proj/a", &["/proj/a/src/x.rs", "/proj/vendor/y.rs"]);
+        let filtered = apply_excludes(unit, Path::new("/proj"), &["vendor".to_string()])
+            .expect("unit retained");
+        assert_eq!(
+            filtered.source_files,
+            vec![PathBuf::from("/proj/a/src/x.rs")]
+        );
+    }
+
+    #[test]
+    fn unit_rooted_in_an_excluded_directory_is_dropped_entirely() {
+        let unit = test_unit("/proj/vendor/lib", &["/proj/vendor/lib/x.rs"]);
+        assert!(apply_excludes(unit, Path::new("/proj"), &["vendor".to_string()]).is_none());
+    }
+
+    #[test]
+    fn unit_with_all_source_files_excluded_is_dropped() {
+        // The unit root itself is not excluded, but every file under it is.
+        let unit = test_unit("/proj/a", &["/proj/gen/x.rs", "/proj/gen/y.rs"]);
+        assert!(apply_excludes(unit, Path::new("/proj"), &["gen".to_string()]).is_none());
+    }
+
+    #[test]
+    fn unit_is_unchanged_when_no_excludes_are_configured() {
+        let unit = test_unit("/proj/a", &["/proj/a/src/x.rs"]);
+        let filtered = apply_excludes(unit, Path::new("/proj"), &[]).expect("unit retained");
+        assert_eq!(filtered.source_files.len(), 1);
+    }
+
+    #[test]
+    fn analysis_source_constructors_set_root_and_excludes() {
+        let plain = AnalysisSource::new("/proj");
+        assert_eq!(plain.root, PathBuf::from("/proj"));
+        assert!(plain.exclude.is_empty());
+
+        let with_ex = AnalysisSource::with_excludes("/proj", vec!["vendor".to_string()]);
+        assert_eq!(with_ex.exclude, vec!["vendor".to_string()]);
+    }
+
+    #[test]
+    fn analyzing_a_nonexistent_source_returns_an_error() {
+        let mut store = CozoStore::new_in_memory().expect("store");
+        let err = analyze_sources_with_registry(
+            &mut store,
+            DEFAULT_PROJECT_ID,
+            Path::new("/definitely/not/here"),
+            &[AnalysisSource::new("/definitely/not/here")],
+            None,
+            OrchestratorRegistry::with_defaults(),
+        )
+        .expect_err("expected error");
+        assert!(
+            err.to_string().contains("does not exist"),
+            "unexpected error: {err}"
+        );
+    }
 
     #[test]
     fn analyze_project_creates_analysis_snapshot() {

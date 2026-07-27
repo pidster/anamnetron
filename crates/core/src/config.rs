@@ -66,6 +66,44 @@ pub fn default_sources() -> Vec<SourceConfig> {
     }]
 }
 
+/// Validate that a server URL has an `http`/`https` scheme and a non-empty host.
+///
+/// A minimal check rather than a full URL parse — the project deliberately
+/// minimizes dependencies and no URL crate is in the workspace.
+fn validate_server_url(url: &str) -> Result<(), ConfigError> {
+    let rest = match url.split_once("://") {
+        Some(("http" | "https", rest)) => rest,
+        _ => {
+            return Err(ConfigError::Validation(format!(
+                "server.url must start with http:// or https://: {url}"
+            )));
+        }
+    };
+
+    // Host is everything up to the first '/', '?' or '#'.
+    let host = rest
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        // Strip optional userinfo.
+        .rsplit('@')
+        .next()
+        .unwrap_or_default();
+
+    if host.is_empty() {
+        return Err(ConfigError::Validation(format!(
+            "server.url has no host: {url}"
+        )));
+    }
+    if host.contains(char::is_whitespace) {
+        return Err(ConfigError::Validation(format!(
+            "server.url host contains whitespace: {url}"
+        )));
+    }
+
+    Ok(())
+}
+
 impl ProjectConfig {
     /// Load a project config from a YAML file.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
@@ -89,6 +127,33 @@ impl ProjectConfig {
         // Validate project ID.
         validate_project_id(&self.project)
             .map_err(|e| ConfigError::Validation(format!("invalid project ID: {e}")))?;
+
+        // Reject duplicate design entries.
+        let mut seen_design = std::collections::HashSet::new();
+        for design_path in &self.design {
+            if !seen_design.insert(design_path.clone()) {
+                return Err(ConfigError::Validation(format!(
+                    "duplicate design entry: {}",
+                    design_path.display()
+                )));
+            }
+        }
+
+        // Reject duplicate source entries.
+        let mut seen_sources = std::collections::HashSet::new();
+        for source in &self.sources {
+            if !seen_sources.insert(source.path.clone()) {
+                return Err(ConfigError::Validation(format!(
+                    "duplicate source entry: {}",
+                    source.path.display()
+                )));
+            }
+        }
+
+        // Validate the remote server URL, if configured.
+        if let Some(server) = &self.server {
+            validate_server_url(&server.url)?;
+        }
 
         // Validate design file extensions.
         for design_path in &self.design {
@@ -282,6 +347,153 @@ mod tests {
             .expect("no error")
             .expect("config found");
         assert_eq!(config.project, "loaded-project");
+    }
+
+    /// Build a minimal valid config for validation tests.
+    fn base_config() -> ProjectConfig {
+        ProjectConfig {
+            project: "good-id".to_string(),
+            name: None,
+            description: None,
+            design: vec![],
+            sources: default_sources(),
+            server: None,
+        }
+    }
+
+    #[test]
+    fn validation_accepts_http_and_https_server_urls() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        for url in [
+            "http://localhost:3000",
+            "https://svt.example.com",
+            "https://svt.example.com/api/v1",
+            "http://user:pw@example.com:8080/path?q=1",
+        ] {
+            let config = ProjectConfig {
+                server: Some(ServerConfig {
+                    url: url.to_string(),
+                }),
+                ..base_config()
+            };
+            assert!(
+                config.validate(tmp.path()).is_ok(),
+                "expected {url} to be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn validation_rejects_server_url_without_http_scheme() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        for url in ["localhost:3000", "ftp://example.com", "example.com", ""] {
+            let config = ProjectConfig {
+                server: Some(ServerConfig {
+                    url: url.to_string(),
+                }),
+                ..base_config()
+            };
+            let err = config
+                .validate(tmp.path())
+                .expect_err("expected rejection for {url}");
+            assert!(
+                err.to_string().contains("http:// or https://"),
+                "unexpected error for {url}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn validation_rejects_server_url_without_host() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config = ProjectConfig {
+            server: Some(ServerConfig {
+                url: "http:///path".to_string(),
+            }),
+            ..base_config()
+        };
+        let err = config.validate(tmp.path()).unwrap_err();
+        assert!(
+            err.to_string().contains("no host"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validation_rejects_server_url_host_with_whitespace() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config = ProjectConfig {
+            server: Some(ServerConfig {
+                url: "http://bad host/".to_string(),
+            }),
+            ..base_config()
+        };
+        let err = config.validate(tmp.path()).unwrap_err();
+        assert!(
+            err.to_string().contains("whitespace"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validation_rejects_duplicate_design_entries() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config = ProjectConfig {
+            design: vec![
+                PathBuf::from("design/arch.yaml"),
+                PathBuf::from("design/arch.yaml"),
+            ],
+            ..base_config()
+        };
+        let err = config.validate(tmp.path()).unwrap_err();
+        assert!(
+            err.to_string().contains("duplicate design entry"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validation_rejects_duplicate_source_entries() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config = ProjectConfig {
+            sources: vec![
+                SourceConfig {
+                    path: PathBuf::from("."),
+                    exclude: vec![],
+                },
+                SourceConfig {
+                    path: PathBuf::from("."),
+                    exclude: vec!["vendor".to_string()],
+                },
+            ],
+            ..base_config()
+        };
+        let err = config.validate(tmp.path()).unwrap_err();
+        assert!(
+            err.to_string().contains("duplicate source entry"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validation_accepts_distinct_design_and_source_entries() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(tmp.path().join("src")).expect("create src");
+        let config = ProjectConfig {
+            design: vec![PathBuf::from("a.yaml"), PathBuf::from("b.yaml")],
+            sources: vec![
+                SourceConfig {
+                    path: PathBuf::from("."),
+                    exclude: vec![],
+                },
+                SourceConfig {
+                    path: PathBuf::from("src"),
+                    exclude: vec![],
+                },
+            ],
+            ..base_config()
+        };
+        assert!(config.validate(tmp.path()).is_ok());
     }
 
     #[test]
