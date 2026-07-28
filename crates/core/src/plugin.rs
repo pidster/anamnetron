@@ -341,6 +341,7 @@ mod tests {
                 items: vec![],
                 relations: vec![],
                 warnings: vec![],
+                ..Default::default()
             }
         }
     }

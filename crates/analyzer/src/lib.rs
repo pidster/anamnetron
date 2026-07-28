@@ -257,6 +257,7 @@ pub fn analyze_sources_with_registry(
     let mut all_warnings = Vec::new();
     let mut files_analyzed = 0;
     let mut units_per_language: HashMap<String, usize> = HashMap::new();
+    let mut method_call_stats = svt_core::analysis::MethodCallStats::default();
 
     let discovered = discover_all(&registry, sources);
 
@@ -316,6 +317,7 @@ pub fn analyze_sources_with_registry(
                 "post-processing complete"
             );
 
+            method_call_stats.merge(&result.method_call_stats);
             all_items.extend(result.items);
             all_relations.extend(result.relations);
             all_warnings.extend(result.warnings);
@@ -340,6 +342,7 @@ pub fn analyze_sources_with_registry(
             items: all_items.clone(),
             relations: all_relations.clone(),
             warnings: vec![],
+            ..Default::default()
         };
         let type_flow = crate::type_flow::TypeFlowAnalysis::from_parse_results(&[combined]);
         let flow_relations = type_flow.analyze();
@@ -360,9 +363,9 @@ pub fn analyze_sources_with_registry(
     let (nodes, edges, mapping_warnings) = map_to_graph(&all_items, &all_relations);
     all_warnings.extend(mapping_warnings);
 
-    // Aggregate method call resolution stats from warnings.
-    let (method_calls_resolved, method_calls_unresolved) =
-        aggregate_method_call_stats(&all_warnings);
+    // Method-call resolution stats, carried as typed per-shape counters.
+    let method_calls_resolved = method_call_stats.resolved();
+    let method_calls_unresolved = method_call_stats.unresolved();
 
     // Create snapshot and insert.
     let version = store.create_snapshot(project_id, SnapshotKind::Analysis, commit_ref)?;
@@ -387,6 +390,7 @@ pub fn analyze_sources_with_registry(
         edges_copied: 0,
         method_calls_resolved,
         method_calls_unresolved,
+        method_call_stats,
     })
 }
 
@@ -510,6 +514,9 @@ pub fn analyze_sources_incremental_with_registry(
     let mut units_per_language: HashMap<String, usize> = HashMap::new();
     let mut units_skipped = 0;
     let mut units_reanalyzed = 0;
+    // Only re-analyzed units contribute stats; copied (unchanged) units do not,
+    // matching the pre-existing behavior when stats travelled as warnings.
+    let mut method_call_stats = svt_core::analysis::MethodCallStats::default();
 
     all_warnings.extend(
         hash_warnings
@@ -571,6 +578,7 @@ pub fn analyze_sources_incremental_with_registry(
                     relations = result.relations.len(),
                     "post-processing complete"
                 );
+                method_call_stats.merge(&result.method_call_stats);
                 all_items.extend(result.items);
                 all_relations.extend(result.relations);
                 all_warnings.extend(result.warnings);
@@ -601,6 +609,7 @@ pub fn analyze_sources_incremental_with_registry(
             items: all_items.clone(),
             relations: all_relations.clone(),
             warnings: vec![],
+            ..Default::default()
         };
         let type_flow = crate::type_flow::TypeFlowAnalysis::from_parse_results(&[combined]);
         let flow_relations = type_flow.analyze();
@@ -615,9 +624,9 @@ pub fn analyze_sources_incremental_with_registry(
     let (nodes, edges, mapping_warnings) = map_to_graph(&all_items, &all_relations);
     all_warnings.extend(mapping_warnings);
 
-    // Aggregate method call resolution stats from warnings.
-    let (method_calls_resolved, method_calls_unresolved) =
-        aggregate_method_call_stats(&all_warnings);
+    // Method-call resolution stats, carried as typed per-shape counters.
+    let method_calls_resolved = method_call_stats.resolved();
+    let method_calls_unresolved = method_call_stats.unresolved();
 
     store.add_nodes_batch(version, &nodes)?;
     store.add_edges_batch(version, &edges)?;
@@ -643,43 +652,8 @@ pub fn analyze_sources_incremental_with_registry(
         edges_copied,
         method_calls_resolved,
         method_calls_unresolved,
+        method_call_stats,
     })
-}
-
-/// Aggregate method call resolution stats from analysis warnings.
-///
-/// Parses warning messages with the format:
-/// `"N method call(s): M resolved, K could not be resolved without type information"`
-fn aggregate_method_call_stats(warnings: &[crate::types::AnalysisWarning]) -> (usize, usize) {
-    let mut resolved = 0;
-    let mut unresolved = 0;
-
-    for w in warnings {
-        if w.message.contains("method call(s):") {
-            // Extract "M resolved" count
-            if let Some(r_pos) = w.message.find(" resolved") {
-                let before = &w.message[..r_pos];
-                if let Some(space) = before.rfind(' ') {
-                    if let Ok(n) = before[space + 1..].parse::<usize>() {
-                        resolved += n;
-                    }
-                } else if let Ok(n) = before.parse::<usize>() {
-                    resolved += n;
-                }
-            }
-            // Extract "K could not be resolved" count
-            if let Some(u_pos) = w.message.find(" could not be resolved") {
-                let before = &w.message[..u_pos];
-                if let Some(comma) = before.rfind(", ") {
-                    if let Ok(n) = before[comma + 2..].trim().parse::<usize>() {
-                        unresolved += n;
-                    }
-                }
-            }
-        }
-    }
-
-    (resolved, unresolved)
 }
 
 #[cfg(test)]
@@ -965,81 +939,6 @@ mod tests {
         assert!(
             msg.contains("test error"),
             "should contain inner error message, got: {msg}"
-        );
-    }
-
-    #[test]
-    fn aggregate_method_call_stats_with_method_call_warnings() {
-        let warnings = vec![
-            crate::types::AnalysisWarning {
-                source_ref: "test.rs".to_string(),
-                message: "10 method call(s): 7 resolved, 3 could not be resolved without type information".to_string(),
-            },
-            crate::types::AnalysisWarning {
-                source_ref: "other.rs".to_string(),
-                message: "5 method call(s): 2 resolved, 3 could not be resolved without type information".to_string(),
-            },
-        ];
-        let (resolved, unresolved) = aggregate_method_call_stats(&warnings);
-        assert_eq!(resolved, 9, "should sum resolved counts across warnings");
-        assert_eq!(
-            unresolved, 6,
-            "should sum unresolved counts across warnings"
-        );
-    }
-
-    #[test]
-    fn aggregate_method_call_stats_with_no_method_call_warnings() {
-        let warnings = vec![crate::types::AnalysisWarning {
-            source_ref: "test.rs".to_string(),
-            message: "some other warning".to_string(),
-        }];
-        let (resolved, unresolved) = aggregate_method_call_stats(&warnings);
-        assert_eq!(resolved, 0);
-        assert_eq!(unresolved, 0);
-    }
-
-    #[test]
-    fn aggregate_method_call_stats_with_empty_warnings() {
-        let (resolved, unresolved) = aggregate_method_call_stats(&[]);
-        assert_eq!(resolved, 0);
-        assert_eq!(unresolved, 0);
-    }
-
-    #[test]
-    fn aggregate_method_call_stats_with_mixed_warnings() {
-        let warnings = vec![
-            crate::types::AnalysisWarning {
-                source_ref: "a.rs".to_string(),
-                message: "unrelated warning about something".to_string(),
-            },
-            crate::types::AnalysisWarning {
-                source_ref: "b.rs".to_string(),
-                message:
-                    "8 method call(s): 5 resolved, 3 could not be resolved without type information"
-                        .to_string(),
-            },
-            crate::types::AnalysisWarning {
-                source_ref: "c.rs".to_string(),
-                message: "another unrelated warning".to_string(),
-            },
-        ];
-        let (resolved, unresolved) = aggregate_method_call_stats(&warnings);
-        assert_eq!(resolved, 5, "should only count from method call warnings");
-        assert_eq!(unresolved, 3);
-    }
-
-    #[test]
-    fn aggregate_method_call_stats_resolved_only() {
-        let warnings = vec![crate::types::AnalysisWarning {
-            source_ref: "test.rs".to_string(),
-            message: "4 method call(s): 4 resolved".to_string(),
-        }];
-        let (resolved, unresolved) = aggregate_method_call_stats(&warnings);
-        assert_eq!(resolved, 4);
-        assert_eq!(
-            unresolved, 0,
-            "no 'could not be resolved' means 0 unresolved"
         );
     }
 

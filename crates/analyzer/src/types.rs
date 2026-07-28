@@ -133,7 +133,15 @@ pub struct AnalysisSummary {
     /// Number of edges copied from the previous version.
     pub edges_copied: usize,
     /// Number of method calls resolved via heuristic type inference.
+    ///
+    /// Equal to `method_call_stats.resolved()`; retained as a convenience field.
     pub method_calls_resolved: usize,
     /// Number of method calls that could not be resolved.
+    ///
+    /// Equal to `method_call_stats.unresolved()`; retained as a convenience field.
     pub method_calls_unresolved: usize,
+    /// Per-shape method-call resolution breakdown (self vs. local-var resolved;
+    /// field-access / chained / other unresolved). Surfaces *where* calls fall
+    /// so resolution work (e.g. chained-call handling) can be prioritized.
+    pub method_call_stats: svt_core::analysis::MethodCallStats,
 }

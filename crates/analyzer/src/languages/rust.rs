@@ -13,7 +13,7 @@ use svt_core::model::{EdgeKind, NodeKind};
 use crate::type_metadata::{self, RUST_TYPE_CONFIG};
 use crate::types::{AnalysisItem, AnalysisRelation, AnalysisWarning};
 
-use super::{LanguageAnalyzer, ParseResult};
+use super::{LanguageAnalyzer, MethodCallStats, ParseResult};
 
 /// Well-known Rust container/wrapper types.
 ///
@@ -109,8 +109,8 @@ struct FileParseState<'a> {
     items: Vec<AnalysisItem>,
     relations: Vec<AnalysisRelation>,
     warnings: Vec<AnalysisWarning>,
-    unresolved_method_calls: usize,
-    resolved_method_calls: usize,
+    /// Per-shape method-call resolution telemetry accumulated during the walk.
+    method_call_stats: MethodCallStats,
     /// Map from local name to import info (qualified path + source location).
     use_aliases: HashMap<String, UseAliasInfo>,
     local_types: HashSet<String>,
@@ -191,6 +191,7 @@ impl LanguageAnalyzer for RustAnalyzer {
                         &mut result.items,
                         &mut result.relations,
                         &mut result.warnings,
+                        &mut result.method_call_stats,
                     );
                 }
                 Err(err) => {
@@ -248,6 +249,7 @@ impl RustAnalyzer {
                         &mut result.items,
                         &mut result.relations,
                         &mut result.warnings,
+                        &mut result.method_call_stats,
                     );
                 }
                 Err(err) => {
@@ -358,6 +360,7 @@ fn parse_file(
     items: &mut Vec<AnalysisItem>,
     relations: &mut Vec<AnalysisRelation>,
     warnings: &mut Vec<AnalysisWarning>,
+    method_call_stats: &mut MethodCallStats,
 ) {
     let Some(tree) = parser.parse(source, None) else {
         warnings.push(AnalysisWarning {
@@ -388,8 +391,7 @@ fn parse_file(
         items: Vec::new(),
         relations: Vec::new(),
         warnings: Vec::new(),
-        unresolved_method_calls: 0,
-        resolved_method_calls: 0,
+        method_call_stats: MethodCallStats::default(),
         use_aliases: HashMap::new(),
         local_types: HashSet::new(),
         well_known_containers: RUST_WELL_KNOWN_CONTAINERS,
@@ -399,17 +401,8 @@ fn parse_file(
 
     visit_children(root, &mut state, &module_context, None, false);
 
-    let total = state.resolved_method_calls + state.unresolved_method_calls;
-    if total > 0 {
-        state.warnings.push(AnalysisWarning {
-            source_ref: file_path.display().to_string(),
-            message: format!(
-                "{total} method call(s): {} resolved, \
-                 {} could not be resolved without type information",
-                state.resolved_method_calls, state.unresolved_method_calls
-            ),
-        });
-    }
+    // Accumulate typed per-shape method-call telemetry into the caller's total.
+    method_call_stats.merge(&state.method_call_stats);
 
     items.extend(state.items);
     relations.extend(state.relations);
@@ -1972,54 +1965,82 @@ fn visit_call_expressions(
                         }
                     }
                     "field_expression" => {
-                        // Method call (e.g., `self.foo()` or `x.foo()`)
-                        let mut resolved = false;
-
-                        if let (Some(receiver), Some(method)) = (
+                        // Method call (e.g., `self.foo()` or `x.foo()`).
+                        //
+                        // The source of every emitted `Calls` edge is `caller_qn`
+                        // (the enclosing function), NOT the module: `type_flow`
+                        // requires both endpoints of a `Calls` edge to have a
+                        // function signature, and entry/sink fan-in/out is computed
+                        // per function. Attributing to the module would make these
+                        // edges invisible to data-flow and skew root detection.
+                        //
+                        // Exactly one telemetry bucket is incremented per method
+                        // call so the partition invariant holds
+                        // (`resolved() + unresolved() == total()`).
+                        match (
                             function.child_by_field_name("value"),
                             function.child_by_field_name("field"),
                         ) {
-                            if let (Ok(receiver_text), Ok(method_name)) = (
-                                receiver.utf8_text(state.source),
-                                method.utf8_text(state.source),
-                            ) {
-                                if receiver_text == "self" {
-                                    // self.method() → resolve via impl_type
-                                    if let Some(type_qn) = impl_type {
-                                        state.relations.push(AnalysisRelation {
-                                            source_qualified_name: build_qualified_name(
-                                                module_context,
-                                            ),
-                                            target_qualified_name: format!(
-                                                "{type_qn}::{method_name}"
-                                            ),
-                                            kind: EdgeKind::Calls,
-                                        });
-                                        resolved = true;
+                            (Some(receiver), Some(method)) => {
+                                match (
+                                    receiver.utf8_text(state.source),
+                                    method.utf8_text(state.source),
+                                ) {
+                                    (Ok(receiver_text), Ok(method_name)) => {
+                                        if receiver_text == "self" {
+                                            // self.method() → resolve via impl_type.
+                                            if let Some(type_qn) = impl_type {
+                                                state.relations.push(AnalysisRelation {
+                                                    source_qualified_name: caller_qn.to_string(),
+                                                    target_qualified_name: format!(
+                                                        "{type_qn}::{method_name}"
+                                                    ),
+                                                    kind: EdgeKind::Calls,
+                                                });
+                                                state.method_call_stats.self_resolved += 1;
+                                            } else {
+                                                // `self` receiver but no enclosing
+                                                // impl type to resolve against.
+                                                state.method_call_stats.unresolved_other += 1;
+                                            }
+                                        } else if receiver.kind() == "identifier" {
+                                            // x.method() → look up x in local_type_map.
+                                            if let Some(type_qn) = local_type_map.get(receiver_text)
+                                            {
+                                                state.relations.push(AnalysisRelation {
+                                                    source_qualified_name: caller_qn.to_string(),
+                                                    target_qualified_name: format!(
+                                                        "{type_qn}::{method_name}"
+                                                    ),
+                                                    kind: EdgeKind::Calls,
+                                                });
+                                                state.method_call_stats.local_var_resolved += 1;
+                                            } else {
+                                                // Local variable of unknown type.
+                                                state.method_call_stats.unresolved_other += 1;
+                                            }
+                                        } else if receiver.kind() == "field_expression" {
+                                            // self.field.method() / a.b.method().
+                                            state.method_call_stats.unresolved_field_access += 1;
+                                        } else if matches!(
+                                            receiver.kind(),
+                                            "call_expression"
+                                                | "await_expression"
+                                                | "try_expression"
+                                        ) {
+                                            // foo().method() / fut.await.method() /
+                                            // foo()?.method() — chained receiver.
+                                            state.method_call_stats.unresolved_chained += 1;
+                                        } else {
+                                            state.method_call_stats.unresolved_other += 1;
+                                        }
                                     }
-                                } else if receiver.kind() == "identifier" {
-                                    // x.method() → look up x in local_type_map
-                                    if let Some(type_qn) = local_type_map.get(receiver_text) {
-                                        state.relations.push(AnalysisRelation {
-                                            source_qualified_name: build_qualified_name(
-                                                module_context,
-                                            ),
-                                            target_qualified_name: format!(
-                                                "{type_qn}::{method_name}"
-                                            ),
-                                            kind: EdgeKind::Calls,
-                                        });
-                                        state.resolved_method_calls += 1;
-                                        resolved = true;
-                                    }
+                                    // Receiver or method name not valid UTF-8.
+                                    _ => state.method_call_stats.unresolved_other += 1,
                                 }
-                                // Chained calls (receiver is call_expression) and field
-                                // access (self.field.method()) are not resolved.
                             }
-                        }
-
-                        if !resolved {
-                            state.unresolved_method_calls += 1;
+                            // Malformed field_expression (missing value or field).
+                            _ => state.method_call_stats.unresolved_other += 1,
                         }
                     }
                     _ => {
@@ -2594,7 +2615,7 @@ mod tests {
     }
 
     #[test]
-    fn method_call_generates_warning() {
+    fn method_call_recorded_in_typed_stats() {
         let result = parse_source(
             "my_crate",
             r#"
@@ -2605,19 +2626,18 @@ mod tests {
             }
         "#,
         );
-        let method_warnings: Vec<_> = result
-            .warnings
-            .iter()
-            .filter(|w| w.message.contains("could not be resolved"))
-            .collect();
-        assert!(
-            !method_warnings.is_empty(),
-            "method call should produce an aggregated warning"
+        // The method call is recorded in typed per-shape telemetry rather than
+        // a re-parsed warning string. `x` has no resolvable local type here, so
+        // the call falls into an unresolved bucket.
+        assert_eq!(
+            result.method_call_stats.total(),
+            1,
+            "should record exactly one method call in typed stats"
         );
         assert_eq!(
-            method_warnings.len(),
+            result.method_call_stats.unresolved(),
             1,
-            "should produce exactly one aggregated warning per file"
+            "opaque receiver should be counted as unresolved"
         );
     }
 
@@ -2721,14 +2741,10 @@ mod tests {
             "opaque method call should not generate a Calls relation, got: {:?}",
             calls
         );
-        let method_warnings: Vec<_> = result
-            .warnings
-            .iter()
-            .filter(|w| w.message.contains("could not be resolved"))
-            .collect();
         assert!(
-            !method_warnings.is_empty(),
-            "opaque method call should still produce unresolved warning"
+            result.method_call_stats.unresolved() >= 1,
+            "opaque method call should still be counted as unresolved, got {:?}",
+            result.method_call_stats
         );
     }
 
@@ -2974,14 +2990,10 @@ mod tests {
             "opaque let x = something() should remain unresolved, got: {:?}",
             calls
         );
-        let method_warnings: Vec<_> = result
-            .warnings
-            .iter()
-            .filter(|w| w.message.contains("could not be resolved"))
-            .collect();
         assert!(
-            !method_warnings.is_empty(),
-            "should still produce unresolved warning"
+            result.method_call_stats.unresolved() >= 1,
+            "should still count the call as unresolved, got {:?}",
+            result.method_call_stats
         );
     }
 
@@ -3001,16 +3013,173 @@ mod tests {
             }
         "#,
         );
-        // The chained call .baz() should remain unresolved since
-        // the receiver is a call expression, not an identifier.
-        let method_warnings: Vec<_> = result
-            .warnings
-            .iter()
-            .filter(|w| w.message.contains("could not be resolved"))
-            .collect();
+        // The chained calls .bar() and .baz() should remain unresolved since
+        // their receivers are call expressions, not identifiers — and they are
+        // bucketed as chained in the typed telemetry.
         assert!(
-            !method_warnings.is_empty(),
-            "chained method calls should produce unresolved warning"
+            result.method_call_stats.unresolved_chained >= 1,
+            "chained method calls should be counted in the chained bucket, got {:?}",
+            result.method_call_stats
+        );
+    }
+
+    // --- R1: method-call source attribution regression tests ---
+
+    /// A resolved `self.m()` / `x.m()` call must produce a `Calls` edge whose
+    /// SOURCE is the calling function, not the enclosing module.
+    ///
+    /// This is the regression test whose absence let the misattribution bug ship:
+    /// the two `field_expression` arms previously used the module qualified name
+    /// as the edge source, making the edge invisible to data-flow (which requires
+    /// a function signature on both endpoints) and skewing entry/sink fan-in/out.
+    #[test]
+    fn resolved_method_call_source_is_caller_not_module() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub struct Foo;
+            impl Foo {
+                pub fn helper(&self) {}
+                pub fn run(&self) {
+                    self.helper();
+                    let x: Foo = Foo;
+                    x.helper();
+                }
+            }
+            "#,
+        );
+
+        let helper_calls: Vec<_> = result
+            .relations
+            .iter()
+            .filter(|r| {
+                r.kind == EdgeKind::Calls && r.target_qualified_name == "my_crate::Foo::helper"
+            })
+            .collect();
+
+        // Both `self.helper()` and `x.helper()` should resolve to the same target.
+        assert_eq!(
+            helper_calls.len(),
+            2,
+            "self.helper() and x.helper() should each produce a Calls edge, got: {:?}",
+            result.relations
+        );
+        for c in &helper_calls {
+            assert_eq!(
+                c.source_qualified_name, "my_crate::Foo::run",
+                "resolved method call must be sourced from the calling function"
+            );
+            assert_ne!(
+                c.source_qualified_name, "my_crate",
+                "regression: method-call edge must NOT be attributed to the module"
+            );
+        }
+    }
+
+    /// Every method call is counted in exactly one telemetry bucket, so the
+    /// per-shape counts partition the total. Guards against the asymmetric
+    /// counting that previously dropped self-resolved calls from both counters.
+    #[test]
+    fn method_call_stats_partition_by_shape() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            pub struct Foo;
+            impl Foo {
+                pub fn new() -> Self { Foo }
+                pub fn m(&self) -> &Self { self }
+                pub fn run(&self, other: Foo) {
+                    self.m();          // self_resolved
+                    let x: Foo = Foo;
+                    x.m();             // local_var_resolved
+                    other.m();         // local_var_resolved (param)
+                    self.inner.m();    // unresolved_field_access
+                    Foo::new().m();    // unresolved_chained
+                }
+            }
+            "#,
+        );
+
+        let s = &result.method_call_stats;
+        // Exactly one bucket per method call: five method calls above.
+        assert_eq!(
+            s.total(),
+            5,
+            "should observe exactly five method calls, got {s:?}"
+        );
+        assert_eq!(
+            s.resolved() + s.unresolved(),
+            s.total(),
+            "partition invariant must hold, got {s:?}"
+        );
+        assert_eq!(s.self_resolved, 1, "self.m() → self_resolved, got {s:?}");
+        assert_eq!(
+            s.local_var_resolved, 2,
+            "x.m() and other.m() → local_var_resolved, got {s:?}"
+        );
+        assert_eq!(
+            s.unresolved_field_access, 1,
+            "self.inner.m() → field access bucket, got {s:?}"
+        );
+        assert_eq!(
+            s.unresolved_chained, 1,
+            "Foo::new().m() → chained bucket, got {s:?}"
+        );
+        assert_eq!(
+            s.unresolved_other, 0,
+            "no other-shape calls expected, got {s:?}"
+        );
+    }
+
+    /// End-to-end proof that R1 unblocks data-flow Phase C: a resolved
+    /// cross-module method call must yield a `DataFlow` edge.
+    ///
+    /// `type_flow` requires both endpoints of a `Calls` edge to carry a function
+    /// signature; a module qualified name has none. With the R1 fix the edge is
+    /// sourced from the caller function, so the call participates in type-flow.
+    /// If the source were the module (pre-fix), no `DataFlow` edge would appear —
+    /// making this test genuinely dependent on the fix.
+    #[test]
+    fn resolved_method_call_enables_cross_module_data_flow() {
+        let result = parse_source(
+            "app",
+            r#"
+            pub struct Payload;
+            pub struct Source;
+            impl Source {
+                pub fn emit(&self) -> Payload { Payload }
+            }
+            pub struct Runner;
+            impl Runner {
+                pub fn run(&self, s: Source, seed: Payload) {
+                    let _p = s.emit();
+                    let _ = seed;
+                }
+            }
+            "#,
+        );
+
+        // Sanity: the method call resolved to a cross-impl target sourced from
+        // the caller function (the R1 fix in action).
+        let emit_edge = result
+            .relations
+            .iter()
+            .find(|r| r.kind == EdgeKind::Calls && r.target_qualified_name == "app::Source::emit");
+        let emit_edge = emit_edge.expect("s.emit() should resolve to app::Source::emit");
+        assert_eq!(
+            emit_edge.source_qualified_name, "app::Runner::run",
+            "s.emit() must be sourced from the caller (R1)"
+        );
+
+        // The resolved edge must feed type-flow and produce a DataFlow edge.
+        let flow =
+            crate::type_flow::TypeFlowAnalysis::from_parse_results(std::slice::from_ref(&result));
+        let flow_relations = flow.analyze();
+        let has_data_flow = flow_relations.iter().any(|r| r.kind == EdgeKind::DataFlow);
+        assert!(
+            has_data_flow,
+            "resolved cross-module method call should yield a DataFlow edge \
+             (R1 unblocks Phase C); got flow relations: {flow_relations:?}"
         );
     }
 

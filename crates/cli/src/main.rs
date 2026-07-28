@@ -723,6 +723,15 @@ fn run_analyze(
             "    method calls: {} resolved, {} unresolved (of {} total)",
             summary.method_calls_resolved, summary.method_calls_unresolved, total_method_calls,
         );
+        let s = &summary.method_call_stats;
+        println!(
+            "      resolved:   {} self, {} local-var",
+            s.self_resolved, s.local_var_resolved,
+        );
+        println!(
+            "      unresolved: {} chained, {} field-access, {} other",
+            s.unresolved_chained, s.unresolved_field_access, s.unresolved_other,
+        );
     }
 
     if !summary.warnings.is_empty() {

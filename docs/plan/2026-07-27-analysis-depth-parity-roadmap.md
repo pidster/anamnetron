@@ -77,6 +77,31 @@ Every edge property the data-flow design specifies (`mechanism`, `via_function`,
 direction then discards it. Edge metadata must be plumbed through
 `AnalysisRelation` → `mapping.rs` first.
 
+### Status update — R0 + R1 landed (2026-07-28)
+
+R0 and R1 shipped together (branch `fix/method-call-attribution-and-instrumentation`).
+R1 fixed method-call source attribution (edges now sourced from the calling
+function, unblocking data-flow Phase C — verified in isolation). R0 replaced the
+stringly-typed telemetry with a typed `MethodCallStats` on `ParseResult`.
+Measured resolution rate moved 10.9% → **11.72%** (dogfood ratchet floor raised
+`> 10.0` → `> 11.5`).
+
+- **Per-shape observability landed here.** The five buckets (self- / local-var-
+  resolved; chained / field-access / other unresolved) are surfaced on
+  `AnalysisSummary` and the CLI stats line — do **not** re-scope this into a
+  later increment. On the dogfood corpus the unresolved side is ~3300 chained +
+  ~3000 other + ~870 field-access, confirming chained-call resolution (R3) is
+  the dominant remaining bucket.
+- **Deferred — emitted-vs-surviving method-call counts.** R0 counts *emitted*
+  method calls (per shape). The honest "surviving after `mapping.rs` drops
+  dangling-endpoint relations" number is **not** implemented: it needs a way to
+  tag which relations are method calls so mapping drops can be attributed. This
+  **pairs with R5**, since both require `AnalysisRelation` to carry a metadata
+  tag — do them together when the edge-metadata plumbing lands.
+- **Not done (intentional) — resolution-soundness proptest.** `rust.rs` has no
+  existing proptest harness; the deterministic attribution + partition tests pin
+  the key properties. Revisit only if a proptest harness is introduced there.
+
 ## Gap 2 — staged increments (ordered by value-to-cost)
 
 | ID | Increment | Size | Schema/API impact | Notes |

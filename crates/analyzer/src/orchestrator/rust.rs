@@ -652,6 +652,7 @@ mod tests {
                 kind: EdgeKind::Depends,
             }],
             warnings: vec![],
+            ..Default::default()
         };
 
         rewrite_cross_crate_prefixes(&mut result, &map);
@@ -739,6 +740,7 @@ mod tests {
                 kind: EdgeKind::Contains,
             }],
             warnings: vec![],
+            ..Default::default()
         };
 
         reparent_orphaned_impl_items(&mut result, crate_name, None, None);
@@ -793,6 +795,7 @@ mod tests {
             }],
             relations: vec![],
             warnings: vec![],
+            ..Default::default()
         };
 
         rewrite_cross_crate_prefixes(&mut result, &map);
@@ -844,6 +847,7 @@ mod tests {
             ],
             relations: vec![],
             warnings: vec![],
+            ..Default::default()
         };
 
         reparent_orphaned_impl_items(&mut result, crate_name, None, None);
@@ -878,6 +882,7 @@ mod tests {
             }],
             relations: vec![],
             warnings: vec![],
+            ..Default::default()
         };
 
         // Simulate types from previously-processed crates.
@@ -930,6 +935,7 @@ mod tests {
             ],
             relations: vec![],
             warnings: vec![],
+            ..Default::default()
         };
 
         // Cross-crate also has a Foo.
@@ -963,6 +969,7 @@ mod tests {
             }],
             relations: vec![],
             warnings: vec![],
+            ..Default::default()
         };
 
         // Three cross-crate Record types, simulating workspace ambiguity.
@@ -1013,6 +1020,7 @@ mod tests {
             }],
             relations: vec![],
             warnings: vec![],
+            ..Default::default()
         };
 
         // Two Config types, both with matching suffixes (types::Config).
@@ -1066,6 +1074,7 @@ mod tests {
             }],
             relations: vec![],
             warnings: vec![],
+            ..Default::default()
         };
 
         // Three Record types in the workspace.

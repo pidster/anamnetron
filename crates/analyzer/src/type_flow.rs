@@ -448,6 +448,7 @@ mod tests {
             )],
             relations: vec![],
             warnings: vec![],
+            ..Default::default()
         };
 
         let analysis = TypeFlowAnalysis::from_parse_results(&[result]);
@@ -473,6 +474,7 @@ mod tests {
             )],
             relations: vec![],
             warnings: vec![],
+            ..Default::default()
         };
 
         let analysis = TypeFlowAnalysis::from_parse_results(&[result]);
@@ -503,6 +505,7 @@ mod tests {
             )],
             relations: vec![],
             warnings: vec![],
+            ..Default::default()
         };
 
         let analysis = TypeFlowAnalysis::from_parse_results(&[result]);
@@ -529,6 +532,7 @@ mod tests {
             )],
             relations: vec![],
             warnings: vec![],
+            ..Default::default()
         };
 
         let analysis = TypeFlowAnalysis::from_parse_results(&[result]);
@@ -572,6 +576,7 @@ mod tests {
             ],
             relations: vec![],
             warnings: vec![],
+            ..Default::default()
         };
 
         let analysis = TypeFlowAnalysis::from_parse_results(&[result]);
@@ -599,6 +604,7 @@ mod tests {
             )],
             relations: vec![],
             warnings: vec![],
+            ..Default::default()
         };
 
         let analysis = TypeFlowAnalysis::from_parse_results(&[result]);
@@ -634,6 +640,7 @@ mod tests {
             ],
             relations: vec![],
             warnings: vec![],
+            ..Default::default()
         };
 
         let analysis = TypeFlowAnalysis::from_parse_results(&[result]);
@@ -677,6 +684,7 @@ mod tests {
                 kind: EdgeKind::Calls,
             }],
             warnings: vec![],
+            ..Default::default()
         };
 
         let analysis = TypeFlowAnalysis::from_parse_results(&[result]);
@@ -716,6 +724,7 @@ mod tests {
                 kind: EdgeKind::Calls,
             }],
             warnings: vec![],
+            ..Default::default()
         };
 
         let analysis = TypeFlowAnalysis::from_parse_results(&[result]);
@@ -777,6 +786,7 @@ mod tests {
                 },
             ],
             warnings: vec![],
+            ..Default::default()
         };
 
         let analysis = TypeFlowAnalysis::from_parse_results(&[result]);
@@ -818,6 +828,7 @@ mod tests {
                 kind: EdgeKind::Calls,
             }],
             warnings: vec![],
+            ..Default::default()
         };
 
         let analysis = TypeFlowAnalysis::from_parse_results(&[result]);
@@ -859,6 +870,7 @@ mod tests {
                 kind: EdgeKind::Calls,
             }],
             warnings: vec![],
+            ..Default::default()
         };
 
         let analysis = TypeFlowAnalysis::from_parse_results(&[result]);
@@ -900,6 +912,7 @@ mod tests {
             }],
             relations: vec![],
             warnings: vec![],
+            ..Default::default()
         };
 
         let analysis = TypeFlowAnalysis::from_parse_results(&[result]);
@@ -921,6 +934,7 @@ mod tests {
             )],
             relations: vec![],
             warnings: vec![],
+            ..Default::default()
         };
         let result2 = ParseResult {
             items: vec![make_from_impl_method(
@@ -931,6 +945,7 @@ mod tests {
             )],
             relations: vec![],
             warnings: vec![],
+            ..Default::default()
         };
 
         let analysis = TypeFlowAnalysis::from_parse_results(&[result1, result2]);

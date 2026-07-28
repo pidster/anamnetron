@@ -9,8 +9,8 @@ pub mod typescript;
 
 use std::path::Path;
 
-// Re-export ParseResult from svt-core.
-pub use svt_core::analysis::ParseResult;
+// Re-export ParseResult and method-call telemetry from svt-core.
+pub use svt_core::analysis::{MethodCallStats, ParseResult};
 
 /// A language-specific source code analyzer.
 pub trait LanguageAnalyzer: Send + Sync {

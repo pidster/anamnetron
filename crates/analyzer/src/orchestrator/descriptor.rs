@@ -633,6 +633,7 @@ mod tests {
                     .collect(),
                 relations: vec![],
                 warnings: vec![],
+                ..Default::default()
             }
         }
     }

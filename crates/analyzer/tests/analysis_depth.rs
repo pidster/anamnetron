@@ -87,13 +87,59 @@ fn method_call_resolution_improved() {
         "should still have some unresolved method calls"
     );
 
-    // Resolution rate should be meaningful (> 10%)
+    // Dogfood ratchet: resolution rate must not regress below the honest
+    // baseline. After the R0/R1 fixes (self-resolved method calls are now
+    // counted, and method-call edges are attributed to the calling function),
+    // the measured rate is ~11.72% (962 of 8210 on this repo). The floor is set
+    // just below that; do not lower it without a corresponding honest change.
     let total = summary.method_calls_resolved + summary.method_calls_unresolved;
     let resolution_pct = (summary.method_calls_resolved as f64 / total as f64) * 100.0;
     assert!(
-        resolution_pct > 10.0,
-        "resolution rate should be > 10%, got {resolution_pct:.1}% ({} of {total})",
+        resolution_pct > 11.5,
+        "resolution rate regressed below the honest baseline (>11.5%), \
+         got {resolution_pct:.2}% ({} of {total})",
         summary.method_calls_resolved,
+    );
+}
+
+#[test]
+fn summary_carries_per_shape_method_call_breakdown() {
+    let mut store = CozoStore::new_in_memory().unwrap();
+    let summary = analyze_project(&mut store, DEFAULT_PROJECT_ID, &project_root(), None).unwrap();
+
+    let s = &summary.method_call_stats;
+
+    // The per-shape breakdown surfaced on the summary (and printed by the CLI)
+    // must be internally consistent with the headline resolved/unresolved fields.
+    assert_eq!(
+        s.resolved(),
+        summary.method_calls_resolved,
+        "per-shape resolved buckets must sum to the headline resolved count"
+    );
+    assert_eq!(
+        s.unresolved(),
+        summary.method_calls_unresolved,
+        "per-shape unresolved buckets must sum to the headline unresolved count"
+    );
+    assert_eq!(
+        s.total(),
+        summary.method_calls_resolved + summary.method_calls_unresolved,
+        "partition invariant must hold on the summary breakdown"
+    );
+
+    // On the real codebase every bucket that R0 exists to measure is populated —
+    // this is the distribution that drives R2/R3 prioritization.
+    assert!(
+        s.self_resolved > 0,
+        "self-resolved calls should be counted (got {s:?})"
+    );
+    assert!(
+        s.local_var_resolved > 0,
+        "local-var-resolved calls should be counted (got {s:?})"
+    );
+    assert!(
+        s.unresolved_chained > 0,
+        "chained calls (the R3 target bucket) should be counted (got {s:?})"
     );
 }
 
