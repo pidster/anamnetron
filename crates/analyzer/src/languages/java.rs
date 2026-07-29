@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use svt_core::analysis::{LanguageDescriptor, LanguageParser as CoreLanguageParser};
 use svt_core::model::{EdgeKind, NodeKind};
 
+use crate::type_metadata::{self, DataFlowMetadata, JAVA_TYPE_CONFIG};
 use crate::types::{AnalysisItem, AnalysisRelation, AnalysisWarning};
 
 use super::{LanguageAnalyzer, ParseResult};
@@ -794,6 +795,58 @@ fn extract_interface_body_members(
     }
 }
 
+/// Extract the type string from a Java type node.
+///
+/// Java already spells generics with angle brackets (`List<Order>`,
+/// `Optional<User>`), so the raw node text feeds directly into the shared
+/// wrapper-unwrapping logic. Array types (`String[]`) are returned verbatim and
+/// filtered later if not project-local.
+fn java_type_string(type_node: &tree_sitter::Node, source: &str) -> Option<String> {
+    type_node
+        .utf8_text(source.as_bytes())
+        .ok()
+        .map(|s| s.split_whitespace().collect::<Vec<_>>().join(""))
+        .filter(|s| !s.is_empty())
+}
+
+/// Extract `(name, type)` pairs from a Java `formal_parameters` node.
+fn java_param_types(params_node: &tree_sitter::Node, source: &str) -> Vec<(String, String)> {
+    let mut entries = Vec::new();
+    let mut cursor = params_node.walk();
+    for child in params_node.named_children(&mut cursor) {
+        if child.kind() != "formal_parameter" && child.kind() != "spread_parameter" {
+            continue;
+        }
+        let Some(type_str) = child
+            .child_by_field_name("type")
+            .and_then(|t| java_type_string(&t, source))
+        else {
+            continue;
+        };
+        let name = child
+            .child_by_field_name("name")
+            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+            .unwrap_or("")
+            .to_string();
+        entries.push((name, type_str));
+    }
+    entries
+}
+
+/// Build data-flow metadata (parameter and return types) for a Java
+/// `method_declaration` or `constructor_declaration` node. Constructors have no
+/// return type.
+fn java_dataflow_metadata(node: &tree_sitter::Node, source: &str) -> Option<DataFlowMetadata> {
+    let params = node
+        .child_by_field_name("parameters")
+        .map(|p| java_param_types(&p, source))
+        .unwrap_or_default();
+    let return_type = node
+        .child_by_field_name("type")
+        .and_then(|t| java_type_string(&t, source));
+    type_metadata::build_data_flow_metadata(&params, return_type.as_deref(), &JAVA_TYPE_CONFIG)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn extract_method(
     node: &tree_sitter::Node,
@@ -817,6 +870,10 @@ fn extract_method(
     let annotations = extract_annotations(node, source);
     let tags = java_test_tags(&annotations, is_test_file);
 
+    let mut metadata = serde_json::json!({ "loc": loc });
+    if let Some(df) = java_dataflow_metadata(node, source) {
+        type_metadata::merge_into_metadata(&mut metadata, &df);
+    }
     result.items.push(AnalysisItem {
         qualified_name: method_qn.clone(),
         kind: NodeKind::Unit,
@@ -824,7 +881,7 @@ fn extract_method(
         parent_qualified_name: Some(class_qn.to_string()),
         source_ref: format!("{source_ref_base}:{line}"),
         language: "java".to_string(),
-        metadata: Some(serde_json::json!({"loc": loc})),
+        metadata: Some(metadata),
         tags,
     });
 
@@ -860,6 +917,10 @@ fn extract_constructor(
         vec![]
     };
 
+    let mut metadata = serde_json::json!({ "loc": loc });
+    if let Some(df) = java_dataflow_metadata(node, source) {
+        type_metadata::merge_into_metadata(&mut metadata, &df);
+    }
     result.items.push(AnalysisItem {
         qualified_name: ctor_qn.clone(),
         kind: NodeKind::Unit,
@@ -867,7 +928,7 @@ fn extract_constructor(
         parent_qualified_name: Some(class_qn.to_string()),
         source_ref: format!("{source_ref_base}:{line}"),
         language: "java".to_string(),
-        metadata: Some(serde_json::json!({"loc": loc})),
+        metadata: Some(metadata),
         tags,
     });
 
@@ -1104,6 +1165,79 @@ mod tests {
     fn language_id_is_java() {
         let analyzer = JavaAnalyzer::new();
         assert_eq!(analyzer.language_id(), "java");
+    }
+
+    #[test]
+    fn method_records_param_and_return_types() {
+        let result = parse_java_source(
+            "class Svc {\n    Vote transform(Proposal p) { return new Vote(); }\n}\n",
+        );
+        let method = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name.ends_with("::transform"))
+            .expect("should have transform method");
+        let meta = method.metadata.as_ref().expect("metadata present");
+        assert_eq!(meta["param_types"][0]["name"], "p");
+        assert_eq!(meta["param_types"][0]["type"], "Proposal");
+        assert_eq!(meta["return_type"], "Vote");
+    }
+
+    #[test]
+    fn optional_and_list_return_types_are_unwrapped() {
+        let result = parse_java_source(
+            "class Repo {\n    Optional<User> find(UserId id) { return null; }\n    List<Order> all(Filter f) { return null; }\n}\n",
+        );
+        let find = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name.ends_with("::find"))
+            .expect("should have find method");
+        assert_eq!(
+            find.metadata.as_ref().unwrap()["return_type"],
+            "User",
+            "Optional<User> should unwrap to User"
+        );
+        let all = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name.ends_with("::all"))
+            .expect("should have all method");
+        assert_eq!(
+            all.metadata.as_ref().unwrap()["return_type"],
+            "Order",
+            "List<Order> should unwrap to Order"
+        );
+    }
+
+    #[test]
+    fn constructor_records_params_but_no_return() {
+        let result = parse_java_source("class Handler {\n    Handler(Config cfg) {}\n}\n");
+        let ctor = result
+            .items
+            .iter()
+            .find(|i| i.sub_kind == "constructor")
+            .expect("should have constructor");
+        let meta = ctor.metadata.as_ref().expect("metadata present");
+        assert_eq!(meta["param_types"][0]["type"], "Config");
+        assert!(
+            meta.get("return_type").is_none(),
+            "constructors have no return type"
+        );
+    }
+
+    #[test]
+    fn primitive_method_has_no_dataflow_metadata() {
+        let result =
+            parse_java_source("class Calc {\n    int add(int a, int b) { return a + b; }\n}\n");
+        let method = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name.ends_with("::add"))
+            .expect("should have add method");
+        let meta = method.metadata.as_ref().expect("metadata present");
+        assert!(meta.get("param_types").is_none());
+        assert!(meta.get("return_type").is_none());
     }
 
     #[test]

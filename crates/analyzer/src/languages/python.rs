@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use svt_core::analysis::{LanguageDescriptor, LanguageParser as CoreLanguageParser};
 use svt_core::model::{EdgeKind, NodeKind};
 
+use crate::type_metadata::{self, DataFlowMetadata, PYTHON_TYPE_CONFIG};
 use crate::types::{AnalysisItem, AnalysisRelation, AnalysisWarning};
 
 use super::{LanguageAnalyzer, ParseResult};
@@ -263,6 +264,116 @@ fn parse_python_file(
     }
 }
 
+/// Render a Python type-annotation node into a normalised type string.
+///
+/// Python spells generics with subscript syntax (`Optional[Proposal]`,
+/// `List[Record]`), which tree-sitter-python parses as a `generic_type` node
+/// wrapping the base identifier and a `type_parameter` list. These are rewritten
+/// to angle-bracket form (`Optional<Proposal>`) so that the shared
+/// [`type_metadata`] wrapper-unwrapping logic applies uniformly across
+/// languages. Simple identifiers and dotted attributes are returned verbatim.
+fn py_type_string(node: &tree_sitter::Node, source: &str) -> Option<String> {
+    match node.kind() {
+        // A `type` node wraps the actual annotation expression.
+        "type" => node
+            .named_child(0)
+            .and_then(|inner| py_type_string(&inner, source)),
+        "identifier" | "attribute" | "dotted_name" => node
+            .utf8_text(source.as_bytes())
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+        // Generic type: `Base[Arg, ...]` -> `Base<Arg>`.
+        // AST shape: `(generic_type (identifier) (type_parameter (type ...) ...))`.
+        "generic_type" => {
+            let base = node
+                .named_child(0)
+                .and_then(|b| py_type_string(&b, source))?;
+            let mut cursor = node.walk();
+            let mut first_arg = None;
+            for child in node.named_children(&mut cursor) {
+                if child.kind() != "type_parameter" {
+                    continue;
+                }
+                let mut arg_cursor = child.walk();
+                for arg in child.named_children(&mut arg_cursor) {
+                    if let Some(rendered) = py_type_string(&arg, source) {
+                        first_arg = Some(rendered);
+                        break;
+                    }
+                }
+                if first_arg.is_some() {
+                    break;
+                }
+            }
+            match first_arg {
+                Some(arg) => Some(format!("{base}<{arg}>")),
+                None => Some(base),
+            }
+        }
+        _ => node
+            .utf8_text(source.as_bytes())
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+    }
+}
+
+/// Extract `(name, type)` pairs from a Python `parameters` node.
+///
+/// Only annotated parameters contribute — unannotated parameters have no type
+/// information and are skipped (graceful degradation). `self` and `cls` are
+/// always skipped.
+fn py_param_types(params_node: &tree_sitter::Node, source: &str) -> Vec<(String, String)> {
+    let mut entries = Vec::new();
+    let mut cursor = params_node.walk();
+    for child in params_node.children(&mut cursor) {
+        let (name_node, type_node) = match child.kind() {
+            "typed_parameter" => {
+                // `(typed_parameter (identifier) type: (type ...))`
+                let name = child.named_child(0);
+                let ty = child.child_by_field_name("type");
+                (name, ty)
+            }
+            "typed_default_parameter" => (
+                child.child_by_field_name("name"),
+                child.child_by_field_name("type"),
+            ),
+            // Unannotated forms (`identifier`, `default_parameter`) and splats
+            // carry no type information.
+            _ => continue,
+        };
+        let Some(name) = name_node.and_then(|n| n.utf8_text(source.as_bytes()).ok()) else {
+            continue;
+        };
+        if name == "self" || name == "cls" {
+            continue;
+        }
+        let Some(type_str) = type_node.and_then(|t| py_type_string(&t, source)) else {
+            continue;
+        };
+        entries.push((name.to_string(), type_str));
+    }
+    entries
+}
+
+/// Build data-flow metadata (parameter and return types) for a Python
+/// `function_definition` node. Returns `None` when the function has no
+/// data-flow-relevant annotated types.
+fn python_dataflow_metadata(
+    func_node: &tree_sitter::Node,
+    source: &str,
+) -> Option<DataFlowMetadata> {
+    let params = func_node
+        .child_by_field_name("parameters")
+        .map(|p| py_param_types(&p, source))
+        .unwrap_or_default();
+    let return_type = func_node
+        .child_by_field_name("return_type")
+        .and_then(|rt| py_type_string(&rt, source));
+    type_metadata::build_data_flow_metadata(&params, return_type.as_deref(), &PYTHON_TYPE_CONFIG)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn extract_function(
     node: &tree_sitter::Node,
@@ -308,6 +419,10 @@ fn extract_function(
         tags.push("test".to_string());
     }
 
+    let mut metadata = serde_json::json!({ "loc": loc });
+    if let Some(df) = python_dataflow_metadata(node, source) {
+        type_metadata::merge_into_metadata(&mut metadata, &df);
+    }
     result.items.push(AnalysisItem {
         qualified_name: qn.clone(),
         kind: NodeKind::Unit,
@@ -315,7 +430,7 @@ fn extract_function(
         parent_qualified_name: parent_qn,
         source_ref: format!("{source_ref_base}:{line}"),
         language: "python".to_string(),
-        metadata: Some(serde_json::json!({"loc": loc})),
+        metadata: Some(metadata),
         tags,
     });
 
@@ -729,6 +844,65 @@ mod tests {
         let analyzer = PythonAnalyzer::new();
         let file_path = PathBuf::from(&file);
         analyzer.analyze_crate("mypackage", &[file_path.as_path()])
+    }
+
+    #[test]
+    fn annotated_function_records_param_and_return_types() {
+        let result = parse_py_source("def transform(p: Proposal) -> Vote:\n    return Vote()\n");
+        let func = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name.ends_with("::transform"))
+            .expect("should have transform function");
+        let meta = func.metadata.as_ref().expect("metadata present");
+        assert_eq!(meta["param_types"][0]["name"], "p");
+        assert_eq!(meta["param_types"][0]["type"], "Proposal");
+        assert_eq!(meta["return_type"], "Vote");
+    }
+
+    #[test]
+    fn optional_and_list_annotations_are_unwrapped() {
+        let result =
+            parse_py_source("def load(key: Optional[Key]) -> List[Record]:\n    return []\n");
+        let func = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name.ends_with("::load"))
+            .expect("should have load function");
+        let meta = func.metadata.as_ref().expect("metadata present");
+        assert_eq!(meta["param_types"][0]["type"], "Key");
+        assert_eq!(meta["return_type"], "Record");
+    }
+
+    #[test]
+    fn unannotated_function_degrades_gracefully() {
+        // No annotations -> no data-flow metadata, and definitely no panic.
+        let result = parse_py_source("def handle(x, y):\n    return x\n");
+        let func = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name.ends_with("::handle"))
+            .expect("should have handle function");
+        let meta = func.metadata.as_ref().expect("metadata present");
+        assert!(meta.get("param_types").is_none());
+        assert!(meta.get("return_type").is_none());
+    }
+
+    #[test]
+    fn self_parameter_is_skipped_for_methods() {
+        let result = parse_py_source(
+            "class Svc:\n    def apply(self, cmd: Command) -> Event:\n        return Event()\n",
+        );
+        let method = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name.ends_with("::apply"))
+            .expect("should have apply method");
+        let meta = method.metadata.as_ref().expect("metadata present");
+        let params = meta["param_types"].as_array().expect("param_types array");
+        assert_eq!(params.len(), 1, "self should be excluded, got: {params:?}");
+        assert_eq!(params[0]["type"], "Command");
+        assert_eq!(meta["return_type"], "Event");
     }
 
     #[test]

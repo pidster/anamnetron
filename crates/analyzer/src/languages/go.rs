@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use svt_core::analysis::{LanguageDescriptor, LanguageParser as CoreLanguageParser};
 use svt_core::model::{EdgeKind, NodeKind};
 
+use crate::type_metadata::{self, DataFlowMetadata, GO_TYPE_CONFIG};
 use crate::types::{AnalysisItem, AnalysisRelation, AnalysisWarning};
 
 use super::{LanguageAnalyzer, ParseResult};
@@ -208,6 +209,10 @@ fn parse_go_file(
                         let line = child.start_position().row + 1;
                         let loc = child.end_position().row - child.start_position().row + 1;
                         let func_qn = format!("{module_name}::{name}");
+                        let mut metadata = serde_json::json!({ "loc": loc });
+                        if let Some(df) = go_dataflow_metadata(&child, source) {
+                            type_metadata::merge_into_metadata(&mut metadata, &df);
+                        }
                         result.items.push(AnalysisItem {
                             qualified_name: func_qn.clone(),
                             kind: NodeKind::Unit,
@@ -215,7 +220,7 @@ fn parse_go_file(
                             parent_qualified_name: Some(module_name.to_string()),
                             source_ref: format!("{source_ref_base}:{line}"),
                             language: "go".to_string(),
-                            metadata: Some(serde_json::json!({"loc": loc})),
+                            metadata: Some(metadata),
                             tags: go_test_tags(name, is_test_file),
                         });
 
@@ -244,6 +249,10 @@ fn parse_go_file(
                         } else {
                             format!("{module_name}::{name}")
                         };
+                        let mut metadata = serde_json::json!({ "loc": loc });
+                        if let Some(df) = go_dataflow_metadata(&child, source) {
+                            type_metadata::merge_into_metadata(&mut metadata, &df);
+                        }
                         result.items.push(AnalysisItem {
                             qualified_name: qn.clone(),
                             kind: NodeKind::Unit,
@@ -253,7 +262,7 @@ fn parse_go_file(
                                 .or_else(|| Some(module_name.to_string())),
                             source_ref: format!("{source_ref_base}:{line}"),
                             language: "go".to_string(),
-                            metadata: Some(serde_json::json!({"loc": loc})),
+                            metadata: Some(metadata),
                             tags: go_test_tags(name, is_test_file),
                         });
 
@@ -348,6 +357,123 @@ fn extract_receiver_type(method: &tree_sitter::Node, source: &str) -> Option<Str
         }
     }
     None
+}
+
+/// Normalise a Go type node's text into a bare data type name.
+///
+/// Strips pointer (`*`), slice (`[]`), and array (`[N]`) prefixes so that
+/// `*Proposal`, `[]Proposal`, and `[3]Proposal` all resolve to `Proposal`.
+fn go_type_string(type_node: &tree_sitter::Node, source: &str) -> Option<String> {
+    let mut text = type_node.utf8_text(source.as_bytes()).ok()?.trim();
+    // Strip leading pointer / slice / array markers, possibly stacked
+    // (e.g. `[]*Proposal`).
+    loop {
+        let stripped = text.trim_start();
+        if let Some(rest) = stripped.strip_prefix('*') {
+            text = rest;
+            continue;
+        }
+        if let Some(rest) = stripped.strip_prefix("[]") {
+            text = rest;
+            continue;
+        }
+        if stripped.starts_with('[') {
+            // Fixed-size array `[N]T` — drop up to the closing bracket.
+            if let Some(close) = stripped.find(']') {
+                text = &stripped[close + 1..];
+                continue;
+            }
+        }
+        break;
+    }
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// Extract data-flow metadata (parameter and return types) from a Go
+/// function or method declaration node.
+///
+/// Multiple return values (`(T, error)`) are handled by the Go error-drop
+/// rule: the `error` return (and any primitive returns) are filtered out, and
+/// the first surviving data type is used as the return type.
+fn go_dataflow_metadata(func_node: &tree_sitter::Node, source: &str) -> Option<DataFlowMetadata> {
+    let params = func_node
+        .child_by_field_name("parameters")
+        .map(|node| go_param_types(&node, source))
+        .unwrap_or_default();
+
+    let return_type = func_node
+        .child_by_field_name("result")
+        .and_then(|node| go_return_type(&node, source));
+
+    type_metadata::build_data_flow_metadata(&params, return_type.as_deref(), &GO_TYPE_CONFIG)
+}
+
+/// Extract `(name, type)` pairs from a Go `parameter_list` node.
+fn go_param_types(params_node: &tree_sitter::Node, source: &str) -> Vec<(String, String)> {
+    let mut entries = Vec::new();
+    let mut cursor = params_node.walk();
+    for decl in params_node.children(&mut cursor) {
+        if decl.kind() != "parameter_declaration" {
+            continue;
+        }
+        let Some(type_node) = decl.child_by_field_name("type") else {
+            continue;
+        };
+        let Some(type_name) = go_type_string(&type_node, source) else {
+            continue;
+        };
+
+        // A single declaration can bind several names to one type: `a, b Foo`.
+        let mut name_cursor = decl.walk();
+        let names: Vec<String> = decl
+            .children_by_field_name("name", &mut name_cursor)
+            .filter_map(|n| n.utf8_text(source.as_bytes()).ok())
+            .map(str::to_string)
+            .collect();
+
+        if names.is_empty() {
+            entries.push((String::new(), type_name));
+        } else {
+            for name in names {
+                entries.push((name, type_name.clone()));
+            }
+        }
+    }
+    entries
+}
+
+/// Extract the primary return data type from a Go `result` node.
+///
+/// The result may be a single type or a `parameter_list` of multiple returns.
+/// Applies the Go error-drop rule: skip `error` and primitive returns, keeping
+/// the first project-relevant data type.
+fn go_return_type(result_node: &tree_sitter::Node, source: &str) -> Option<String> {
+    if result_node.kind() == "parameter_list" {
+        let mut cursor = result_node.walk();
+        for decl in result_node.children(&mut cursor) {
+            if decl.kind() != "parameter_declaration" {
+                continue;
+            }
+            let Some(type_node) = decl.child_by_field_name("type") else {
+                continue;
+            };
+            let Some(type_name) = go_type_string(&type_node, source) else {
+                continue;
+            };
+            if type_metadata::is_skip_type(&type_name, &GO_TYPE_CONFIG) {
+                continue;
+            }
+            return Some(type_name);
+        }
+        None
+    } else {
+        go_type_string(result_node, source)
+    }
 }
 
 /// Collect import aliases from a Go import declaration.
@@ -1296,6 +1422,97 @@ func multi() {
         assert!(
             loc >= 4,
             "multi-line function should have loc >= 4, got {loc}"
+        );
+    }
+
+    #[test]
+    fn function_metadata_includes_param_and_return_types() {
+        let result = parse_go_source(
+            r#"package main
+
+func Transform(p Proposal) Vote {
+    return Vote{}
+}
+"#,
+        );
+        let func = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name.ends_with("::Transform"))
+            .expect("should have Transform function");
+        let meta = func.metadata.as_ref().expect("metadata present");
+        let params = meta["param_types"].as_array().expect("param_types array");
+        assert_eq!(params.len(), 1, "one project-local param, got: {params:?}");
+        assert_eq!(params[0]["name"], "p");
+        assert_eq!(params[0]["type"], "Proposal");
+        assert_eq!(meta["return_type"], "Vote");
+    }
+
+    #[test]
+    fn multi_return_drops_error_keeps_data_type() {
+        let result = parse_go_source(
+            r#"package main
+
+func Load(id Key) (Record, error) {
+    return Record{}, nil
+}
+"#,
+        );
+        let func = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name.ends_with("::Load"))
+            .expect("should have Load function");
+        let meta = func.metadata.as_ref().expect("metadata present");
+        assert_eq!(
+            meta["return_type"], "Record",
+            "error return should be dropped, keeping Record"
+        );
+    }
+
+    #[test]
+    fn pointer_and_slice_types_are_normalised() {
+        let result = parse_go_source(
+            r#"package main
+
+func Batch(items []*Proposal) *Result {
+    return nil
+}
+"#,
+        );
+        let func = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name.ends_with("::Batch"))
+            .expect("should have Batch function");
+        let meta = func.metadata.as_ref().expect("metadata present");
+        assert_eq!(meta["param_types"][0]["type"], "Proposal");
+        assert_eq!(meta["return_type"], "Result");
+    }
+
+    #[test]
+    fn primitive_only_signature_has_no_dataflow_metadata() {
+        let result = parse_go_source(
+            r#"package main
+
+func Add(a int, b int) int {
+    return a + b
+}
+"#,
+        );
+        let func = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name.ends_with("::Add"))
+            .expect("should have Add function");
+        let meta = func.metadata.as_ref().expect("metadata present");
+        assert!(
+            meta.get("param_types").is_none(),
+            "primitive params should not be recorded"
+        );
+        assert!(
+            meta.get("return_type").is_none(),
+            "primitive return should not be recorded"
         );
     }
 

@@ -736,4 +736,106 @@ mod tests {
         assert!(!json.contains("param_types"));
         assert!(!json.contains("return_type"));
     }
+
+    // ---- property-based coverage across every language config ----
+
+    use proptest::prelude::*;
+
+    /// Every language configuration, including the four non-Rust wrapper sets
+    /// that were previously untested. Iterated by each property below.
+    fn all_configs() -> [&'static LanguageTypeConfig; 5] {
+        [
+            &RUST_TYPE_CONFIG,
+            &GO_TYPE_CONFIG,
+            &TYPESCRIPT_TYPE_CONFIG,
+            &JAVA_TYPE_CONFIG,
+            &PYTHON_TYPE_CONFIG,
+        ]
+    }
+
+    /// Generate plausible-yet-adversarial type strings: bare identifiers,
+    /// `::`-qualified names, primitive/skip names, wrapper keywords, malformed
+    /// bracket shapes, and (recursively) generic-wrapped forms. This stresses
+    /// both the skip filter and the recursive unwrapper.
+    fn type_string_strategy() -> impl Strategy<Value = String> {
+        let leaf = prop_oneof![
+            "[A-Za-z_][A-Za-z0-9_]{0,8}",
+            "[A-Za-z_][A-Za-z0-9_]{0,4}(::[A-Za-z_][A-Za-z0-9_]{0,4}){0,2}",
+            Just("Result".to_string()),
+            Just("Option".to_string()),
+            Just("Promise".to_string()),
+            Just("Optional".to_string()),
+            Just("List".to_string()),
+            Just("int".to_string()),
+            Just("String".to_string()),
+            Just("void".to_string()),
+            Just("<>".to_string()),
+            Just("Foo<".to_string()),
+            Just("Result<>".to_string()),
+        ];
+        leaf.prop_recursive(3, 16, 3, |inner| {
+            prop_oneof![
+                ("[A-Za-z_][A-Za-z0-9_]{0,6}", inner.clone())
+                    .prop_map(|(w, i)| format!("{w}<{i}>")),
+                (inner.clone(), inner).prop_map(|(a, b)| format!("Result<{a}, {b}>")),
+            ]
+        })
+    }
+
+    proptest! {
+        /// `build_data_flow_metadata` (which composes `unwrap_wrapper_type` and
+        /// `is_skip_type`) never panics on arbitrary type strings for any
+        /// config, and its output is a fixed point: every retained type is fully
+        /// unwrapped — applying `unwrap_wrapper_type` again is a no-op — and
+        /// survives skip filtering. This is the `unwrap_wrapper_type ∘
+        /// build_data_flow_metadata` round-trip.
+        #[test]
+        fn config_build_metadata_output_is_a_fixed_point(
+            params in prop::collection::vec(
+                ("[a-z_][a-z0-9_]{0,6}", type_string_strategy()),
+                0..4,
+            ),
+            ret in prop::option::of(type_string_strategy()),
+        ) {
+            for config in all_configs() {
+                let meta = build_data_flow_metadata(&params, ret.as_deref(), config);
+                if let Some(meta) = meta {
+                    for p in &meta.param_types {
+                        prop_assert_eq!(
+                            unwrap_wrapper_type(&p.type_name, config),
+                            p.type_name.clone(),
+                            "retained param type must already be fully unwrapped"
+                        );
+                        prop_assert!(
+                            !is_skip_type(&p.type_name, config),
+                            "retained param type must not be a skip type: {}",
+                            p.type_name
+                        );
+                    }
+                    if let Some(rt) = &meta.return_type {
+                        prop_assert_eq!(
+                            unwrap_wrapper_type(rt, config),
+                            rt.clone(),
+                            "retained return type must already be fully unwrapped"
+                        );
+                        prop_assert!(
+                            !is_skip_type(rt, config),
+                            "retained return type must not be a skip type: {rt}"
+                        );
+                    }
+                }
+            }
+        }
+
+        /// `unwrap_wrapper_type` is idempotent for every config: unwrapping an
+        /// already-unwrapped type changes nothing, and it never panics.
+        #[test]
+        fn config_unwrap_wrapper_type_is_idempotent(ty in type_string_strategy()) {
+            for config in all_configs() {
+                let once = unwrap_wrapper_type(&ty, config);
+                let twice = unwrap_wrapper_type(&once, config);
+                prop_assert_eq!(once, twice, "unwrap_wrapper_type must be idempotent");
+            }
+        }
+    }
 }

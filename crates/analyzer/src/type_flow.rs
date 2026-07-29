@@ -33,6 +33,10 @@ struct FunctionSignature {
     return_type: Option<String>,
     /// Qualified name of the parent module.
     parent_module: String,
+    /// Source language identifier (e.g. `"rust"`, `"go"`), used to apply
+    /// language-appropriate locality rules and to prevent cross-language
+    /// false matches on bare type names.
+    language: String,
 }
 
 /// A deduplication key for data flow edges.
@@ -55,6 +59,14 @@ pub struct TypeFlowAnalysis {
     from_impls: Vec<(String, String, String)>,
     /// Calls edges from parse results.
     calls: Vec<(String, String)>,
+    /// Index of type-declaration items, keyed by `(language, short_type_name)`
+    /// and mapping to every qualified name that declares that short name.
+    ///
+    /// Non-Rust parsers record bare type names (e.g. `Proposal`) in signature
+    /// metadata, but the graph keys nodes by qualified names (`votes::Proposal`).
+    /// This index lets [`Self::resolve_type`] qualify a bare name to the item
+    /// it refers to so the resulting relation resolves during graph mapping.
+    type_index: HashMap<(String, String), Vec<String>>,
 }
 
 impl TypeFlowAnalysis {
@@ -67,10 +79,28 @@ impl TypeFlowAnalysis {
         let mut signatures = HashMap::new();
         let mut from_impls = Vec::new();
         let mut calls = Vec::new();
+        let mut type_index: HashMap<(String, String), Vec<String>> = HashMap::new();
 
         for result in results {
             // Index function signatures from item metadata.
             for item in &result.items {
+                // Index type declarations by their short name so bare type names
+                // in non-Rust signatures can later be qualified to the item QN.
+                if is_type_like(&item.sub_kind) {
+                    let short = item
+                        .qualified_name
+                        .rsplit("::")
+                        .next()
+                        .unwrap_or(&item.qualified_name)
+                        .to_string();
+                    let entry = type_index
+                        .entry((item.language.clone(), short))
+                        .or_default();
+                    if !entry.contains(&item.qualified_name) {
+                        entry.push(item.qualified_name.clone());
+                    }
+                }
+
                 if !is_function_like(&item.sub_kind) {
                     // Check for From/TryFrom trait metadata on any item.
                     if let Some(ref meta) = item.metadata {
@@ -130,6 +160,53 @@ impl TypeFlowAnalysis {
             signatures,
             from_impls,
             calls,
+            type_index,
+        }
+    }
+
+    /// Resolve a type name to the qualified name of the item that declares it.
+    ///
+    /// Rust type names in signature metadata are already fully qualified
+    /// (locality requires a `::` separator), so they are returned unchanged and
+    /// the Rust path is left exactly as before.
+    ///
+    /// Non-Rust parsers emit bare type names (e.g. `Proposal`). Graph mapping
+    /// resolves relation endpoints by exact match against item qualified names
+    /// (`votes::Proposal`), so a bare name never resolves and the edge is
+    /// silently dropped. This looks the bare name up in the type index and
+    /// qualifies it.
+    ///
+    /// Soundness policy: qualify only when the short name matches EXACTLY ONE
+    /// local type declaration. If it matches zero or more than one (the same
+    /// short name declared in several modules), leave it unqualified — it will
+    /// be dropped at mapping, exactly as today. A dropped edge is acceptable; a
+    /// wrongly-attributed edge is not.
+    fn resolve_type(&self, type_name: &str, language: &str) -> String {
+        self.resolve_type_unique(type_name, language)
+            .unwrap_or_else(|| type_name.to_string())
+    }
+
+    /// Resolve a type name to a UNIQUELY-qualified item QN, or `None`.
+    ///
+    /// Returns `Some(qn)` only when the name unambiguously identifies one type:
+    /// Rust names are already fully qualified (returned as-is); non-Rust bare
+    /// names must match EXACTLY ONE local type declaration. Zero or multiple
+    /// matches yield `None`.
+    ///
+    /// Callers that compare two resolved types (e.g. cross-module data flow) must
+    /// use this and treat `None` as "no match" — never fall back to the bare
+    /// name for comparison, or two *distinct* same-named types in different
+    /// modules would compare equal and produce a false edge.
+    fn resolve_type_unique(&self, type_name: &str, language: &str) -> Option<String> {
+        if language == "rust" {
+            return Some(type_name.to_string());
+        }
+        match self
+            .type_index
+            .get(&(language.to_string(), type_name.to_string()))
+        {
+            Some(qns) if qns.len() == 1 => Some(qns[0].clone()),
+            _ => None,
         }
     }
 
@@ -201,23 +278,28 @@ impl TypeFlowAnalysis {
                 None => continue,
             };
 
-            // Only consider project-local types (those containing `::`)
-            if !is_project_local(return_type) {
+            // Only consider project-local types.
+            if !is_project_local(return_type, &sig.language) {
                 continue;
             }
 
             for (_param_name, param_type) in &sig.param_types {
-                if !is_project_local(param_type) {
+                if !is_project_local(param_type, &sig.language) {
                     continue;
                 }
                 if param_type == return_type {
                     continue;
                 }
-                let key = (param_type.clone(), return_type.clone());
+                // Qualify bare (non-Rust) type names to the item they refer to,
+                // so the relation resolves during graph mapping. Rust names pass
+                // through unchanged. Deduplicate on the resolved endpoints.
+                let source = self.resolve_type(param_type, &sig.language);
+                let target = self.resolve_type(return_type, &sig.language);
+                let key = (source.clone(), target.clone());
                 if seen.insert(key) {
                     relations.push(AnalysisRelation {
-                        source_qualified_name: param_type.clone(),
-                        target_qualified_name: return_type.clone(),
+                        source_qualified_name: source,
+                        target_qualified_name: target,
                         kind: EdgeKind::Transforms,
                     });
                 }
@@ -248,15 +330,37 @@ impl TypeFlowAnalysis {
                 continue;
             }
 
+            // Only match within the same language. Non-Rust type names are bare
+            // identifiers, so an unrelated `Proposal` in Go and `Proposal` in
+            // Python must not be treated as the same data type.
+            if caller_sig.language != callee_sig.language {
+                continue;
+            }
+
+            // A shared data type is a match only when BOTH endpoints resolve to
+            // the SAME uniquely-qualified type. Comparing bare names would be
+            // unsound: two *distinct* same-named types in different modules
+            // (`a::Proposal` vs `b::Proposal`) would compare equal and emit a
+            // false DataFlow edge that — unlike Transforms — survives mapping
+            // because its endpoints are modules. `resolve_type_unique` returns
+            // `None` on ambiguity/unknown, so such pairs never match.
+            let lang = &caller_sig.language;
+
             // Check: caller's return type matches callee's param type (push direction).
-            if let Some(ref caller_return) = caller_sig.return_type {
+            if let Some(resolved_return) = caller_sig
+                .return_type
+                .as_deref()
+                .and_then(|rt| self.resolve_type_unique(rt, lang))
+            {
                 for (_param_name, callee_param) in &callee_sig.param_types {
-                    if caller_return == callee_param {
+                    if self.resolve_type_unique(callee_param, lang).as_deref()
+                        == Some(resolved_return.as_str())
+                    {
                         let key = DataFlowKey {
                             source_module: caller_sig.parent_module.clone(),
                             target_module: callee_sig.parent_module.clone(),
-                            source_type: caller_return.clone(),
-                            target_type: callee_param.clone(),
+                            source_type: resolved_return.clone(),
+                            target_type: resolved_return.clone(),
                         };
                         if seen.insert(key) {
                             relations.push(AnalysisRelation {
@@ -270,14 +374,20 @@ impl TypeFlowAnalysis {
             }
 
             // Check: callee's return type matches caller's param type (pull direction).
-            if let Some(ref callee_return) = callee_sig.return_type {
+            if let Some(resolved_return) = callee_sig
+                .return_type
+                .as_deref()
+                .and_then(|rt| self.resolve_type_unique(rt, lang))
+            {
                 for (_param_name, caller_param) in &caller_sig.param_types {
-                    if callee_return == caller_param {
+                    if self.resolve_type_unique(caller_param, lang).as_deref()
+                        == Some(resolved_return.as_str())
+                    {
                         let key = DataFlowKey {
                             source_module: callee_sig.parent_module.clone(),
                             target_module: caller_sig.parent_module.clone(),
-                            source_type: callee_return.clone(),
-                            target_type: caller_param.clone(),
+                            source_type: resolved_return.clone(),
+                            target_type: resolved_return.clone(),
                         };
                         if seen.insert(key) {
                             relations.push(AnalysisRelation {
@@ -296,6 +406,19 @@ impl TypeFlowAnalysis {
 /// Check if an item's sub_kind indicates a function or method.
 fn is_function_like(sub_kind: &str) -> bool {
     sub_kind == "function" || sub_kind == "method"
+}
+
+/// Check if an item's sub_kind indicates a type declaration.
+///
+/// Covers the type-declaration kinds emitted by the language parsers (Rust
+/// structs/enums/traits, Go structs, TypeScript/Java classes and interfaces,
+/// Python classes, type aliases, records). These are the items a bare type name
+/// in a signature can refer to, so they populate the type-resolution index.
+fn is_type_like(sub_kind: &str) -> bool {
+    matches!(
+        sub_kind,
+        "struct" | "class" | "interface" | "enum" | "trait" | "record" | "type_alias" | "type"
+    )
 }
 
 /// Extract a [`FunctionSignature`] from an [`AnalysisItem`]'s metadata.
@@ -340,6 +463,7 @@ fn extract_signature(item: &AnalysisItem) -> Option<FunctionSignature> {
         param_types,
         return_type,
         parent_module,
+        language: item.language.clone(),
     })
 }
 
@@ -351,9 +475,26 @@ fn derive_parent_module(qualified_name: &str) -> Option<String> {
     Some(qualified_name[..pos].to_string())
 }
 
-/// Check if a type is project-local (contains `::`, indicating a qualified path).
-fn is_project_local(type_name: &str) -> bool {
-    type_name.contains("::")
+/// Check if a type is project-local, using language-appropriate rules.
+///
+/// The heuristic for locality is separator-aware because different language
+/// parsers use different type-name conventions:
+///
+/// - **Rust** resolves types to fully qualified paths (e.g.
+///   `my_crate::model::Node`), so a `::` separator is a reliable signal that the
+///   type is a named project/library type rather than a bare primitive. This
+///   preserves the original Rust behaviour exactly.
+/// - **All other languages** (Go, TypeScript, Java, Python, …) emit bare type
+///   identifiers (e.g. `Proposal`). Their parsers filter primitives and
+///   standard-library types up front via `build_data_flow_metadata`, so any
+///   non-empty type name that survives into a signature is a candidate
+///   project-local type.
+fn is_project_local(type_name: &str, language: &str) -> bool {
+    if language == "rust" {
+        type_name.contains("::")
+    } else {
+        !type_name.trim().is_empty()
+    }
 }
 
 /// Heuristic: check if a function is a getter/accessor.
@@ -518,6 +659,181 @@ mod tests {
         assert_eq!(transforms.len(), 1);
         assert_eq!(transforms[0].source_qualified_name, "my_crate::InputType");
         assert_eq!(transforms[0].target_qualified_name, "my_crate::OutputType");
+    }
+
+    /// Build a non-Rust type-declaration item (struct/class) for a given
+    /// language, so tests can exercise the bare-name resolution path.
+    fn make_type_item(qualified_name: &str, language: &str) -> AnalysisItem {
+        AnalysisItem {
+            qualified_name: qualified_name.to_string(),
+            kind: NodeKind::Unit,
+            sub_kind: "struct".to_string(),
+            parent_qualified_name: derive_parent_module(qualified_name),
+            source_ref: "test.go:1".to_string(),
+            language: language.to_string(),
+            metadata: None,
+            tags: vec![],
+        }
+    }
+
+    /// Build a non-Rust function item carrying bare param/return type names.
+    fn make_go_function_item(
+        qualified_name: &str,
+        param_types: &[(&str, &str)],
+        return_type: Option<&str>,
+    ) -> AnalysisItem {
+        let mut item = make_function_item(qualified_name, None, param_types, return_type, None);
+        item.language = "go".to_string();
+        item
+    }
+
+    #[test]
+    fn bare_non_rust_type_names_are_qualified_to_the_declaring_item() {
+        // A Go function whose bare param/return type names each match exactly
+        // one local type declaration. The emitted Transforms edge must be
+        // qualified to the declaring items so it resolves during graph mapping.
+        let result = ParseResult {
+            items: vec![
+                make_type_item("pkg::Proposal", "go"),
+                make_type_item("pkg::Report", "go"),
+                make_go_function_item("pkg::Convert", &[("p", "Proposal")], Some("Report")),
+            ],
+            relations: vec![],
+            warnings: vec![],
+            ..Default::default()
+        };
+
+        let relations = TypeFlowAnalysis::from_parse_results(&[result]).analyze();
+        let transforms: Vec<_> = relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Transforms)
+            .collect();
+        assert_eq!(transforms.len(), 1);
+        assert_eq!(transforms[0].source_qualified_name, "pkg::Proposal");
+        assert_eq!(transforms[0].target_qualified_name, "pkg::Report");
+    }
+
+    #[test]
+    fn ambiguous_bare_type_name_is_left_unqualified_not_guessed() {
+        // Soundness policy: when a bare type name matches MORE THAN ONE local
+        // declaration (here `Proposal` is declared in two packages), it must be
+        // left bare rather than guessed — the resulting edge is dropped at
+        // mapping, never mis-attributed. The unambiguous `Report` still resolves.
+        let result = ParseResult {
+            items: vec![
+                make_type_item("a::Proposal", "go"),
+                make_type_item("b::Proposal", "go"),
+                make_type_item("a::Report", "go"),
+                make_go_function_item("a::Convert", &[("p", "Proposal")], Some("Report")),
+            ],
+            relations: vec![],
+            warnings: vec![],
+            ..Default::default()
+        };
+
+        let relations = TypeFlowAnalysis::from_parse_results(&[result]).analyze();
+        let transforms: Vec<_> = relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Transforms)
+            .collect();
+        assert_eq!(transforms.len(), 1);
+        // Ambiguous source stays bare (would be dropped by map_to_graph), never
+        // guessed to a::Proposal or b::Proposal.
+        assert_eq!(transforms[0].source_qualified_name, "Proposal");
+        assert!(!transforms[0].source_qualified_name.contains("::"));
+        // Unambiguous target is still resolved.
+        assert_eq!(transforms[0].target_qualified_name, "a::Report");
+    }
+
+    #[test]
+    fn unknown_bare_type_name_is_left_unqualified() {
+        // Zero-match branch: a bare type name with no local declaration is left
+        // unchanged (dropped at mapping), exactly as before the resolver existed.
+        let result = ParseResult {
+            items: vec![
+                make_type_item("pkg::Report", "go"),
+                make_go_function_item("pkg::Convert", &[("p", "Missing")], Some("Report")),
+            ],
+            relations: vec![],
+            warnings: vec![],
+            ..Default::default()
+        };
+
+        let relations = TypeFlowAnalysis::from_parse_results(&[result]).analyze();
+        let transforms: Vec<_> = relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Transforms)
+            .collect();
+        assert_eq!(transforms.len(), 1);
+        assert_eq!(transforms[0].source_qualified_name, "Missing");
+        assert_eq!(transforms[0].target_qualified_name, "pkg::Report");
+    }
+
+    /// Build a `Calls` relation between two qualified names.
+    fn make_calls_relation(source: &str, target: &str) -> AnalysisRelation {
+        AnalysisRelation {
+            source_qualified_name: source.to_string(),
+            target_qualified_name: target.to_string(),
+            kind: EdgeKind::Calls,
+        }
+    }
+
+    #[test]
+    fn distinct_same_named_types_across_modules_emit_no_false_data_flow() {
+        // F1 soundness: package `a` and package `b` each declare a DISTINCT Go
+        // type that happens to share the short name `Proposal`. A cross-module
+        // call `a::Producer -> b::Consume` where the caller returns `Proposal`
+        // and the callee takes `Proposal` must NOT emit a DataFlow edge: the two
+        // bare names are ambiguous (resolve to `None`), so they are not the same
+        // type. Comparing bare strings would wrongly emit a persistent a->b edge.
+        let result = ParseResult {
+            items: vec![
+                make_type_item("a::Proposal", "go"),
+                make_type_item("b::Proposal", "go"),
+                make_go_function_item("a::Producer", &[], Some("Proposal")),
+                make_go_function_item("b::Consume", &[("p", "Proposal")], None),
+            ],
+            relations: vec![make_calls_relation("a::Producer", "b::Consume")],
+            warnings: vec![],
+            ..Default::default()
+        };
+
+        let relations = TypeFlowAnalysis::from_parse_results(&[result]).analyze();
+        let data_flow: Vec<_> = relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::DataFlow)
+            .collect();
+        assert!(
+            data_flow.is_empty(),
+            "distinct same-named types must not produce a DataFlow edge, got: {data_flow:?}"
+        );
+    }
+
+    #[test]
+    fn shared_type_across_modules_emits_data_flow() {
+        // Positive control for F1: a single `shared::Widget` type flows from
+        // `a::Producer` (returns Widget) to `b::Consume` (takes Widget). The
+        // bare name resolves uniquely in both, so a real DataFlow edge a->b is
+        // emitted — the fix must not suppress genuine cross-module flow.
+        let result = ParseResult {
+            items: vec![
+                make_type_item("shared::Widget", "go"),
+                make_go_function_item("a::Producer", &[], Some("Widget")),
+                make_go_function_item("b::Consume", &[("w", "Widget")], None),
+            ],
+            relations: vec![make_calls_relation("a::Producer", "b::Consume")],
+            warnings: vec![],
+            ..Default::default()
+        };
+
+        let relations = TypeFlowAnalysis::from_parse_results(&[result]).analyze();
+        let data_flow: Vec<_> = relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::DataFlow)
+            .collect();
+        assert_eq!(data_flow.len(), 1, "expected one DataFlow edge");
+        assert_eq!(data_flow[0].source_qualified_name, "a");
+        assert_eq!(data_flow[0].target_qualified_name, "b");
     }
 
     #[test]
@@ -974,11 +1290,23 @@ mod tests {
     }
 
     #[test]
-    fn is_project_local_requires_double_colon() {
-        assert!(is_project_local("my_crate::MyType"));
-        assert!(is_project_local("a::b::c"));
-        assert!(!is_project_local("String"));
-        assert!(!is_project_local("u32"));
+    fn is_project_local_rust_requires_double_colon() {
+        assert!(is_project_local("my_crate::MyType", "rust"));
+        assert!(is_project_local("a::b::c", "rust"));
+        assert!(!is_project_local("String", "rust"));
+        assert!(!is_project_local("u32", "rust"));
+    }
+
+    #[test]
+    fn is_project_local_non_rust_accepts_bare_names() {
+        // Non-Rust parsers emit bare identifiers and pre-filter primitives, so a
+        // non-empty bare name is treated as project-local.
+        assert!(is_project_local("Proposal", "go"));
+        assert!(is_project_local("UserService", "typescript"));
+        assert!(is_project_local("Order", "java"));
+        assert!(is_project_local("DataFrame", "python"));
+        assert!(!is_project_local("", "go"));
+        assert!(!is_project_local("   ", "python"));
     }
 
     #[test]

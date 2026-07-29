@@ -13,6 +13,7 @@ use svt_core::analysis::{LanguageDescriptor, LanguageParser as CoreLanguageParse
 use svt_core::model::{EdgeKind, NodeKind};
 
 use crate::languages::svelte;
+use crate::type_metadata::{self, DataFlowMetadata, TYPESCRIPT_TYPE_CONFIG};
 use crate::types::{AnalysisItem, AnalysisRelation, AnalysisWarning};
 
 use super::{LanguageAnalyzer, ParseResult};
@@ -312,6 +313,65 @@ fn extract_export(
     }
 }
 
+/// Extract the type string from a TypeScript `type_annotation` node (`: T`).
+///
+/// TypeScript already spells generics with angle brackets (`Promise<T>`,
+/// `Array<T>`), so the raw type text feeds directly into the shared
+/// wrapper-unwrapping logic without normalisation.
+fn ts_type_from_annotation(annotation: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let type_node = annotation.named_child(0)?;
+    type_node
+        .utf8_text(source)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Extract `(name, type)` pairs from a TypeScript `formal_parameters` node.
+///
+/// Only annotated parameters contribute; unannotated parameters carry no type
+/// information and are skipped.
+fn ts_param_types(params_node: &tree_sitter::Node, source: &[u8]) -> Vec<(String, String)> {
+    let mut entries = Vec::new();
+    let mut cursor = params_node.walk();
+    for child in params_node.named_children(&mut cursor) {
+        if child.kind() != "required_parameter" && child.kind() != "optional_parameter" {
+            continue;
+        }
+        let Some(name) = child
+            .child_by_field_name("pattern")
+            .and_then(|p| p.utf8_text(source).ok())
+        else {
+            continue;
+        };
+        let Some(type_str) = child
+            .child_by_field_name("type")
+            .and_then(|t| ts_type_from_annotation(&t, source))
+        else {
+            continue;
+        };
+        entries.push((name.to_string(), type_str));
+    }
+    entries
+}
+
+/// Build data-flow metadata (parameter and return types) for a TypeScript
+/// `function_declaration` or `method_definition` node.
+fn ts_dataflow_metadata(node: &tree_sitter::Node, source: &[u8]) -> Option<DataFlowMetadata> {
+    let params = node
+        .child_by_field_name("parameters")
+        .map(|p| ts_param_types(&p, source))
+        .unwrap_or_default();
+    let return_type = node
+        .child_by_field_name("return_type")
+        .and_then(|rt| ts_type_from_annotation(&rt, source));
+    type_metadata::build_data_flow_metadata(
+        &params,
+        return_type.as_deref(),
+        &TYPESCRIPT_TYPE_CONFIG,
+    )
+}
+
 /// Extract a single declaration node, emitting the item plus any members/edges.
 #[allow(clippy::too_many_arguments)]
 fn extract_declaration(
@@ -353,6 +413,10 @@ fn extract_declaration(
         tags.push("test".to_string());
     }
 
+    let mut metadata = serde_json::json!({ "loc": loc });
+    if let Some(df) = ts_dataflow_metadata(&node, source) {
+        type_metadata::merge_into_metadata(&mut metadata, &df);
+    }
     result.items.push(AnalysisItem {
         qualified_name: qualified_name.clone(),
         kind,
@@ -360,7 +424,7 @@ fn extract_declaration(
         parent_qualified_name: Some(module_context.to_string()),
         source_ref,
         language: "typescript".to_string(),
-        metadata: Some(serde_json::json!({"loc": loc})),
+        metadata: Some(metadata),
         tags,
     });
 
@@ -462,6 +526,10 @@ fn extract_class_members(
         let line = child.start_position().row + 1 + line_offset;
         let loc = child.end_position().row - child.start_position().row + 1;
 
+        let mut metadata = serde_json::json!({ "loc": loc });
+        if let Some(df) = ts_dataflow_metadata(&child, source) {
+            type_metadata::merge_into_metadata(&mut metadata, &df);
+        }
         result.items.push(AnalysisItem {
             qualified_name: member_qn.clone(),
             kind: NodeKind::Unit,
@@ -469,7 +537,7 @@ fn extract_class_members(
             parent_qualified_name: Some(class_qn.to_string()),
             source_ref: format!("{}:{line}", file_path.display()),
             language: "typescript".to_string(),
-            metadata: Some(serde_json::json!({"loc": loc})),
+            metadata: Some(metadata),
             tags: vec![],
         });
 
@@ -937,6 +1005,57 @@ mod tests {
         write!(file, "{}", source).unwrap();
         let analyzer = TypeScriptAnalyzer::new();
         analyzer.analyze_crate(package_name, &[file.path()])
+    }
+
+    // --- Data-flow metadata tests ---
+
+    #[test]
+    fn function_records_param_and_return_types() {
+        let result = parse_ts_source(
+            "app",
+            "export function transform(p: Proposal): Vote { return new Vote(); }",
+        );
+        let func = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name.ends_with("::transform"))
+            .expect("should have transform function");
+        let meta = func.metadata.as_ref().expect("metadata present");
+        assert_eq!(meta["param_types"][0]["name"], "p");
+        assert_eq!(meta["param_types"][0]["type"], "Proposal");
+        assert_eq!(meta["return_type"], "Vote");
+    }
+
+    #[test]
+    fn promise_return_type_is_unwrapped() {
+        let result = parse_ts_source(
+            "app",
+            "export function load(k: Key): Promise<Record> { return null as any; }",
+        );
+        let func = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name.ends_with("::load"))
+            .expect("should have load function");
+        let meta = func.metadata.as_ref().expect("metadata present");
+        assert_eq!(meta["param_types"][0]["type"], "Key");
+        assert_eq!(meta["return_type"], "Record");
+    }
+
+    #[test]
+    fn primitive_signature_has_no_dataflow_metadata() {
+        let result = parse_ts_source(
+            "app",
+            "export function add(a: number, b: number): number { return a + b; }",
+        );
+        let func = result
+            .items
+            .iter()
+            .find(|i| i.qualified_name.ends_with("::add"))
+            .expect("should have add function");
+        let meta = func.metadata.as_ref().expect("metadata present");
+        assert!(meta.get("param_types").is_none());
+        assert!(meta.get("return_type").is_none());
     }
 
     // --- Export extraction tests ---
