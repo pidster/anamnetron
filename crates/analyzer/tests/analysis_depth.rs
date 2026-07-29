@@ -88,15 +88,19 @@ fn method_call_resolution_improved() {
     );
 
     // Dogfood ratchet: resolution rate must not regress below the honest
-    // baseline. After the R0/R1 fixes (self-resolved method calls are now
-    // counted, and method-call edges are attributed to the calling function),
-    // the measured rate is ~11.72% (962 of 8210 on this repo). The floor is set
-    // just below that; do not lower it without a corresponding honest change.
+    // baseline. R0/R1 established ~11.72% (self-resolved method calls counted,
+    // edges attributed to the calling function). R2 broadened local type
+    // inference (borrow / clone / to_owned / if-match arms / tuple destructuring)
+    // and gave `local_type_map` proper lexical scoping with pattern-binding
+    // shadowing, lifting the measured rate to ~12.04% (998 of 8292 on this repo;
+    // note the corpus includes R2's own added source, which dilutes as much as it
+    // adds). The floor is set just below the measured value; do not lower it
+    // without a corresponding honest change.
     let total = summary.method_calls_resolved + summary.method_calls_unresolved;
     let resolution_pct = (summary.method_calls_resolved as f64 / total as f64) * 100.0;
     assert!(
-        resolution_pct > 11.5,
-        "resolution rate regressed below the honest baseline (>11.5%), \
+        resolution_pct > 12.0,
+        "resolution rate regressed below the honest baseline (>12.0%), \
          got {resolution_pct:.2}% ({} of {total})",
         summary.method_calls_resolved,
     );

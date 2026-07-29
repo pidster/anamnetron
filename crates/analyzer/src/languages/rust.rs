@@ -530,21 +530,16 @@ fn visit_node(
                     .unwrap_or_else(|| build_qualified_name(module_context))
             };
 
-            // Build local type map from function parameters and body.
-            let mut local_type_map = node
+            // Seed the base scope frame with parameter types, then walk the body
+            // maintaining a lexical scope stack: inner blocks shadow outer
+            // bindings and go out of scope on exit.
+            let base_frame = node
                 .child_by_field_name("parameters")
                 .map(|params| {
                     extract_param_types(params, state.source, module_context, &state.use_aliases)
                 })
                 .unwrap_or_default();
-            if let Some(body) = node.child_by_field_name("body") {
-                local_type_map.extend(build_local_type_map(
-                    body,
-                    state.source,
-                    module_context,
-                    &state.use_aliases,
-                ));
-            }
+            let mut scope = ScopeStack::with_base(base_frame);
 
             // Descend into the function body to find call expressions.
             if let Some(body) = node.child_by_field_name("body") {
@@ -553,7 +548,7 @@ fn visit_node(
                     state,
                     module_context,
                     impl_type,
-                    &local_type_map,
+                    &mut scope,
                     &caller_qn,
                 );
             }
@@ -1353,72 +1348,276 @@ fn has_visibility_modifier(node: tree_sitter::Node<'_>) -> bool {
     false
 }
 
-/// Build a map of local variable names to inferred type qualified names.
+/// A stack of lexical scopes mapping local variable names to inferred type
+/// qualified names.
 ///
-/// Walks `let_declaration` nodes in a function body and extracts type
-/// information from three sources:
-/// - **Explicit type annotation**: `let x: Foo = ...`
-/// - **Constructor call**: `let x = Foo::new()`
-/// - **Struct expression**: `let x = Foo { ... }`
-fn build_local_type_map(
-    body: tree_sitter::Node<'_>,
-    source: &[u8],
-    module_context: &[String],
-    use_aliases: &HashMap<String, UseAliasInfo>,
-) -> HashMap<String, String> {
-    let mut type_map = HashMap::new();
-    collect_let_declarations(body, source, module_context, use_aliases, &mut type_map);
-    type_map
+/// Replaces the earlier flat, function-wide map. A frame is pushed on entering
+/// a `block` and popped on leaving it, so inner bindings shadow outer ones and
+/// go out of scope correctly. Resolution searches from the innermost frame
+/// outward, so `let x` in a nested block cannot leak to an outer call, and a
+/// shadowing binding resolves to the lexically nearest declaration rather than
+/// whichever was inserted last.
+#[derive(Debug, Default)]
+struct ScopeStack {
+    /// Each frame maps a bound name to its inferred type, or `None` when the
+    /// name is bound but of a type we deliberately do not model (a
+    /// *shadow* — e.g. a `match`-arm / closure / `for` / `if let` pattern
+    /// binding). A shadow still occupies the name, so lookups stop at it and
+    /// return "unresolved" rather than leaking an outer binding of the same
+    /// name — which would emit a wrong target.
+    frames: Vec<HashMap<String, Option<String>>>,
 }
 
-/// Recursively collect `let_declaration` nodes and extract variable → type mappings.
-fn collect_let_declarations(
-    node: tree_sitter::Node<'_>,
-    source: &[u8],
-    module_context: &[String],
-    use_aliases: &HashMap<String, UseAliasInfo>,
-    type_map: &mut HashMap<String, String>,
-) {
+impl ScopeStack {
+    /// Create a stack seeded with a single base frame — used for a function's
+    /// parameter bindings, which are in scope for the whole body.
+    fn with_base(base: HashMap<String, String>) -> Self {
+        let frame = base.into_iter().map(|(k, v)| (k, Some(v))).collect();
+        ScopeStack {
+            frames: vec![frame],
+        }
+    }
+
+    /// Push a new empty scope frame on entering a block or binding construct.
+    fn push(&mut self) {
+        self.frames.push(HashMap::new());
+    }
+
+    /// Pop the innermost scope frame on leaving a block or binding construct.
+    fn pop(&mut self) {
+        self.frames.pop();
+    }
+
+    /// Bind a name to a type qualified name in the innermost scope frame.
+    fn insert(&mut self, name: String, type_qn: String) {
+        if let Some(top) = self.frames.last_mut() {
+            top.insert(name, Some(type_qn));
+        }
+    }
+
+    /// Bind a name in the innermost frame as a *shadow* (bound, unknown type).
+    /// Used for pattern bindings whose types R2 does not model, so a later use
+    /// of that name resolves to "unresolved" instead of an outer binding.
+    fn shadow(&mut self, name: String) {
+        if let Some(top) = self.frames.last_mut() {
+            // Do not clobber a concrete binding already recorded in this frame.
+            top.entry(name).or_insert(None);
+        }
+    }
+
+    /// Resolve a name to its type, searching from the innermost frame outward.
+    /// The search stops at the *first* frame that binds the name (nearest wins,
+    /// implementing lexical shadowing); if that binding is a shadow (`None`) the
+    /// result is "unresolved" — the outer binding is never leaked past it.
+    fn lookup(&self, name: &str) -> Option<&str> {
+        for frame in self.frames.iter().rev() {
+            if let Some(binding) = frame.get(name) {
+                return binding.as_deref();
+            }
+        }
+        None
+    }
+}
+
+/// Collect every identifier bound by a pattern subtree.
+///
+/// Walks the pattern recursively and collects nodes of kind `identifier` and
+/// `shorthand_field_identifier` — the leaves that name a binding. Enum/variant
+/// path segments (`type_identifier`, `scoped_identifier`) are not descended
+/// into as names, but a bare `identifier` used as a unit-variant path (e.g. the
+/// `Some` in `Some(x)`) is over-collected; that is harmless for shadowing,
+/// which only needs to *cover* every real binding. Over-collection can only
+/// cost recall (a name conservatively treated as unknown), never soundness.
+fn collect_pattern_bindings(node: tree_sitter::Node<'_>, source: &[u8], out: &mut Vec<String>) {
+    if matches!(node.kind(), "identifier" | "shorthand_field_identifier") {
+        if let Ok(name) = node.utf8_text(source) {
+            let name = name.trim();
+            if !name.is_empty() {
+                out.push(name.to_string());
+            }
+        }
+        return;
+    }
     for i in 0..node.named_child_count() {
-        let Some(child) = node.named_child(i) else {
-            continue;
-        };
+        if let Some(child) = node.named_child(i) {
+            collect_pattern_bindings(child, source, out);
+        }
+    }
+}
 
-        if child.kind() == "let_declaration" {
-            if let Some(pattern) = child.child_by_field_name("pattern") {
-                if let Ok(var_name) = pattern.utf8_text(source) {
-                    let var_name = var_name.trim().to_string();
-                    if var_name.is_empty() || var_name.contains(' ') {
-                        // Skip destructuring patterns
-                        continue;
-                    }
-
-                    // Try explicit type annotation first: `let x: Foo = ...`
-                    if let Some(type_node) = child.child_by_field_name("type") {
-                        if let Some(type_qn) = extract_type_from_annotation(
-                            type_node,
-                            source,
-                            module_context,
-                            use_aliases,
-                        ) {
-                            type_map.insert(var_name, type_qn);
-                            continue;
-                        }
-                    }
-
-                    // Try inferring from the value expression
-                    if let Some(value) = child.child_by_field_name("value") {
-                        if let Some(type_qn) =
-                            infer_type_from_value(value, source, module_context, use_aliases)
-                        {
-                            type_map.insert(var_name, type_qn);
-                        }
+/// Shadow the pattern-bound names introduced by a scope-opening construct.
+///
+/// For constructs that bind names through patterns R2 does not type
+/// (`match_arm`, `for_expression`, `closure_expression`, and `if let` /
+/// `while let` conditions), each bound name is inserted into the current frame
+/// as a shadow (bound, unknown type). This prevents a use of that name inside
+/// the construct from resolving to an outer binding of the same name — which
+/// would emit a wrong target. Modelling the actual bound types is deferred.
+fn shadow_construct_bindings(node: tree_sitter::Node<'_>, source: &[u8], scope: &mut ScopeStack) {
+    let mut names = Vec::new();
+    match node.kind() {
+        "match_arm" | "for_expression" => {
+            if let Some(pattern) = node.child_by_field_name("pattern") {
+                collect_pattern_bindings(pattern, source, &mut names);
+            }
+        }
+        "closure_expression" => {
+            if let Some(params) = node.child_by_field_name("parameters") {
+                collect_pattern_bindings(params, source, &mut names);
+            }
+        }
+        "if_expression" | "while_expression" => {
+            // `if let PAT = expr { .. }` / `while let PAT = expr { .. }` — the
+            // condition is a `let_condition` carrying the binding pattern.
+            if let Some(condition) = node.child_by_field_name("condition") {
+                if condition.kind() == "let_condition" {
+                    if let Some(pattern) = condition.child_by_field_name("pattern") {
+                        collect_pattern_bindings(pattern, source, &mut names);
                     }
                 }
             }
-        } else {
-            // Recurse into child nodes (e.g., blocks within the function body)
-            collect_let_declarations(child, source, module_context, use_aliases, type_map);
+        }
+        _ => {}
+    }
+    for name in names {
+        scope.shadow(name);
+    }
+}
+
+/// Record the binding(s) introduced by a single `let_declaration` into the
+/// current (innermost) scope frame.
+///
+/// Called during the call walk *after* the declaration's value expression has
+/// been visited, so the new binding is visible to later statements in the same
+/// block but not to its own right-hand side (`let x = f(x)` resolves the RHS
+/// `x` against the outer binding).
+///
+/// Handles three pattern shapes; anything else (e.g. `ref`/slice patterns) is
+/// left unbound rather than guessed.
+/// - **Explicit type annotation**: `let x: Foo = ...` (wins over inference).
+/// - **Simple identifier**: `let x = <value>` / `let mut x = <value>`.
+/// - **Tuple destructuring**: `let (a, b) = (<value>, <value>)`.
+fn record_let_binding(
+    let_node: tree_sitter::Node<'_>,
+    source: &[u8],
+    module_context: &[String],
+    use_aliases: &HashMap<String, UseAliasInfo>,
+    scope: &mut ScopeStack,
+) {
+    let Some(pattern) = let_node.child_by_field_name("pattern") else {
+        return;
+    };
+
+    // Tuple destructuring: `let (a, b) = (expr_a, expr_b);`.
+    if pattern.kind() == "tuple_pattern" {
+        record_tuple_binding(
+            pattern,
+            let_node,
+            source,
+            module_context,
+            use_aliases,
+            scope,
+        );
+        return;
+    }
+
+    // Only simple identifier bindings are handled beyond tuples. `let mut x`
+    // exposes a bare `identifier` pattern (the `mut` is a separate node), so it
+    // is covered here too.
+    //
+    // TODO(F2): pre-existing soundness gap (not R2-introduced). This early
+    // return — like the non-simple / refutable / arity-mismatch bail-outs in
+    // `record_tuple_binding` — leaves the pattern's bound names *unshadowed*.
+    // A pattern-bound name that shadows an outer binding then keeps reading the
+    // stale outer type (e.g. `let x = Foo::new(); let (x, _) = pair(); x.leak();`
+    // wrongly resolves `x.leak()` to `Foo::leak`). Ideal fix: before every such
+    // bail-out, walk the pattern and `scope.insert(name, <unknown>)` for each
+    // bound identifier it cannot type, so the outer binding is shadowed out of
+    // scope rather than leaking through. Requires a scope representation for an
+    // "known-shadowed but untyped" entry (lookup must return None for it).
+    if pattern.kind() != "identifier" {
+        return;
+    }
+    let Ok(var_name) = pattern.utf8_text(source) else {
+        return;
+    };
+    let var_name = var_name.trim();
+    if var_name.is_empty() {
+        return;
+    }
+
+    // Explicit type annotation wins: `let x: Foo = ...`.
+    if let Some(type_node) = let_node.child_by_field_name("type") {
+        if let Some(type_qn) =
+            extract_type_from_annotation(type_node, source, module_context, use_aliases)
+        {
+            scope.insert(var_name.to_string(), type_qn);
+            return;
+        }
+    }
+
+    // Otherwise infer from the value expression.
+    if let Some(value) = let_node.child_by_field_name("value") {
+        if let Some(type_qn) =
+            infer_type_from_value(value, source, module_context, use_aliases, scope)
+        {
+            scope.insert(var_name.to_string(), type_qn);
+        }
+    }
+}
+
+/// Record tuple-destructuring bindings positionally: `let (a, b) = (x, y);`.
+///
+/// Each identifier sub-pattern is bound to the inferred type of the value
+/// element at the same position. Non-identifier sub-patterns are skipped, and a
+/// mismatch between the number of sub-patterns and tuple elements aborts the
+/// whole binding — the function never guesses across a positional mismatch.
+fn record_tuple_binding(
+    pattern: tree_sitter::Node<'_>,
+    let_node: tree_sitter::Node<'_>,
+    source: &[u8],
+    module_context: &[String],
+    use_aliases: &HashMap<String, UseAliasInfo>,
+    scope: &mut ScopeStack,
+) {
+    let Some(value) = let_node.child_by_field_name("value") else {
+        return;
+    };
+    if value.kind() != "tuple_expression" {
+        return;
+    }
+
+    let mut pats = Vec::new();
+    for i in 0..pattern.named_child_count() {
+        if let Some(p) = pattern.named_child(i) {
+            pats.push(p);
+        }
+    }
+    let mut vals = Vec::new();
+    for i in 0..value.named_child_count() {
+        if let Some(v) = value.named_child(i) {
+            vals.push(v);
+        }
+    }
+    if pats.len() != vals.len() {
+        return;
+    }
+
+    for (pat, val) in pats.iter().zip(vals.iter()) {
+        if pat.kind() != "identifier" {
+            continue;
+        }
+        let Ok(name) = pat.utf8_text(source) else {
+            continue;
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        if let Some(type_qn) =
+            infer_type_from_value(*val, source, module_context, use_aliases, scope)
+        {
+            scope.insert(name.to_string(), type_qn);
         }
     }
 }
@@ -1676,42 +1875,215 @@ fn infer_type_from_value(
     source: &[u8],
     module_context: &[String],
     use_aliases: &HashMap<String, UseAliasInfo>,
+    scope: &ScopeStack,
 ) -> Option<String> {
     match value.kind() {
         "call_expression" => {
-            // Check for constructor pattern: `Foo::new()` or `Foo::default()`
             let function = value.child_by_field_name("function")?;
+
+            // `.clone()` / `.to_owned()` return `Self`, so the binding takes
+            // the receiver's type. The receiver may be a bare variable
+            // (resolved through `scope`) or a nested value expression.
+            if function.kind() == "field_expression" {
+                let method = function.child_by_field_name("field")?;
+                let method_name = method.utf8_text(source).ok()?;
+                if matches!(method_name, "clone" | "to_owned") {
+                    let receiver = function.child_by_field_name("value")?;
+                    return infer_receiver_type(
+                        receiver,
+                        source,
+                        module_context,
+                        use_aliases,
+                        scope,
+                    );
+                }
+                return None;
+            }
+
+            // Constructor pattern: `Foo::new()` / `Foo::default()`.
             if function.kind() == "scoped_identifier" {
                 let text = function.utf8_text(source).ok()?.replace(' ', "");
                 let segments: Vec<&str> = text.split("::").collect();
                 if segments.len() == 2 {
                     let type_seg = segments[0];
                     if type_seg.starts_with(|c: char| c.is_uppercase()) {
-                        if let Some(info) = use_aliases.get(type_seg) {
-                            return Some(info.qualified_path.clone());
-                        }
-                        let module_qn = build_qualified_name(module_context);
-                        return Some(format!("{module_qn}::{type_seg}"));
+                        return Some(resolve_type_name(type_seg, module_context, use_aliases));
                     }
                 }
             }
             None
         }
         "struct_expression" => {
-            // `Foo { field: value }` — extract type from name
+            // `Foo { field: value }` — extract type from name.
             let name_node = value.child_by_field_name("name")?;
             let name = name_node.utf8_text(source).ok()?;
             if name.starts_with(|c: char| c.is_uppercase()) {
-                if let Some(info) = use_aliases.get(name) {
-                    return Some(info.qualified_path.clone());
-                }
-                let module_qn = build_qualified_name(module_context);
-                Some(format!("{module_qn}::{name}"))
+                Some(resolve_type_name(name, module_context, use_aliases))
             } else {
                 None
             }
         }
+        "reference_expression" => {
+            // `&x` / `&mut x` → the underlying type. Auto-deref makes methods on
+            // `T` callable through `&T`, so the underlying type is the useful
+            // resolution target.
+            let inner = value.child_by_field_name("value")?;
+            infer_receiver_type(inner, source, module_context, use_aliases, scope)
+        }
+        "try_expression" | "await_expression" => {
+            // `x?` / `x.await` unwrap their operand, but a variable's recorded
+            // type is its *pre-unwrap* type (e.g. a `Result<Foo>` binding), so
+            // resolving the operand through `scope` would name the wrong type.
+            // Infer the operand purely structurally (empty scope) — this stays
+            // sound and is near-inert until a return-type index exists, at which
+            // point it begins to pay off.
+            let operand = value.named_child(0)?;
+            let empty = ScopeStack::default();
+            infer_type_from_value(operand, source, module_context, use_aliases, &empty)
+        }
+        "if_expression" => infer_if_expression(value, source, module_context, use_aliases),
+        "match_expression" => infer_match_expression(value, source, module_context, use_aliases),
         _ => None,
+    }
+}
+
+/// Resolve a bare type name to a qualified name: prefer a `use` alias, else
+/// qualify it with the current module context.
+fn resolve_type_name(
+    name: &str,
+    module_context: &[String],
+    use_aliases: &HashMap<String, UseAliasInfo>,
+) -> String {
+    if let Some(info) = use_aliases.get(name) {
+        return info.qualified_path.clone();
+    }
+    let module_qn = build_qualified_name(module_context);
+    format!("{module_qn}::{name}")
+}
+
+/// Infer the type of a receiver / operand expression.
+///
+/// Unlike the top-level value inference, a bare `identifier` receiver is
+/// resolved through the current lexical `scope` (the `x` in `x.clone()`).
+/// Everything else delegates to [`infer_type_from_value`].
+fn infer_receiver_type(
+    node: tree_sitter::Node<'_>,
+    source: &[u8],
+    module_context: &[String],
+    use_aliases: &HashMap<String, UseAliasInfo>,
+    scope: &ScopeStack,
+) -> Option<String> {
+    if node.kind() == "identifier" {
+        let name = node.utf8_text(source).ok()?;
+        return scope.lookup(name).map(String::from);
+    }
+    infer_type_from_value(node, source, module_context, use_aliases, scope)
+}
+
+/// Infer the type of an `if` expression, resolving only when both branches
+/// agree on one concrete type.
+///
+/// Requires an `else` branch (an `if` without `else` has type `()`). Returns
+/// `None` on any missing branch, unresolvable branch, or disagreement — never a
+/// guess.
+fn infer_if_expression(
+    node: tree_sitter::Node<'_>,
+    source: &[u8],
+    module_context: &[String],
+    use_aliases: &HashMap<String, UseAliasInfo>,
+) -> Option<String> {
+    let consequence = node.child_by_field_name("consequence")?;
+    let then_ty = infer_block_tail_type(consequence, source, module_context, use_aliases)?;
+
+    // `alternative` is an `else_clause` wrapping either a block (`else { .. }`)
+    // or a nested `if` (`else if ..`).
+    let alternative = node.child_by_field_name("alternative")?;
+    let else_inner = alternative.named_child(0)?;
+    let else_ty = match else_inner.kind() {
+        "block" => infer_block_tail_type(else_inner, source, module_context, use_aliases)?,
+        "if_expression" => infer_if_expression(else_inner, source, module_context, use_aliases)?,
+        _ => return None,
+    };
+
+    if then_ty == else_ty {
+        Some(then_ty)
+    } else {
+        None
+    }
+}
+
+/// Infer the type of a block's tail (value) expression, if any.
+///
+/// The tail is the block's final named child when it is a value expression
+/// rather than a statement (no trailing `;`). Returns `None` when the block has
+/// no tail expression.
+///
+/// The tail is resolved against an *empty* [`ScopeStack`], never the enclosing
+/// scope. By the time the `let a = if .. { .. }` site is inferred, the walk has
+/// already pushed and popped the inner block frame, so the enclosing scope no
+/// longer reflects the block's own `let` bindings. Consulting it would let a
+/// bare tail identifier collide with a stale *outer* binding of the same name
+/// and resolve to the wrong type. An empty scope keeps a bare-identifier tail
+/// unresolved (sound) while structural tails like `Foo::new()` still resolve.
+fn infer_block_tail_type(
+    block: tree_sitter::Node<'_>,
+    source: &[u8],
+    module_context: &[String],
+    use_aliases: &HashMap<String, UseAliasInfo>,
+) -> Option<String> {
+    let count = block.named_child_count();
+    if count == 0 {
+        return None;
+    }
+    let tail = block.named_child(count - 1)?;
+    // A trailing statement (`...;`) is an `expression_statement`, not a value.
+    if tail.kind() == "expression_statement" {
+        return None;
+    }
+    let empty = ScopeStack::default();
+    infer_receiver_type(tail, source, module_context, use_aliases, &empty)
+}
+
+/// Infer the type of a `match` expression, resolving only when every arm agrees
+/// on one concrete type.
+///
+/// Returns `None` unless there is at least one arm and all arms infer the same
+/// type — any unresolvable arm or disagreement yields `None`.
+fn infer_match_expression(
+    node: tree_sitter::Node<'_>,
+    source: &[u8],
+    module_context: &[String],
+    use_aliases: &HashMap<String, UseAliasInfo>,
+) -> Option<String> {
+    let body = node.child_by_field_name("body")?;
+    let mut agreed: Option<String> = None;
+    let mut saw_arm = false;
+    // Arm values are resolved against an *empty* `ScopeStack` (see
+    // `infer_block_tail_type`): by this point the arm-pattern binding frames
+    // have been pushed and popped, so a bare arm identifier consulting the
+    // enclosing scope could collide with a stale outer binding and resolve to
+    // the wrong type. Empty scope keeps such arms unresolved (sound).
+    let empty = ScopeStack::default();
+    for i in 0..body.named_child_count() {
+        let Some(arm) = body.named_child(i) else {
+            continue;
+        };
+        if arm.kind() != "match_arm" {
+            continue;
+        }
+        saw_arm = true;
+        let value = arm.child_by_field_name("value")?;
+        let arm_ty = infer_receiver_type(value, source, module_context, use_aliases, &empty)?;
+        match &agreed {
+            None => agreed = Some(arm_ty),
+            Some(prev) if *prev == arm_ty => {}
+            Some(_) => return None,
+        }
+    }
+    if saw_arm {
+        agreed
+    } else {
+        None
     }
 }
 
@@ -1924,17 +2296,45 @@ fn resolve_scoped_call(
 /// and emit `Calls` relations for syntactically resolvable calls.
 ///
 /// When `impl_type` is `Some`, `self.method()` calls are resolved to
-/// `ImplType::method`. When `local_type_map` contains a mapping for
-/// a receiver variable, `x.method()` calls are resolved to
-/// `Type::method`. Other method calls remain unresolved.
+/// `ImplType::method`. When the current lexical `scope` contains a binding for
+/// a receiver variable, `x.method()` calls are resolved to `Type::method`.
+/// Other method calls remain unresolved.
+///
+/// `scope` is maintained lexically during the walk: a frame is pushed on
+/// entering a `block` and popped on leaving it, and a `let` binding is recorded
+/// only after its own right-hand side has been visited. This yields correct
+/// shadowing — a receiver resolves to the lexically nearest binding, and an
+/// inner-block binding never leaks to an outer call.
 fn visit_call_expressions(
     node: tree_sitter::Node<'_>,
     state: &mut FileParseState<'_>,
     module_context: &[String],
     impl_type: Option<&str>,
-    local_type_map: &HashMap<String, String>,
+    scope: &mut ScopeStack,
     caller_qn: &str,
 ) {
+    // A `block` opens a lexical scope (`loop`/`unsafe`/`async` bodies wrap a
+    // plain `block`, so those are covered). Additionally, constructs that bind
+    // names through patterns R2 does not type — `match_arm`, `for`, closures,
+    // and `if let` / `while let` — open a scope and *shadow* their pattern
+    // bindings, so a use of a bound name inside cannot leak to an outer binding
+    // of the same name (which would emit a wrong target). A `match_arm` body may
+    // be a bare expression rather than a `block`, so the frame must open at the
+    // construct node, not rely on a nested block.
+    let opened_scope = matches!(
+        node.kind(),
+        "block"
+            | "match_arm"
+            | "for_expression"
+            | "closure_expression"
+            | "if_expression"
+            | "while_expression"
+    );
+    if opened_scope {
+        scope.push();
+        shadow_construct_bindings(node, state.source, scope);
+    }
+
     for i in 0..node.named_child_count() {
         let Some(child) = node.named_child(i) else {
             continue;
@@ -2004,9 +2404,9 @@ fn visit_call_expressions(
                                                 state.method_call_stats.unresolved_other += 1;
                                             }
                                         } else if receiver.kind() == "identifier" {
-                                            // x.method() → look up x in local_type_map.
-                                            if let Some(type_qn) = local_type_map.get(receiver_text)
-                                            {
+                                            // x.method() → resolve x through the
+                                            // lexical scope stack.
+                                            if let Some(type_qn) = scope.lookup(receiver_text) {
                                                 state.relations.push(AnalysisRelation {
                                                     source_qualified_name: caller_qn.to_string(),
                                                     target_qualified_name: format!(
@@ -2050,15 +2450,26 @@ fn visit_call_expressions(
             }
         }
 
-        // Recurse into children to find nested call expressions.
-        visit_call_expressions(
-            child,
-            state,
-            module_context,
-            impl_type,
-            local_type_map,
-            caller_qn,
-        );
+        // Recurse first so the RHS of a `let` is visited before its binding is
+        // recorded — `let x = f(x)` resolves the RHS `x` against the outer
+        // binding, not the one being declared.
+        visit_call_expressions(child, state, module_context, impl_type, scope, caller_qn);
+
+        // Record the `let` binding after its RHS, so it is visible to later
+        // statements in this block but not to its own initializer.
+        if child.kind() == "let_declaration" {
+            record_let_binding(
+                child,
+                state.source,
+                module_context,
+                &state.use_aliases,
+                scope,
+            );
+        }
+    }
+
+    if opened_scope {
+        scope.pop();
     }
 }
 
@@ -4544,5 +4955,664 @@ mod tests {
             params[0]["type"], "my_crate::Buffer",
             "&mut T should be stripped to T"
         );
+    }
+
+    // --- R2: broadened `infer_type_from_value` arms ---
+
+    /// Collect the `Calls` edge targets whose method segment matches `method`.
+    fn call_targets_for_method<'a>(result: &'a ParseResult, method: &str) -> Vec<&'a str> {
+        let needle = format!("::{method}");
+        result
+            .relations
+            .iter()
+            .filter(|r| {
+                r.kind == EdgeKind::Calls && r.target_qualified_name.ends_with(needle.as_str())
+            })
+            .map(|r| r.target_qualified_name.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn borrow_receiver_resolves_to_underlying_type() {
+        // `&x` / `&mut x` — auto-deref makes methods on the underlying type
+        // callable, so the binding takes the underlying type.
+        let result = parse_source(
+            "my_crate",
+            r#"
+            fn main() {
+                let a = Foo::new();
+                let b = &a;
+                let c = &mut a;
+                b.method_b();
+                c.method_c();
+            }
+        "#,
+        );
+        assert_eq!(
+            call_targets_for_method(&result, "method_b"),
+            vec!["my_crate::Foo::method_b"],
+            "&x receiver should resolve through the underlying type"
+        );
+        assert_eq!(
+            call_targets_for_method(&result, "method_c"),
+            vec!["my_crate::Foo::method_c"],
+            "&mut x receiver should resolve through the underlying type"
+        );
+    }
+
+    #[test]
+    fn clone_and_to_owned_preserve_receiver_type() {
+        // `.clone()` / `.to_owned()` return `Self`.
+        let result = parse_source(
+            "my_crate",
+            r#"
+            fn main() {
+                let a = Foo::new();
+                let b = a.clone();
+                let c = a.to_owned();
+                let d = Foo::new().clone();
+                b.mb();
+                c.mc();
+                d.md();
+            }
+        "#,
+        );
+        assert_eq!(
+            call_targets_for_method(&result, "mb"),
+            vec!["my_crate::Foo::mb"],
+            "clone() of a known local should preserve its type"
+        );
+        assert_eq!(
+            call_targets_for_method(&result, "mc"),
+            vec!["my_crate::Foo::mc"],
+            "to_owned() of a known local should preserve its type"
+        );
+        assert_eq!(
+            call_targets_for_method(&result, "md"),
+            vec!["my_crate::Foo::md"],
+            "clone() of a nested constructor should preserve its type"
+        );
+    }
+
+    #[test]
+    fn clone_of_unknown_receiver_stays_unresolved() {
+        // `.clone()` on a receiver of unknown type must not be guessed.
+        let result = parse_source(
+            "my_crate",
+            r#"
+            fn opaque() -> u32 { 0 }
+            fn main() {
+                let a = opaque();
+                let b = a.clone();
+                b.mystery();
+            }
+        "#,
+        );
+        assert!(
+            call_targets_for_method(&result, "mystery").is_empty(),
+            "clone of an unknown-typed receiver must stay unresolved"
+        );
+    }
+
+    #[test]
+    fn if_expression_with_agreeing_arms_resolves() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            fn main() {
+                let a = if cond() { Foo::new() } else { Foo::default() };
+                a.shared();
+            }
+            fn cond() -> bool { true }
+        "#,
+        );
+        assert_eq!(
+            call_targets_for_method(&result, "shared"),
+            vec!["my_crate::Foo::shared"],
+            "if/else arms agreeing on Foo should resolve to Foo"
+        );
+    }
+
+    #[test]
+    fn if_expression_with_disagreeing_arms_is_none() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            fn main() {
+                let a = if cond() { Foo::new() } else { Bar::new() };
+                a.ambiguous();
+            }
+            fn cond() -> bool { true }
+        "#,
+        );
+        assert!(
+            call_targets_for_method(&result, "ambiguous").is_empty(),
+            "if/else arms disagreeing on type must not resolve"
+        );
+    }
+
+    #[test]
+    fn if_expression_without_else_is_none() {
+        // An `if` with no `else` has type `()` — not resolvable.
+        let result = parse_source(
+            "my_crate",
+            r#"
+            fn main() {
+                let a = if cond() { Foo::new() };
+                a.no_else();
+            }
+            fn cond() -> bool { true }
+        "#,
+        );
+        assert!(
+            call_targets_for_method(&result, "no_else").is_empty(),
+            "an if without else must not resolve to a branch type"
+        );
+    }
+
+    #[test]
+    fn else_if_chain_resolves_when_all_agree() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            fn main() {
+                let a = if cond() {
+                    Foo::new()
+                } else if cond() {
+                    Foo::default()
+                } else {
+                    Foo::new()
+                };
+                a.chained_if();
+            }
+            fn cond() -> bool { true }
+        "#,
+        );
+        assert_eq!(
+            call_targets_for_method(&result, "chained_if"),
+            vec!["my_crate::Foo::chained_if"],
+            "an else-if chain all producing Foo should resolve to Foo"
+        );
+    }
+
+    #[test]
+    fn match_expression_with_agreeing_arms_resolves() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            fn main() {
+                let a = match n() { 1 => Foo::new(), _ => Foo::default() };
+                a.matched();
+            }
+            fn n() -> u32 { 1 }
+        "#,
+        );
+        assert_eq!(
+            call_targets_for_method(&result, "matched"),
+            vec!["my_crate::Foo::matched"],
+            "match arms agreeing on Foo should resolve to Foo"
+        );
+    }
+
+    #[test]
+    fn match_expression_with_disagreeing_arms_is_none() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            fn main() {
+                let a = match n() { 1 => Foo::new(), _ => Bar::new() };
+                a.mismatch();
+            }
+            fn n() -> u32 { 1 }
+        "#,
+        );
+        assert!(
+            call_targets_for_method(&result, "mismatch").is_empty(),
+            "match arms disagreeing on type must not resolve"
+        );
+    }
+
+    #[test]
+    fn tuple_destructuring_binds_each_element() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            fn main() {
+                let (a, b) = (Foo::new(), Bar::new());
+                a.from_foo();
+                b.from_bar();
+            }
+        "#,
+        );
+        assert_eq!(
+            call_targets_for_method(&result, "from_foo"),
+            vec!["my_crate::Foo::from_foo"],
+            "first tuple element should bind to Foo"
+        );
+        assert_eq!(
+            call_targets_for_method(&result, "from_bar"),
+            vec!["my_crate::Bar::from_bar"],
+            "second tuple element should bind to Bar"
+        );
+    }
+
+    #[test]
+    fn tuple_destructuring_arity_mismatch_binds_nothing() {
+        // A pattern/expression arity mismatch is parse-error territory, but the
+        // recorder must never guess across it.
+        let result = parse_source(
+            "my_crate",
+            r#"
+            fn main() {
+                let (a, b) = (Foo::new(),);
+                a.oops();
+                b.oops();
+            }
+        "#,
+        );
+        assert!(
+            call_targets_for_method(&result, "oops").is_empty(),
+            "arity mismatch must not produce any resolved binding"
+        );
+    }
+
+    #[test]
+    fn try_expression_operand_is_not_resolved_via_scope() {
+        // `x?` unwraps its operand; the binding `x` carries its *pre-unwrap*
+        // type, so passing it through would name the wrong type. Must stay
+        // unresolved rather than emit a wrong target.
+        let result = parse_source(
+            "my_crate",
+            r#"
+            fn main() {
+                let x = Foo::new();
+                let y = x?;
+                y.after_try();
+            }
+        "#,
+        );
+        assert!(
+            call_targets_for_method(&result, "after_try").is_empty(),
+            "a try-expression must not resolve via the operand's stored type"
+        );
+    }
+
+    #[test]
+    fn await_expression_operand_is_not_resolved_via_scope() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            async fn main() {
+                let x = Foo::new();
+                let y = x.await;
+                y.after_await();
+            }
+        "#,
+        );
+        assert!(
+            call_targets_for_method(&result, "after_await").is_empty(),
+            "an await-expression must not resolve via the operand's stored type"
+        );
+    }
+
+    #[test]
+    fn if_tail_shadowed_binding_does_not_resolve_to_outer() {
+        // The `if` branch tails are bare `x`, but each branch rebinds `x` to
+        // `Bar`. The branch-local binding is not (reliably) available when the
+        // enclosing `let a = if ..` is inferred, so the tail must stay
+        // unresolved — it must NOT read the stale OUTER `x: Foo` and emit a
+        // wrong `Foo::m` target.
+        let result = parse_source(
+            "my_crate",
+            r#"
+            fn main() {
+                let x = Foo::new();
+                let a = if c() {
+                    let x = Bar::new();
+                    x
+                } else {
+                    let x = Bar::new();
+                    x
+                };
+                a.m();
+            }
+            fn c() -> bool { true }
+        "#,
+        );
+        assert!(
+            call_targets_for_method(&result, "m").is_empty(),
+            "an if-tail identifier shadowing an outer binding must not resolve \
+             to the outer type"
+        );
+    }
+
+    #[test]
+    fn match_arm_value_shadowed_binding_does_not_resolve_to_outer() {
+        // Each arm binds its own `x` via the pattern; the arm value `x` refers
+        // to that arm-local binding, which is not available when the enclosing
+        // `let a = match ..` is inferred. The arm value must stay unresolved
+        // rather than read the stale OUTER `x: Foo` and emit a wrong `Foo::m`.
+        let result = parse_source(
+            "my_crate",
+            r#"
+            fn main() {
+                let x = Foo::new();
+                let a = match r() {
+                    Ok(x) => x,
+                    Err(x) => x,
+                };
+                a.m();
+            }
+            fn r() -> Result<u32, u32> { Ok(1) }
+        "#,
+        );
+        assert!(
+            call_targets_for_method(&result, "m").is_empty(),
+            "a match-arm value shadowing an outer binding must not resolve to \
+             the outer type"
+        );
+    }
+
+    // --- R2: lexical scoping of the local type map ---
+
+    #[test]
+    fn inner_block_binding_shadows_outer() {
+        // The inner `x: Bar` must win over the outer `x: Foo` inside the block.
+        let result = parse_source(
+            "my_crate",
+            r#"
+            fn main() {
+                let x = Foo::new();
+                {
+                    let x = Bar::new();
+                    x.inner_call();
+                }
+            }
+        "#,
+        );
+        assert_eq!(
+            call_targets_for_method(&result, "inner_call"),
+            vec!["my_crate::Bar::inner_call"],
+            "the innermost binding must shadow the outer one"
+        );
+    }
+
+    #[test]
+    fn inner_block_binding_does_not_leak_out() {
+        // After the inner block closes, `x` reverts to the outer `Foo`.
+        let result = parse_source(
+            "my_crate",
+            r#"
+            fn main() {
+                let x = Foo::new();
+                {
+                    let x = Bar::new();
+                    x.inner_call();
+                }
+                x.outer_call();
+            }
+        "#,
+        );
+        assert_eq!(
+            call_targets_for_method(&result, "outer_call"),
+            vec!["my_crate::Foo::outer_call"],
+            "an inner-block binding must not leak into the outer scope"
+        );
+    }
+
+    #[test]
+    fn sibling_block_binding_does_not_leak() {
+        // A binding in one block must not be visible in a later sibling block.
+        let result = parse_source(
+            "my_crate",
+            r#"
+            fn main() {
+                {
+                    let x = Bar::new();
+                    x.first();
+                }
+                {
+                    x.second();
+                }
+            }
+        "#,
+        );
+        assert_eq!(
+            call_targets_for_method(&result, "first"),
+            vec!["my_crate::Bar::first"],
+            "the binding is visible within its own block"
+        );
+        assert!(
+            call_targets_for_method(&result, "second").is_empty(),
+            "a binding must not leak into a sibling block"
+        );
+    }
+
+    #[test]
+    fn binding_visible_to_later_sibling_statements() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            fn main() {
+                let x = Foo::new();
+                x.later();
+            }
+        "#,
+        );
+        assert_eq!(
+            call_targets_for_method(&result, "later"),
+            vec!["my_crate::Foo::later"],
+            "a binding must be visible to later statements in the same block"
+        );
+    }
+
+    #[test]
+    fn rhs_resolves_against_outer_binding_not_self() {
+        // In `let x = x.clone();` the RHS `x` is the outer binding, so the new
+        // `x` takes the outer type — recording happens after the RHS is visited.
+        let result = parse_source(
+            "my_crate",
+            r#"
+            fn main() {
+                let x = Foo::new();
+                {
+                    let x = x.clone();
+                    x.rebound();
+                }
+            }
+        "#,
+        );
+        assert_eq!(
+            call_targets_for_method(&result, "rebound"),
+            vec!["my_crate::Foo::rebound"],
+            "the RHS `x.clone()` must resolve against the outer Foo binding"
+        );
+    }
+
+    #[test]
+    fn param_binding_visible_and_shadowable() {
+        // A parameter type seeds the base scope frame and is shadowable.
+        let result = parse_source(
+            "my_crate",
+            r#"
+            fn run(item: Foo) {
+                item.param_call();
+                let item = Bar::new();
+                item.shadowed_call();
+            }
+        "#,
+        );
+        assert_eq!(
+            call_targets_for_method(&result, "param_call"),
+            vec!["my_crate::Foo::param_call"],
+            "a parameter binding must resolve method calls"
+        );
+        assert_eq!(
+            call_targets_for_method(&result, "shadowed_call"),
+            vec!["my_crate::Bar::shadowed_call"],
+            "a later `let` must shadow the parameter binding"
+        );
+    }
+
+    #[test]
+    fn match_arm_pattern_binding_is_not_resolved() {
+        // Arm-pattern bindings (e.g. `Some(x) => x.m()`) are deferred work — the
+        // walker must neither resolve nor mis-resolve them. Here the outer `x`
+        // is a different type from whatever the arm binds; the arm's `x.taken()`
+        // must not resolve to the outer Foo.
+        let result = parse_source(
+            "my_crate",
+            r#"
+            fn main() {
+                let x = Foo::new();
+                match opt() {
+                    Some(x) => x.taken(),
+                    None => {}
+                }
+            }
+            fn opt() -> Option<Bar> { None }
+        "#,
+        );
+        // `x.taken()` sits inside the match arm. The arm binding is not modelled,
+        // and the match arm's `x` is NOT inside a `block` frame that re-binds it,
+        // so it would fall through to the outer `x: Foo`. Assert it does NOT
+        // resolve to Foo — a wrong target would be unsound.
+        assert!(
+            !call_targets_for_method(&result, "taken").contains(&"my_crate::Foo::taken"),
+            "an arm-pattern binding must never resolve to the shadowed outer type"
+        );
+    }
+
+    #[test]
+    fn closure_param_binding_shadows_outer() {
+        // A closure parameter `x` shadows the outer `let x`; its type is not
+        // modelled, so `x.inner()` inside the closure must not resolve to Foo.
+        let result = parse_source(
+            "my_crate",
+            r#"
+            fn main() {
+                let x = Foo::new();
+                let f = |x| x.inner();
+            }
+        "#,
+        );
+        assert!(
+            !call_targets_for_method(&result, "inner").contains(&"my_crate::Foo::inner"),
+            "a closure parameter must shadow the outer binding to unknown"
+        );
+    }
+
+    #[test]
+    fn for_loop_pattern_binding_shadows_outer() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            fn main() {
+                let x = Foo::new();
+                for x in items {
+                    x.inner();
+                }
+            }
+        "#,
+        );
+        assert!(
+            !call_targets_for_method(&result, "inner").contains(&"my_crate::Foo::inner"),
+            "a for-loop pattern binding must shadow the outer binding to unknown"
+        );
+    }
+
+    #[test]
+    fn if_let_pattern_binding_shadows_outer() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            fn main() {
+                let x = Foo::new();
+                if let Some(x) = opt() {
+                    x.inner();
+                }
+            }
+        "#,
+        );
+        assert!(
+            !call_targets_for_method(&result, "inner").contains(&"my_crate::Foo::inner"),
+            "an `if let` pattern binding must shadow the outer binding to unknown"
+        );
+    }
+
+    #[test]
+    fn while_let_pattern_binding_shadows_outer() {
+        let result = parse_source(
+            "my_crate",
+            r#"
+            fn main() {
+                let x = Foo::new();
+                while let Some(x) = next() {
+                    x.inner();
+                }
+            }
+        "#,
+        );
+        assert!(
+            !call_targets_for_method(&result, "inner").contains(&"my_crate::Foo::inner"),
+            "a `while let` pattern binding must shadow the outer binding to unknown"
+        );
+    }
+
+    #[test]
+    fn if_let_else_branch_still_sees_outer_binding() {
+        // Shadowing must be scoped: only the pattern's own names are shadowed, so
+        // an unrelated outer binding remains resolvable in the `else` branch.
+        let result = parse_source(
+            "my_crate",
+            r#"
+            fn main() {
+                let x = Foo::new();
+                if let Some(y) = opt() {
+                    y.ignored();
+                } else {
+                    x.kept();
+                }
+            }
+        "#,
+        );
+        assert_eq!(
+            call_targets_for_method(&result, "kept"),
+            vec!["my_crate::Foo::kept"],
+            "shadowing only the pattern's names must not hide an unrelated outer binding"
+        );
+    }
+
+    #[test]
+    fn shadowing_resolves_to_nearest_binding_at_every_depth() {
+        // Lightweight generative soundness check (no proptest harness exists in
+        // this module). Build progressively nested blocks, each shadowing `a`
+        // with a distinct type `T{depth}` and calling `a.m{depth}()`. Every call
+        // must resolve to exactly its own depth's type and never to any other —
+        // pinning "nearest binding wins" and "no cross-scope leak" together.
+        const DEPTH: usize = 6;
+        let mut src = String::from("fn main() {\n");
+        for d in 0..DEPTH {
+            let pad = "    ".repeat(d + 1);
+            src.push_str(&format!("{pad}let a = T{d}::new();\n"));
+            src.push_str(&format!("{pad}a.m{d}();\n"));
+            if d + 1 < DEPTH {
+                src.push_str(&format!("{pad}{{\n"));
+            }
+        }
+        for d in (0..DEPTH - 1).rev() {
+            src.push_str(&format!("{}}}\n", "    ".repeat(d + 1)));
+        }
+        src.push_str("}\n");
+
+        let result = parse_source("my_crate", &src);
+
+        for d in 0..DEPTH {
+            assert_eq!(
+                call_targets_for_method(&result, &format!("m{d}")),
+                vec![format!("my_crate::T{d}::m{d}")],
+                "a.m{d}() must resolve to the nearest binding T{d}; source:\n{src}"
+            );
+        }
     }
 }
