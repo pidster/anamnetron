@@ -176,36 +176,56 @@ impl TypeFlowAnalysis {
     /// silently dropped. This looks the bare name up in the type index and
     /// qualifies it.
     ///
-    /// Soundness policy: qualify only when the short name matches EXACTLY ONE
-    /// local type declaration. If it matches zero or more than one (the same
-    /// short name declared in several modules), leave it unqualified — it will
-    /// be dropped at mapping, exactly as today. A dropped edge is acceptable; a
-    /// wrongly-attributed edge is not.
-    fn resolve_type(&self, type_name: &str, language: &str) -> String {
-        self.resolve_type_unique(type_name, language)
+    /// `module` is the module the reference occurs in — the module of the
+    /// function whose signature is being resolved (see [`Self::resolve_type_unique`]
+    /// for the resolution ordering and soundness argument). A bare name that
+    /// cannot be uniquely resolved is returned unchanged and dropped at mapping.
+    fn resolve_type(&self, type_name: &str, language: &str, module: &str) -> String {
+        self.resolve_type_unique(type_name, language, module)
             .unwrap_or_else(|| type_name.to_string())
     }
 
     /// Resolve a type name to a UNIQUELY-qualified item QN, or `None`.
     ///
-    /// Returns `Some(qn)` only when the name unambiguously identifies one type:
-    /// Rust names are already fully qualified (returned as-is); non-Rust bare
-    /// names must match EXACTLY ONE local type declaration. Zero or multiple
-    /// matches yield `None`.
+    /// Rust names are already fully qualified (returned as-is). Non-Rust bare
+    /// names are resolved against the `module` the reference occurs in, using a
+    /// same-module-first policy:
+    ///
+    /// 1. **Same-module exact match** — if the short name is declared *within*
+    ///    `module`, use that declaration. This is sound because a module cannot
+    ///    declare two types with the same short name, so a same-module match is
+    ///    unique *by construction*. A bare reference inside a module denotes that
+    ///    module's own type, even when the short name is reused in other modules.
+    /// 2. **Global-unique fallback** — otherwise, if the short name is declared
+    ///    exactly once across the whole project, use that single declaration
+    ///    (the P0 rule; safe because there is only one candidate).
+    /// 3. **Otherwise `None`** — zero declarations, or globally ambiguous with no
+    ///    same-module match. The name is left bare and dropped at mapping.
+    ///
+    /// Both non-`None` branches are individually sound, so this is strictly more
+    /// recall than the global-unique-only rule with no new unsoundness.
     ///
     /// Callers that compare two resolved types (e.g. cross-module data flow) must
     /// use this and treat `None` as "no match" — never fall back to the bare
     /// name for comparison, or two *distinct* same-named types in different
     /// modules would compare equal and produce a false edge.
-    fn resolve_type_unique(&self, type_name: &str, language: &str) -> Option<String> {
+    fn resolve_type_unique(&self, type_name: &str, language: &str, module: &str) -> Option<String> {
         if language == "rust" {
             return Some(type_name.to_string());
         }
-        match self
+        let candidates = self
             .type_index
-            .get(&(language.to_string(), type_name.to_string()))
-        {
-            Some(qns) if qns.len() == 1 => Some(qns[0].clone()),
+            .get(&(language.to_string(), type_name.to_string()))?;
+
+        // 1. Same-module first: unique by construction (a module declares at most
+        //    one type per short name).
+        if let Some(qn) = candidates.iter().find(|qn| module_of(qn) == module) {
+            return Some(qn.clone());
+        }
+
+        // 2. Global-unique fallback (P0 rule).
+        match candidates.as_slice() {
+            [only] => Some(only.clone()),
             _ => None,
         }
     }
@@ -291,10 +311,13 @@ impl TypeFlowAnalysis {
                     continue;
                 }
                 // Qualify bare (non-Rust) type names to the item they refer to,
-                // so the relation resolves during graph mapping. Rust names pass
-                // through unchanged. Deduplicate on the resolved endpoints.
-                let source = self.resolve_type(param_type, &sig.language);
-                let target = self.resolve_type(return_type, &sig.language);
+                // so the relation resolves during graph mapping. Both endpoints
+                // are referenced from the function's own module, so resolve them
+                // against it (same-module-first). Rust names pass through
+                // unchanged. Deduplicate on the resolved endpoints.
+                let module = module_of(&sig.qualified_name);
+                let source = self.resolve_type(param_type, &sig.language, module);
+                let target = self.resolve_type(return_type, &sig.language, module);
                 let key = (source.clone(), target.clone());
                 if seen.insert(key) {
                     relations.push(AnalysisRelation {
@@ -346,14 +369,25 @@ impl TypeFlowAnalysis {
             // `None` on ambiguity/unknown, so such pairs never match.
             let lang = &caller_sig.language;
 
+            // Resolve each side's bare type names against the module it is
+            // referenced from: the caller's return/params against the caller's
+            // module, the callee's params/return against the callee's module.
+            // A same-module type therefore binds to that side's own declaration,
+            // so two *distinct* same-named types in different modules never
+            // compare equal (F1 soundness).
+            let caller_module = module_of(&caller_sig.qualified_name);
+            let callee_module = module_of(&callee_sig.qualified_name);
+
             // Check: caller's return type matches callee's param type (push direction).
             if let Some(resolved_return) = caller_sig
                 .return_type
                 .as_deref()
-                .and_then(|rt| self.resolve_type_unique(rt, lang))
+                .and_then(|rt| self.resolve_type_unique(rt, lang, caller_module))
             {
                 for (_param_name, callee_param) in &callee_sig.param_types {
-                    if self.resolve_type_unique(callee_param, lang).as_deref()
+                    if self
+                        .resolve_type_unique(callee_param, lang, callee_module)
+                        .as_deref()
                         == Some(resolved_return.as_str())
                     {
                         let key = DataFlowKey {
@@ -377,10 +411,12 @@ impl TypeFlowAnalysis {
             if let Some(resolved_return) = callee_sig
                 .return_type
                 .as_deref()
-                .and_then(|rt| self.resolve_type_unique(rt, lang))
+                .and_then(|rt| self.resolve_type_unique(rt, lang, callee_module))
             {
                 for (_param_name, caller_param) in &caller_sig.param_types {
-                    if self.resolve_type_unique(caller_param, lang).as_deref()
+                    if self
+                        .resolve_type_unique(caller_param, lang, caller_module)
+                        .as_deref()
                         == Some(resolved_return.as_str())
                     {
                         let key = DataFlowKey {
@@ -467,12 +503,32 @@ fn extract_signature(item: &AnalysisItem) -> Option<FunctionSignature> {
     })
 }
 
+/// Return the module portion of a qualified name — everything before the last
+/// `::` separator — or `""` when the name has no separator (a top-level item).
+///
+/// This is the total, borrowing form of [`derive_parent_module`]. All parsers
+/// build qualified names with `::` as the segment separator (Go/Java/Python/
+/// TypeScript reparent items to `package::…::name`, Rust uses `crate::…::name`),
+/// so stripping the last `::`-delimited segment yields the enclosing module.
+///
+/// `"pkg::sub::Convert"` → `"pkg::sub"`, `"pkg::Convert"` → `"pkg"`,
+/// `"Convert"` → `""`.
+fn module_of(qualified_name: &str) -> &str {
+    match qualified_name.rfind("::") {
+        Some(pos) => &qualified_name[..pos],
+        None => "",
+    }
+}
+
 /// Derive the parent module from a qualified name by stripping the last segment.
 ///
-/// `"my_crate::module::function"` → `"my_crate::module"`.
+/// `"my_crate::module::function"` → `Some("my_crate::module")`. Returns `None`
+/// for a top-level name with no `::` separator (where [`module_of`] returns `""`).
 fn derive_parent_module(qualified_name: &str) -> Option<String> {
-    let pos = qualified_name.rfind("::")?;
-    Some(qualified_name[..pos].to_string())
+    match module_of(qualified_name) {
+        "" => None,
+        module => Some(module.to_string()),
+    }
 }
 
 /// Check if a type is project-local, using language-appropriate rules.
@@ -714,17 +770,20 @@ mod tests {
     }
 
     #[test]
-    fn ambiguous_bare_type_name_is_left_unqualified_not_guessed() {
+    fn ambiguous_bare_type_name_with_no_same_module_match_is_left_unqualified_not_guessed() {
         // Soundness policy: when a bare type name matches MORE THAN ONE local
-        // declaration (here `Proposal` is declared in two packages), it must be
-        // left bare rather than guessed — the resulting edge is dropped at
-        // mapping, never mis-attributed. The unambiguous `Report` still resolves.
+        // declaration (`Proposal` declared in packages `a` and `b`) AND the
+        // referencing function is in NEITHER of those modules (module `c`), there
+        // is no same-module match and no global-unique winner, so it must be left
+        // bare rather than guessed — the edge is dropped at mapping, never
+        // mis-attributed to `a::Proposal` or `b::Proposal`. The unambiguous local
+        // `c::Report` still resolves.
         let result = ParseResult {
             items: vec![
                 make_type_item("a::Proposal", "go"),
                 make_type_item("b::Proposal", "go"),
-                make_type_item("a::Report", "go"),
-                make_go_function_item("a::Convert", &[("p", "Proposal")], Some("Report")),
+                make_type_item("c::Report", "go"),
+                make_go_function_item("c::Convert", &[("p", "Proposal")], Some("Report")),
             ],
             relations: vec![],
             warnings: vec![],
@@ -742,6 +801,37 @@ mod tests {
         assert_eq!(transforms[0].source_qualified_name, "Proposal");
         assert!(!transforms[0].source_qualified_name.contains("::"));
         // Unambiguous target is still resolved.
+        assert_eq!(transforms[0].target_qualified_name, "c::Report");
+    }
+
+    #[test]
+    fn locally_unambiguous_type_resolves_via_same_module() {
+        // Recall recovery: `Config` is GLOBALLY ambiguous (declared in packages
+        // `a` and `b`) but LOCALLY unambiguous inside package `a`. The P0
+        // global-unique-only rule dropped this edge; same-module-first resolves
+        // the bare `Config` referenced from `a::Convert` to `a::Config` (a module
+        // declares at most one `Config`, so the match is unique by construction).
+        let result = ParseResult {
+            items: vec![
+                make_type_item("a::Config", "go"),
+                make_type_item("b::Config", "go"),
+                make_type_item("a::Report", "go"),
+                make_go_function_item("a::Convert", &[("c", "Config")], Some("Report")),
+            ],
+            relations: vec![],
+            warnings: vec![],
+            ..Default::default()
+        };
+
+        let relations = TypeFlowAnalysis::from_parse_results(&[result]).analyze();
+        let transforms: Vec<_> = relations
+            .iter()
+            .filter(|r| r.kind == EdgeKind::Transforms)
+            .collect();
+        assert_eq!(transforms.len(), 1, "recovered Transforms edge expected");
+        // The globally-ambiguous source now resolves to the same-module type,
+        // never to `b::Config`.
+        assert_eq!(transforms[0].source_qualified_name, "a::Config");
         assert_eq!(transforms[0].target_qualified_name, "a::Report");
     }
 
@@ -1320,6 +1410,19 @@ mod tests {
             Some("my_crate".to_string())
         );
         assert_eq!(derive_parent_module("bare_name"), None);
+    }
+
+    #[test]
+    fn module_of_returns_prefix_or_empty_for_top_level() {
+        // Nested and single-level names strip their last `::` segment.
+        assert_eq!(module_of("my_crate::module::function"), "my_crate::module");
+        assert_eq!(module_of("pkg::Convert"), "pkg");
+        // Edge case: a top-level / module-less item has no separator, so its
+        // module is the empty string — which lets a module-less function and a
+        // module-less top-level type match each other (both `""`) without ever
+        // matching a namespaced declaration.
+        assert_eq!(module_of("Convert"), "");
+        assert_eq!(module_of(""), "");
     }
 
     #[test]
