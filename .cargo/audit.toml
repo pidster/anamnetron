@@ -3,4 +3,13 @@ ignore = [
     "RUSTSEC-2025-0056",  # adler: unmaintained, used by cozo transitive dep
     "RUSTSEC-2025-0141",  # bincode: unmaintained, used by cozo transitive dep
     "RUSTSEC-2025-0057",  # fxhash: unmaintained, used by cozo transitive dep
+    # RUSTSEC-2026-0041 (lz4_flex 0.10.0, HIGH/8.2 — info-leak when decompressing invalid data).
+    # No upstream fix reachable: hard-pinned via swapvec 0.3.0 -> cozo 0.7.6 (the latest official cozo
+    # release; newer code lives only in forks such as mnestic/cozo-ce, a major store migration).
+    # Threat model: anamnetron is a local, offline-by-default, single-user tool. cozo uses lz4_flex
+    # only for its own internal spill/compaction buffers over the user's OWN graph data — no
+    # attacker-controlled compressed input crosses this decompression path. Higher risk class than the
+    # unmaintained warnings above; revisit and remove when cozo is upgraded/replaced (tracked against a
+    # future cozo migration, ADR TBD).
+    "RUSTSEC-2026-0041",
 ]
