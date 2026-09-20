@@ -27,3 +27,7 @@ Thumbs.db
 
 # SVT files
 .svt/data
+
+# Claude Code session artifacts
+.claude/plans/
+.claude/worktrees/
